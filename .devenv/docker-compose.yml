@@ -1,0 +1,14 @@
+version: "3.9"
+
+services:
+  ml-devenv:
+    build: .
+    container_name: ml_devenv
+    volumes:
+      - ${WS_DIR}:/workspace
+    environment:
+      - USER_ID=${UID}
+      - GROUP_ID=${GID}
+    user: "${UID}:${GID}"
+    stdin_open: true
+    tty: true
