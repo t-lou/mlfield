@@ -17,13 +17,14 @@ ARG HOST_UID
 ARG HOST_GID
 ARG USERNAME
 
-# 2. Add a new group and user using the passed-in IDs
-RUN groupadd -g $HOST_GID $USERNAME || true \
-    && useradd -m -u $HOST_UID -g $HOST_GID $USERNAME || true
+# Rename the existing user/group if UID/GID already exist
+RUN if getent passwd $HOST_UID; then \
+        usermod -l $USERNAME -d /home/$USERNAME -m $(getent passwd $HOST_UID | cut -d: -f1); \
+    else \
+        groupadd -g $HOST_GID $USERNAME && \
+        useradd -m -u $HOST_UID -g $HOST_GID -s /bin/bash $USERNAME; \
+    fi
 
-# Ensure home directory is owned by the new user
-RUN chown -R $HOST_UID:$HOST_GID /home/$USERNAME \
-    && chmod -R 755 /home/$USERNAME
 
 # 3. Set the new user as the default user for the container
 USER $USERNAME

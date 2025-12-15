@@ -14,7 +14,9 @@ export USERNAME="$(whoami)"
 export WS_DIR=${WS_DIR}
 
 # Build the container
-docker compose -f .devenv/docker-compose.yml build
+docker compose -f .devenv/docker-compose.yml build \
+  --build-arg HOST_UID=${HOST_UID} \
+  --build-arg HOST_GID=${HOST_GID} \
+  --build-arg USERNAME=${USERNAME}
 
-# Attach to the container shell
-docker compose -f .devenv/docker-compose.yml run -ti -v $(pwd):/workspace ml_devenv bash
+docker run -it devenv-ml_devenv:latest bash

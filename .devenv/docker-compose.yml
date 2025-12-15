@@ -15,4 +15,3 @@ services:
     user: "${USERNAME}"
     stdin_open: true
     tty: true
-    network_mode: host
