@@ -1,14 +1,18 @@
-version: "3.9"
-
 services:
-  ml-devenv:
-    build: .
+  ml_devenv:
+    build: 
+      context: .
+      args:
+        HOST_UID: ${HOST_UID}
+        HOST_GID: ${HOST_GID}
     container_name: ml_devenv
     volumes:
       - ${WS_DIR}:/workspace
     environment:
-      - USER_ID=${UID}
-      - GROUP_ID=${GID}
-    user: "${UID}:${GID}"
+      - HOST_UID=${HOST_UID}
+      - HOST_GID=${HOST_GID}
+      - USERNAME=${USERNAME}
+    user: "${USERNAME}"
     stdin_open: true
     tty: true
+    network_mode: host
