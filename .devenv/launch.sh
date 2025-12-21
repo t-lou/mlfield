@@ -1,22 +1,95 @@
 #!/bin/bash
+set -e
 
-# Get the directory where the script itself is located
+# -----------------------------
+# Resolve workspace directory
+# -----------------------------
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-WS_DIR="$(dirname ${SCRIPT_DIR})"
+WS_DIR="$(dirname "$SCRIPT_DIR")"
+cd "$WS_DIR"
 
-cd ${WS_DIR}
-
-# Export UID/GID for Compose
+# -----------------------------
+# Export environment variables
+# -----------------------------
 export HOST_UID="$(id -u)"
 export HOST_GID="$(id -g)"
 export USERNAME="$(whoami)"
+export WS_DIR="$WS_DIR"
 
-export WS_DIR=${WS_DIR}
+echo "Workspace: $WS_DIR"
+echo "User: $USERNAME ($HOST_UID:$HOST_GID)"
+echo
 
-# Build the container
+# -----------------------------
+# GPU CHECK 1: nvidia-smi in WSL
+# -----------------------------
+echo "Checking GPU availability in WSL..."
+if ! command -v nvidia-smi >/dev/null 2>&1; then
+    echo "❌ nvidia-smi not found in WSL."
+    echo "→ Install the NVIDIA WSL2 driver on Windows."
+    exit 1
+fi
+
+nvidia-smi || {
+    echo "❌ nvidia-smi failed inside WSL."
+    echo "→ GPU is not exposed to WSL. Reboot or reinstall WSL2 NVIDIA driver."
+    exit 1
+}
+echo "✅ GPU detected in WSL."
+echo
+
+# -----------------------------
+# GPU CHECK 2: NVIDIA container runtime
+# -----------------------------
+echo "Checking NVIDIA container runtime..."
+if ! command -v nvidia-container-runtime >/dev/null 2>&1; then
+    echo "❌ nvidia-container-runtime not found."
+    echo "→ Install NVIDIA container toolkit inside WSL:"
+    echo "   sudo apt update"
+    echo "   sudo apt install -y nvidia-container-toolkit"
+    echo "   sudo nvidia-ctk runtime configure --runtime=docker"
+    echo "   Restart Docker Desktop"
+    exit 1
+fi
+echo "✅ NVIDIA container runtime installed."
+echo
+
+# -----------------------------
+# GPU CHECK 3: Docker GPU support
+# -----------------------------
+echo "Checking Docker GPU support..."
+if ! docker info | grep -qi nvidia; then
+    echo "❌ Docker does not list NVIDIA runtime."
+    echo "→ Enable GPU support in Docker Desktop:"
+    echo "   Settings → Resources → WSL Integration → Enable GPU"
+    exit 1
+fi
+echo "✅ Docker recognizes NVIDIA runtime."
+echo
+
+# -----------------------------
+# GPU CHECK 4: Test GPU passthrough
+# -----------------------------
+echo "Testing GPU passthrough with CUDA container..."
+if ! docker run --gpus all --rm nvidia/cuda:12.4.1-base-ubuntu22.04 nvidia-smi >/dev/null 2>&1; then
+    echo "❌ Docker cannot access GPU."
+    echo "→ Likely missing toolkit or Docker misconfiguration."
+    exit 1
+fi
+echo "✅ GPU passthrough works."
+echo
+
+# -----------------------------
+# Build container
+# -----------------------------
+echo "Building development container..."
 docker compose -f .devenv/docker-compose.yml build \
-  --build-arg HOST_UID=${HOST_UID} \
-  --build-arg HOST_GID=${HOST_GID} \
-  --build-arg USERNAME=${USERNAME}
+    --build-arg HOST_UID="$HOST_UID" \
+    --build-arg HOST_GID="$HOST_GID" \
+    --build-arg USERNAME="$USERNAME"
 
-docker run -it devenv-ml_devenv:latest bash
+# -----------------------------
+# Run container with GPU
+# -----------------------------
+echo "Launching container with GPU..."
+docker run --gpus all -it devenv-ml_devenv:latest bash
