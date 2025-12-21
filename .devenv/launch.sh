@@ -21,6 +21,29 @@ echo "User: $USERNAME ($HOST_UID:$HOST_GID)"
 echo
 
 # -----------------------------
+# Detect distro (Debian/Ubuntu)
+# -----------------------------
+DISTRO_ID=$(grep '^ID=' /etc/os-release | cut -d= -f2)
+DISTRO_VERSION=$(grep '^VERSION_ID=' /etc/os-release | cut -d= -f2 | tr -d '"')
+
+echo "Detected distro: $DISTRO_ID $DISTRO_VERSION"
+echo
+
+# -----------------------------
+# Function: install NVIDIA repo
+# -----------------------------
+install_nvidia_repo() {
+  curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey \
+    | sudo gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+
+  curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list \
+    | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' \
+    | sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list
+
+  sudo apt update
+}
+
+# -----------------------------
 # GPU CHECK 1: nvidia-smi in WSL
 # -----------------------------
 echo "Checking GPU availability in WSL..."
@@ -43,14 +66,20 @@ echo
 # -----------------------------
 echo "Checking NVIDIA container runtime..."
 if ! command -v nvidia-container-runtime >/dev/null 2>&1; then
-    echo "❌ nvidia-container-runtime not found."
-    echo "→ Install NVIDIA container toolkit inside WSL:"
-    echo "   sudo apt update"
-    echo "   sudo apt install -y nvidia-container-toolkit"
-    echo "   sudo nvidia-ctk runtime configure --runtime=docker"
-    echo "   Restart Docker Desktop"
-    exit 1
+    echo "⚠️ NVIDIA container runtime missing. Installing..."
+
+    install_nvidia_repo
+
+    sudo apt install -y nvidia-container-toolkit
+
+    echo "Configuring Docker runtime..."
+    sudo nvidia-ctk runtime configure --runtime=docker
+
+    echo "✅ NVIDIA container toolkit installed."
+    echo "Please restart Docker Desktop and re-run this script."
+    exit 0
 fi
+
 echo "✅ NVIDIA container runtime installed."
 echo
 
