@@ -1,14 +1,15 @@
 services:
   ml_devenv:
-    build: 
+    build:
       context: .
       args:
         HOST_UID: ${HOST_UID}
         HOST_GID: ${HOST_GID}
         network: host
-    container_name: ml_devenv
+    container_name: ml-devenv-${USERNAME}
     volumes:
       - ${WS_DIR}:/workspace
+      - /var/devenv/${USERNAME}:/home/${USERNAME}
     environment:
       - HOST_UID=${HOST_UID}
       - HOST_GID=${HOST_GID}
@@ -17,3 +18,6 @@ services:
     stdin_open: true
     tty: true
     network_mode: host
+
+volumes:
+  ml-devenv-data:

@@ -121,4 +121,9 @@ docker compose -f .devenv/docker-compose.yml build \
 # Run container with GPU
 # -----------------------------
 echo "Launching container with GPU..."
+echo """Perhaps check with:
+python
+import torch
+torch.cuda.is_available()
+"""
 docker run --gpus all -it devenv-ml_devenv:latest bash
