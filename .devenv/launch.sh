@@ -118,12 +118,18 @@ docker compose -f .devenv/docker-compose.yml build \
     --build-arg USERNAME="$USERNAME"
 
 # -----------------------------
+# Check container
+# -----------------------------
+echo "Testing user and GPU..."
+echo "- uname -a"
+docker run --gpus all -it devenv-ml_devenv:latest uname -a
+echo "- whoami"
+docker run --gpus all -it devenv-ml_devenv:latest whoami
+echo "- torch.cuda.is_available()"
+docker run --gpus all -it devenv-ml_devenv:latest python -c "import torch;print(torch.cuda.is_available())"
+
+# -----------------------------
 # Run container with GPU
 # -----------------------------
 echo "Launching container with GPU..."
-echo """Perhaps check with:
-python
-import torch
-torch.cuda.is_available()
-"""
 docker run --gpus all -it devenv-ml_devenv:latest bash
