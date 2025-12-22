@@ -1,16 +1,16 @@
 services:
-  ml_devenv:
+  mlfield:
     build:
       context: .
       args:
         HOST_UID: ${HOST_UID}
         HOST_GID: ${HOST_GID}
         network: host
-    container_name: ml-devenv-${USERNAME}
+    container_name: mlfield-${USERNAME}
     runtime: nvidia
     volumes:
       - ${WS_DIR}:/workspace
-      - ml-devenv-home-${USERNAME}:/home/${USERNAME}
+      - mlfield-home-${USERNAME}:/home/${USERNAME}
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
@@ -26,6 +26,6 @@ services:
     command: bash
 
 volumes:
-  ml-devenv-home-${USERNAME}:
+  mlfield-home-${USERNAME}:
     driver: local
 

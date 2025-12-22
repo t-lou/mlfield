@@ -121,21 +121,21 @@ docker compose -f .devenv/docker-compose.yml build \
     --build-arg HOST_UID="$HOST_UID" \
     --build-arg HOST_GID="$HOST_GID" \
     --build-arg USERNAME="$USERNAME"
+docker compose  -f .devenv/docker-compose.yml up -d
 
 # -----------------------------
 # Check container
 # -----------------------------
 echo "Testing user and GPU..."
 echo "- uname -a"
-docker run --gpus all -it devenv-ml_devenv:latest uname -a
+docker compose -f .devenv/docker-compose.yml exec mlfield uname -a
 echo "- whoami"
-docker run --gpus all -it devenv-ml_devenv:latest whoami
+docker compose -f .devenv/docker-compose.yml exec mlfield whoami
 echo "- torch.cuda.is_available()"
-docker run --gpus all -it devenv-ml_devenv:latest python -c "import torch;print(torch.cuda.is_available())"
+docker compose -f .devenv/docker-compose.yml exec mlfield python -c "import torch;print(torch.cuda.is_available())"
 
 # -----------------------------
 # Run container with GPU
 # -----------------------------
 echo "Launching container with GPU..."
-docker compose  -f .devenv/docker-compose.yml up -d
-docker compose  -f .devenv/docker-compose.yml exec ml_devenv bash
+docker compose -f .devenv/docker-compose.yml exec mlfield bash

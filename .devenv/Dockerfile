@@ -1,8 +1,5 @@
 FROM pytorch/pytorch:2.9.0-cuda12.8-cudnn9-runtime
 
-# RUN pip3 install torch==2.9.0+cu126 --no-cache-dir \
-#     --index-url https://download.pytorch.org/whl/cu126
-
 # Default working directory
 WORKDIR /workspace
 
@@ -18,7 +15,6 @@ RUN if getent passwd $HOST_UID; then \
         groupadd -g $HOST_GID $USERNAME && \
         useradd -m -u $HOST_UID -g $HOST_GID -s /bin/bash $USERNAME; \
     fi
-
 
 # 3. Set the new user as the default user for the container
 USER $USERNAME
