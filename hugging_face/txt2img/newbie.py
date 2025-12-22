@@ -1,18 +1,22 @@
+assert False, "the model seem incorrectly configured... wait for update"
+
 import torch
-from diffusers import NewbiePipeline
+from diffusers import DiffusionPipeline
+
+# from diffusers import NewbiePipeline
 
 
 def main():
     model_id = "NewBie-AI/NewBie-image-Exp0.1"
 
-    # Load pipeline
-    pipe = NewbiePipeline.from_pretrained(
+    pipe = DiffusionPipeline.from_pretrained(
         model_id,
+        custom_pipeline="newbie",
         torch_dtype=torch.bfloat16,
     ).to("cuda")
     # use float16 if your GPU does not support bfloat16
 
-    prompt = "1 girl stands and watches stars"
+    prompt = "1 girl stands and watches falling stars"
 
     image = pipe(
         prompt,
