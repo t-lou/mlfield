@@ -7,17 +7,25 @@ services:
         HOST_GID: ${HOST_GID}
         network: host
     container_name: ml-devenv-${USERNAME}
+    runtime: nvidia
     volumes:
       - ${WS_DIR}:/workspace
-      - /var/devenv/${USERNAME}:/home/${USERNAME}
+      - ml-devenv-home-${USERNAME}:/home/${USERNAME}
     environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
       - HOST_UID=${HOST_UID}
       - HOST_GID=${HOST_GID}
       - USERNAME=${USERNAME}
+      - PYTHONUNBUFFERED=1
+      - PIP_DISABLE_PIP_VERSION_CHECK=1
     user: "${USERNAME}"
     stdin_open: true
     tty: true
     network_mode: host
+    command: bash
 
 volumes:
-  ml-devenv-data:
+  ml-devenv-home-${USERNAME}:
+    driver: local
+

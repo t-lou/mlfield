@@ -21,6 +21,11 @@ echo "User: $USERNAME ($HOST_UID:$HOST_GID)"
 echo
 
 # -----------------------------
+# Substitue the docker-compose
+# -----------------------------
+envsubst < .devenv/docker-compose.yml.template > .devenv/docker-compose.yml
+
+# -----------------------------
 # Detect distro (Debian/Ubuntu)
 # -----------------------------
 DISTRO_ID=$(grep '^ID=' /etc/os-release | cut -d= -f2)
@@ -132,4 +137,5 @@ docker run --gpus all -it devenv-ml_devenv:latest python -c "import torch;print(
 # Run container with GPU
 # -----------------------------
 echo "Launching container with GPU..."
-docker run --gpus all -it devenv-ml_devenv:latest bash
+docker compose  -f .devenv/docker-compose.yml up -d
+docker compose  -f .devenv/docker-compose.yml exec ml_devenv bash
