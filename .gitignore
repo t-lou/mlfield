@@ -1,1 +1,2 @@
 .devenv/docker-compose.yml
+**/data/*
