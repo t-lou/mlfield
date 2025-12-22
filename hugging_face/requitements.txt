@@ -2,3 +2,5 @@ transformers
 accelerate
 bitsandbytes
 sentencepiece
+diffusers
+safetensors
