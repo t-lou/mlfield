@@ -1,7 +1,7 @@
-import torchvision.transforms as T
-from torchvision.datasets import CIFAR10
-from torch.utils.data import DataLoader
 import matplotlib.pyplot as plt
+import torchvision.transforms as T
+from torch.utils.data import DataLoader
+from torchvision.datasets import CIFAR10
 
 transform = T.Compose(
     [T.RandomResizedCrop(32), T.RandomHorizontalFlip(), T.ColorJitter(0.4, 0.4, 0.4, 0.1), T.ToTensor()]
