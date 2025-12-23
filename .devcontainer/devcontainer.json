@@ -1,0 +1,24 @@
+{
+  "name": "mlfield",
+  "dockerComposeFile": [
+    // Created with ../.devenv/launch.sh
+    "../.devenv/docker-compose.yml"
+  ],
+  "service": "mlfield",
+  "workspaceFolder": "/workspace",
+
+  // VS Code should use the same user as inside the container
+  "remoteUser": "${localEnv:USERNAME}",
+
+  // Optional but recommended: VS Code extensions inside the container
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-python.python",
+        // "ms-toolsai.jupyter",
+        // "ms-azuretools.vscode-docker",
+        // "github.copilot"
+      ]
+    }
+  }
+}
