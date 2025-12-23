@@ -132,7 +132,7 @@ docker compose -f .devenv/docker-compose.yml exec mlfield uname -a
 echo "- whoami"
 docker compose -f .devenv/docker-compose.yml exec mlfield whoami
 echo "- torch.cuda.is_available()"
-docker compose -f .devenv/docker-compose.yml exec mlfield python -c "import torch;print(torch.cuda.is_available())"
+docker compose -f .devenv/docker-compose.yml exec mlfield python3 -c "import torch;print(torch.cuda.is_available())"
 
 # -----------------------------
 # Run container with GPU
