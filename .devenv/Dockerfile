@@ -8,6 +8,11 @@ ARG HOST_UID
 ARG HOST_GID
 ARG USERNAME
 
+# Install Python3 and pip
+RUN apt-get update && \
+    apt-get install -y git vim tree && \
+    rm -rf /var/lib/apt/lists/*
+
 # Rename the existing user/group if UID/GID already exist
 RUN if getent passwd $HOST_UID; then \
         usermod -l $USERNAME -d /home/$USERNAME -m $(getent passwd $HOST_UID | cut -d: -f1); \
