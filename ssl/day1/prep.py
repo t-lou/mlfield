@@ -7,7 +7,7 @@ transform = T.Compose(
     [T.RandomResizedCrop(32), T.RandomHorizontalFlip(), T.ColorJitter(0.4, 0.4, 0.4, 0.1), T.ToTensor()]
 )
 
-dataset = CIFAR10(root="./data", train=True, download=True, transform=transform)
+dataset = CIFAR10(root="../data", train=True, download=True, transform=transform)
 loader = DataLoader(dataset, batch_size=8, shuffle=True)
 
 images, labels = next(iter(loader))
