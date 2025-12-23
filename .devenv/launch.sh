@@ -54,7 +54,6 @@ install_nvidia_repo() {
 echo "Checking GPU availability in WSL..."
 if ! command -v nvidia-smi >/dev/null 2>&1; then
     echo "❌ nvidia-smi not found in WSL."
-    echo "→ Install the NVIDIA WSL2 driver on Windows."
     exit 1
 fi
 
@@ -94,8 +93,9 @@ echo
 echo "Checking Docker GPU support..."
 if ! docker info | grep -qi nvidia; then
     echo "❌ Docker does not list NVIDIA runtime."
-    echo "→ Enable GPU support in Docker Desktop:"
-    echo "   Settings → Resources → WSL Integration → Enable GPU"
+    echo $(pwd)
+    bash ./.devenv/install_docker.sh
+    echo "Docker installed, reboot."
     exit 1
 fi
 echo "✅ Docker recognizes NVIDIA runtime."

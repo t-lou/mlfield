@@ -2,11 +2,11 @@
 set -e
 
 # 1. Remove old versions
-sudo apt remove -y docker docker-engine docker.io containerd runc || true
+sudo apt-get remove -y docker docker-engine docker.io containerd runc || true
 
 # 2. Install dependencies
-sudo apt update
-sudo apt install -y ca-certificates curl gnupg
+sudo apt-get update
+sudo apt-get install -y ca-certificates curl gnupg
 
 # 3. Add Docker’s official GPG key
 sudo install -m 0755 -d /etc/apt/keyrings
@@ -21,8 +21,8 @@ echo \
   | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
 
 # 5. Install Docker Engine + CLI + Compose
-sudo apt update
-sudo apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+sudo apt-get update
+sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
 
 # 6. Allow running Docker without sudo
 sudo usermod -aG docker $USER
