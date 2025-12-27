@@ -1,8 +1,8 @@
 {
   "name": "mlfield",
   "dockerComposeFile": [
-    // Created with ../.devenv/launch.sh
-    "../.devenv/docker-compose.yml"
+    // Created with ../.devcontainer/launch.sh
+    "../.devcontainer/docker-compose.yml"
   ],
   "service": "mlfield",
   "workspaceFolder": "/workspace",

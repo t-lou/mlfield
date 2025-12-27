@@ -23,7 +23,7 @@ echo
 # -----------------------------
 # Substitue the docker-compose
 # -----------------------------
-envsubst < .devenv/docker-compose.yml.template > .devenv/docker-compose.yml
+envsubst < .devcontainer/docker-compose.yml.template > .devcontainer/docker-compose.yml
 
 # -----------------------------
 # Detect distro (Debian/Ubuntu)
@@ -94,7 +94,7 @@ echo "Checking Docker GPU support..."
 if ! docker info | grep -qi nvidia; then
     echo "❌ Docker does not list NVIDIA runtime."
     echo $(pwd)
-    bash ./.devenv/install_docker.sh
+    bash ./.devcontainer/install_docker.sh
     echo "Docker installed, reboot."
     exit 1
 fi
@@ -117,25 +117,25 @@ echo
 # Build container
 # -----------------------------
 echo "Building development container..."
-docker compose -f .devenv/docker-compose.yml build \
+docker compose -f .devcontainer/docker-compose.yml build \
     --build-arg HOST_UID="$HOST_UID" \
     --build-arg HOST_GID="$HOST_GID" \
     --build-arg USERNAME="$USERNAME"
-docker compose  -f .devenv/docker-compose.yml up -d
+docker compose  -f .devcontainer/docker-compose.yml up -d
 
 # -----------------------------
 # Check container
 # -----------------------------
 echo "Testing user and GPU..."
 echo "- uname -a"
-docker compose -f .devenv/docker-compose.yml exec mlfield uname -a
+docker compose -f .devcontainer/docker-compose.yml exec mlfield uname -a
 echo "- whoami"
-docker compose -f .devenv/docker-compose.yml exec mlfield whoami
+docker compose -f .devcontainer/docker-compose.yml exec mlfield whoami
 echo "- torch.cuda.is_available()"
-docker compose -f .devenv/docker-compose.yml exec mlfield python3 -c "import torch;print(torch.cuda.is_available())"
+docker compose -f .devcontainer/docker-compose.yml exec mlfield python3 -c "import torch;print(torch.cuda.is_available())"
 
 # -----------------------------
 # Run container with GPU
 # -----------------------------
 echo "Launching container with GPU..."
-docker compose -f .devenv/docker-compose.yml exec mlfield bash
+docker compose -f .devcontainer/docker-compose.yml exec mlfield bash
