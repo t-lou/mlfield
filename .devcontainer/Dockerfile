@@ -23,7 +23,7 @@ RUN rm -f /usr/lib/python3.*/EXTERNALLY-MANAGED
 RUN pip3 install --no-cache-dir torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu129
 
 # Optional: common ML packages
-RUN pip3 install --no-cache-dir numpy scipy scikit-learn matplotlib jupyterlab
+RUN pip3 install --no-cache-dir numpy scipy scikit-learn matplotlib jupyterlab notebook
 
 # 1. Define Build Arguments with defaults (e.g., 1000 is common for non-root users)
 ARG HOST_UID
