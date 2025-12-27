@@ -45,3 +45,5 @@ Each folder is self‑contained and may include scripts, notebooks, configs, and
 git clone https://github.com/t-lou/mlfield
 bash mlfield/.devcontainer/launch.sh
 ```
+
+After creation with bash, optionally reopen the folder with VS Code inside a container. Please reopen only, rebuilding will break.
