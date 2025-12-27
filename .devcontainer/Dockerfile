@@ -32,7 +32,7 @@ ARG USERNAME
 
 # Install Python3 and pip
 RUN apt-get update && \
-    apt-get install -y git vim tree && \
+    apt-get install -y git vim tree python-is-python3 && \
     rm -rf /var/lib/apt/lists/*
 
 # Rename the existing user/group if UID/GID already exist
