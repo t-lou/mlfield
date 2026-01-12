@@ -35,6 +35,9 @@ RUN apt-get update && \
     apt-get install -y git vim tree python-is-python3 && \
     rm -rf /var/lib/apt/lists/*
 
+# For testing
+RUN pip3 install --no-cache-dir pytest
+
 # Rename the existing user/group if UID/GID already exist
 RUN if getent passwd $HOST_UID; then \
         usermod -l $USERNAME -d /home/$USERNAME -m $(getent passwd $HOST_UID | cut -d: -f1); \
