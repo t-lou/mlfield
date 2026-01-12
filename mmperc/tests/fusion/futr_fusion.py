@@ -1,5 +1,5 @@
 import torch
-from device_utils import get_best_device
+from common.device import get_best_device
 from fusion.futr_fusion import FuTrFusionBlock
 
 

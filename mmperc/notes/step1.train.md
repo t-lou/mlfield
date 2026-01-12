@@ -32,7 +32,7 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
 
-from device_utils import get_best_device
+from src.voxelizer.pointpillars_lite import TorchPillarVoxelizer
 from voxelizer.pointpillars_lite import TorchPillarVoxelizer
 from backbone.tiny_bev_backbone import TinyBEVBackbone
 from fusion.futr_fusion import FuTrFusionBlock

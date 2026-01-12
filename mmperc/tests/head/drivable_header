@@ -1,5 +1,5 @@
 import torch
-from device_utils import get_best_device
+from src.voxelizer.pointpillars_lite import TorchPillarVoxelizer
 from tasks.drivable_head import DrivableAreaHead
 
 

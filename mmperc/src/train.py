@@ -1,9 +1,9 @@
 import torch.nn as nn
 import torch.optim as optim
 from backbone.tiny_bev_backbone import TinyBEVBackbone
-from device_utils import get_best_device
+from common.device import get_best_device
 from fusion.futr_fusion import FuTrFusionBlock
-from tasks.drivable_head import DrivableAreaHead
+from head.drivable_head import DrivableAreaHead
 from torch.utils.data import DataLoader
 from voxelizer.pointpillars_lite import TorchPillarVoxelizer
 
