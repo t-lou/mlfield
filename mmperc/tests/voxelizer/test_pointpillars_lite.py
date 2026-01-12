@@ -1,6 +1,7 @@
 import torch
+from src.common.defs import TorchPointCloud
 from src.common.device import get_best_device
-from src.voxelizer.pointpillars_lite import TorchPillarVoxelizer, TorchPointCloud
+from src.voxelizer.pointpillars_lite import TorchPillarVoxelizer
 
 
 def make_pc(points):
