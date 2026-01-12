@@ -1,0 +1,55 @@
+import torch
+from device_utils import get_best_device
+from tasks.drivable_head import DrivableAreaHead
+
+
+def test_drivable_forward_shape():
+    device = get_best_device()
+
+    head = DrivableAreaHead(in_channels=128).to(device)
+    bev = torch.randn(2, 128, 100, 100, device=device)
+
+    mask = head(bev)
+
+    assert mask.shape == (2, 1, 100, 100)
+
+
+def test_drivable_gradients():
+    device = get_best_device()
+
+    head = DrivableAreaHead(in_channels=128).to(device)
+    bev = torch.randn(1, 128, 50, 50, device=device, requires_grad=True)
+
+    mask = head(bev)
+    loss = mask.mean()
+    loss.backward()
+
+    assert bev.grad is not None
+    assert torch.isfinite(bev.grad).all()
+
+
+def test_drivable_device_consistency():
+    device = get_best_device()
+
+    head = DrivableAreaHead(in_channels=128).to(device)
+    bev = torch.randn(1, 128, 80, 80, device=device)
+
+    mask = head(bev)
+
+    assert mask.device == device
+
+
+def test_drivable_determinism():
+    device = get_best_device()
+
+    torch.manual_seed(123)
+    head1 = DrivableAreaHead(in_channels=128).to(device)
+    bev1 = torch.randn(1, 128, 60, 60, device=device)
+    out1 = head1(bev1)
+
+    torch.manual_seed(123)
+    head2 = DrivableAreaHead(in_channels=128).to(device)
+    bev2 = torch.randn(1, 128, 60, 60, device=device)
+    out2 = head2(bev2)
+
+    assert torch.allclose(out1, out2, atol=1e-6)
