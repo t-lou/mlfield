@@ -2,6 +2,7 @@ import torch.nn as nn
 import torch.optim as optim
 from backbone.tiny_bev_backbone import TinyBEVBackbone
 from common.device import get_best_device
+from datasets.a2d2_dataset import A2D2Dataset
 from fusion.futr_fusion import FuTrFusionBlock
 from head.drivable_head import DrivableAreaHead
 from torch.utils.data import DataLoader
@@ -16,7 +17,7 @@ def train_one_epoch(model, dataloader, optimizer, device):
     for batch in dataloader:
         points = batch["points"].to(device)  # (N, 5)
         cam_tokens = batch["cam_tokens"].to(device)  # (B, N_cam, C)
-        target_mask = batch["drivable_mask"].to(device)  # (B, 1, H, W)
+        target_mask = batch["semantics"].to(device)  # (B, 1, H, W)
 
         optimizer.zero_grad()
 
@@ -31,7 +32,7 @@ def train_one_epoch(model, dataloader, optimizer, device):
     return total_loss / len(dataloader)
 
 
-class DrivableModel(nn.Module):
+class FullModel(nn.Module):
     """
     Full pipeline:
     points → voxelizer → PFN (TODO) → BEV backbone → fusion → drivable head
@@ -58,10 +59,11 @@ def main():
     device = get_best_device()
 
     # TODO: replace with your dataset
-    dataset = ...
+    path_dataset = "../data/a2d2-preview/camera_lidar_semantic_bboxes"
+    dataset = A2D2Dataset(root=path_dataset, use_cam_tokens=False)
     dataloader = DataLoader(dataset, batch_size=2, shuffle=True)
 
-    model = DrivableModel().to(device)
+    model = FullModel().to(device)
     optimizer = optim.Adam(model.parameters(), lr=1e-4)
 
     for epoch in range(10):
