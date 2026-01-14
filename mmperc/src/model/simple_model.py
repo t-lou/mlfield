@@ -16,23 +16,19 @@ class SimpleModel(nn.Module):
     """
 
     def __init__(self, bev_channels: int = 128) -> None:
-        """
-        Args:
-            bev_channels:  Channel dimension of BEV features (default 128)
-        """
         super().__init__()
 
         # 3D lidar → BEV feature map
         self.lidar_encoder = PointPillarBEV()
 
         # RGB → camera tokens (B, N_cam, bev_channels)
-        self.cam_encoder = TinyCameraEncoder(out_channels=bev_channels)
+        self.cam_encoder = TinyCameraEncoder()
 
         # BEV–camera fusion block
-        self.fusion = FuTrFusionBlock(bev_channels=bev_channels)
+        self.fusion = FuTrFusionBlock()
 
         # Final segmentation head
-        self.head = DrivableAreaHead(in_channels=bev_channels)
+        self.head = DrivableAreaHead()
 
     def forward(self, points: Tensor, images: Tensor) -> Tensor:
         """

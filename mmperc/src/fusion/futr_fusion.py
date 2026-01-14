@@ -1,3 +1,4 @@
+import common.params as params
 import torch.nn as nn
 from torch import Tensor
 
@@ -16,11 +17,12 @@ class FuTrFusionBlock(nn.Module):
 
     def __init__(
         self,
-        bev_channels: int = 128,
         num_heads: int = 4,
         dropout: float = 0.1,
     ) -> None:
         super().__init__()
+
+        bev_channels = params.BEV_CHANNELS
 
         # Linear projection for BEV tokens (keeps dimension = bev_channels)
         self.bev_to_tokens = nn.Linear(bev_channels, bev_channels)

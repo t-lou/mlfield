@@ -7,6 +7,8 @@ These values define:
 - the resulting BEV grid resolution (BEV_H, BEV_W)
 """
 
+BEV_CHANNELS = 128  # Number of channels in BEV feature map
+
 # -----------------------------
 # Lidar region of interest (meters)
 # -----------------------------

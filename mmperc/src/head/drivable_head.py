@@ -1,3 +1,4 @@
+import common.params as params
 import torch
 import torch.nn as nn
 
@@ -9,12 +10,12 @@ class DrivableAreaHead(nn.Module):
     Output: (B, 1, H, W)  sigmoid mask
     """
 
-    def __init__(self, in_channels=128, mid_channels=64):
+    def __init__(self, mid_channels=64):
         super().__init__()
 
         # First refinement block
         self.block1 = nn.Sequential(
-            nn.Conv2d(in_channels, mid_channels, kernel_size=3, padding=1),
+            nn.Conv2d(params.BEV_CHANNELS, mid_channels, kernel_size=3, padding=1),
             nn.BatchNorm2d(mid_channels),
             nn.ReLU(inplace=True),
         )

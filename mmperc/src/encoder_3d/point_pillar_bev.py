@@ -11,7 +11,7 @@ class PointPillarBEV(nn.Module):
         super().__init__()
         self.voxelizer = PointpillarLite()
         self.pfn = SimplePFN(in_channels=4, out_channels=64)
-        self.backbone = TinyBEVBackbone(out_channels=128)
+        self.backbone = TinyBEVBackbone(out_channels=params.BEV_CHANNELS)
         self.bev_h = params.BEV_H
         self.bev_w = params.BEV_W
 

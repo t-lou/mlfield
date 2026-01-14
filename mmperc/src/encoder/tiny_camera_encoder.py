@@ -1,3 +1,4 @@
+import common.params as params
 import torch.nn as nn
 from torch import Tensor
 
@@ -17,7 +18,7 @@ class TinyCameraEncoder(nn.Module):
         - C = out_channels (default 128)
     """
 
-    def __init__(self, out_channels: int = 128) -> None:
+    def __init__(self) -> None:
         super().__init__()
 
         # A small CNN backbone that downsamples the image 3 times.
@@ -30,13 +31,13 @@ class TinyCameraEncoder(nn.Module):
             nn.Conv2d(32, 64, kernel_size=3, stride=2, padding=1),
             nn.BatchNorm2d(64),
             nn.ReLU(inplace=True),
-            nn.Conv2d(64, out_channels, kernel_size=3, stride=2, padding=1),
-            nn.BatchNorm2d(out_channels),
+            nn.Conv2d(64, params.BEV_CHANNELS, kernel_size=3, stride=2, padding=1),
+            nn.BatchNorm2d(params.BEV_CHANNELS),
             nn.ReLU(inplace=True),
         )
 
         # LayerNorm applied after flattening into tokens
-        self.norm = nn.LayerNorm(out_channels)
+        self.norm = nn.LayerNorm(params.BEV_CHANNELS)
 
     def forward(self, x: Tensor) -> Tensor:
         """
