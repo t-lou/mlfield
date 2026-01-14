@@ -3,9 +3,11 @@ import torch.optim as optim
 from backbone.tiny_bev_backbone import TinyBEVBackbone
 from common.device import get_best_device
 from datasets.a2d2_dataset import A2D2Dataset
+from encoder_3d.point_pillars_bev import PointPillarsBEV
 from fusion.futr_fusion import FuTrFusionBlock
 from head.drivable_head import DrivableAreaHead
 from torch.utils.data import DataLoader
+from voxel_encoder.simple_pfn import SimplePFN
 from voxelizer.pointpillars_lite import TorchPillarVoxelizer
 
 
@@ -40,14 +42,21 @@ class FullModel(nn.Module):
 
     def __init__(self):
         super().__init__()
-        self.voxelizer = TorchPillarVoxelizer()
+
+        # Lidar encoder
+        voxelizer = TorchPillarVoxelizer()
+        pfn = SimplePFN(in_channels=5, out_channels=64)
+        backbone = TinyBEVBackbone(in_channels=64, mid_channels=64, out_channels=128)
+        bev_w = int((voxelizer.x_max - voxelizer.x_min) / voxelizer.vx)
+        bev_h = int((voxelizer.y_max - voxelizer.y_min) / voxelizer.vy)
+        self.lidar_encoder = PointPillarsBEV(voxelizer, pfn, backbone, bev_h, bev_w)
+
         # TODO: add PFN here
-        self.backbone = TinyBEVBackbone(in_channels=64)
         self.fusion = FuTrFusionBlock(bev_channels=128)
         self.head = DrivableAreaHead(in_channels=128)
 
     def forward(self, points, cam_tokens):
-        vox = self.voxelizer(points)["pillars"]  # placeholder
+        vox = self.lidar_encoder(points)["pillars"]  # placeholder
         # TODO: PFN → bev_features
         bev = self.backbone(vox)
         fused = self.fusion(bev, cam_tokens)
