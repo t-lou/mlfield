@@ -2,12 +2,12 @@ import common.params as params
 from backbone.tiny_bev_backbone import TinyBEVBackbone
 from encoder.simple_pfn import SimplePFN
 from scatter.scatter import scatter_to_bev
-from torch import nn
+from torch import Tensor, nn
 from voxelizer.pointpillar_lite import PointpillarLite
 
 
-class PointPillarsBEV(nn.Module):
-    def __init__(self, pfn, backbone) -> None:
+class PointPillarBEV(nn.Module):
+    def __init__(self) -> None:
         super().__init__()
         self.voxelizer = PointpillarLite()
         self.pfn = SimplePFN(in_channels=4, out_channels=64)
@@ -15,7 +15,7 @@ class PointPillarsBEV(nn.Module):
         self.bev_h = params.BEV_H
         self.bev_w = params.BEV_W
 
-    def forward(self, points) -> nn.Tensor:
+    def forward(self, points) -> Tensor:
         """
         points: (B, N, 5)
         """

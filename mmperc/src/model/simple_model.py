@@ -1,6 +1,6 @@
 import torch.nn as nn
 from encoder.tiny_camera_encoder import TinyCameraEncoder
-from encoder_3d.point_pillars_bev import PointPillarsBEV
+from encoder_3d.point_pillar_bev import PointPillarBEV
 from fusion.futr_fusion import FuTrFusionBlock
 from head.drivable_head import DrivableAreaHead
 from torch import Tensor
@@ -23,7 +23,7 @@ class SimpleModel(nn.Module):
         super().__init__()
 
         # 3D lidar → BEV feature map
-        self.lidar_encoder = PointPillarsBEV()
+        self.lidar_encoder = PointPillarBEV()
 
         # RGB → camera tokens (B, N_cam, bev_channels)
         self.cam_encoder = TinyCameraEncoder(out_channels=bev_channels)
