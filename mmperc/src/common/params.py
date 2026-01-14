@@ -32,6 +32,8 @@ VOXEL_SIZE: tuple[float, float, float] = (0.32, 0.32, 8.0)
 BEV_W: int = int((X_RANGE[1] - X_RANGE[0]) / VOXEL_SIZE[0])
 BEV_H: int = int((Y_RANGE[1] - Y_RANGE[0]) / VOXEL_SIZE[1])
 
+IMAGE_SCALE = 0.25  # Downsampling factor for camera images
+
 # Optional: print for debugging when running this file directly
 if __name__ == "__main__":
     print(f"BEV grid resolution: H={BEV_H}, W={BEV_W}")

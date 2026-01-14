@@ -4,6 +4,7 @@ from encoder_3d.point_pillar_bev import PointPillarBEV
 from fusion.futr_fusion import FuTrFusionBlock
 from head.drivable_head import DrivableAreaHead
 from torch import Tensor
+from common.utils import rescale_image
 
 
 class SimpleModel(nn.Module):
@@ -44,6 +45,7 @@ class SimpleModel(nn.Module):
         bev: Tensor = self.lidar_encoder(points)  # (B, 128, H_bev, W_bev)
 
         # Camera → tokens
+        images = rescale_image(images)  # Rescale if needed
         cam_tokens: Tensor = self.cam_encoder(images)  # (B, N_cam, 128)
 
         # Cross-attention fusion
