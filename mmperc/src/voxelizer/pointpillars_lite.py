@@ -24,15 +24,15 @@ class TorchPillarVoxelizer:
 
     def __call__(self, points):
         """
-        points: (B, N, C) tensor
+        points: (B, N, 4) tensor  # x, y, z, intensity
         """
 
+        points = points[..., :4]  # ensure only first 4 channels are used
         B, N, C = points.shape
         device = points.device
+        assert C == 4, points.shape
 
-        # ----------------------------------------------------
-        # 1. Filter invalid points (flatten → mask → zero → reshape)
-        # ----------------------------------------------------
+        # 1. Flatten for filtering
         pts = points.reshape(B * N, C)
 
         mask = (
@@ -46,48 +46,51 @@ class TorchPillarVoxelizer:
 
         pts[~mask] = 0.0
 
-        # batch index for each point
         batch_idx = torch.arange(B, device=device).repeat_interleave(N)
 
-        # ----------------------------------------------------
-        # 3. Compute voxel indices
-        # ----------------------------------------------------
+        # 2. Voxel indices
         ix = ((pts[:, 0] - self.x_min) / self.vx).long()
         iy = ((pts[:, 1] - self.y_min) / self.vy).long()
 
         coords = torch.stack([batch_idx, ix, iy], dim=1)  # (B*N, 3)
 
-        # ----------------------------------------------------
-        # 4. Unique pillars per batch
-        # ----------------------------------------------------
+        # 3. Unique pillars
         unique_coords, inverse = torch.unique(coords, dim=0, return_inverse=True)
         # unique_coords: (P, 3) → [batch, ix, iy]
 
-        # ----------------------------------------------------
-        # 5. Allocate output buffers
-        # ----------------------------------------------------
-        pillars = torch.zeros((B, self.max_pillars, self.max_points_per_pillar, C), dtype=torch.float32, device=device)
+        # 4. Allocate buffers
+        pillars = torch.zeros(
+            (B, self.max_pillars, self.max_points_per_pillar, C),
+            dtype=torch.float32,
+            device=device,
+        )
         pillar_count = torch.zeros(B, self.max_pillars, dtype=torch.long, device=device)
         pillar_coords = torch.zeros(B, self.max_pillars, 2, dtype=torch.long, device=device)
 
-        # ----------------------------------------------------
-        # 6. Fill pillars
-        # ----------------------------------------------------
-        for pid, (b, x, y) in enumerate(unique_coords):
+        # per-batch pillar index
+        next_pillar_id = torch.zeros(B, dtype=torch.long, device=device)
+
+        # 5. Fill pillars
+        for gid, (b, x, y) in enumerate(unique_coords):
+            b = int(b.item())
+
+            pid = int(next_pillar_id[b].item())
             if pid >= self.max_pillars:
-                break
+                continue
 
             pillar_coords[b, pid] = torch.tensor([x, y], device=device)
 
-            mask = inverse == pid
-            pts_in_pillar = pts[mask]
+            mask = (inverse == gid)
+            pts_in_pillar = pts[mask]  # (K, 4)
 
             count = min(pts_in_pillar.size(0), self.max_points_per_pillar)
             pillars[b, pid, :count] = pts_in_pillar[:count]
             pillar_count[b, pid] = count
 
+            next_pillar_id[b] += 1
+
         return {
-            "pillars": pillars,  # (B, P, M, C)
-            "pillar_coords": pillar_coords,  # (B, P, 2)
-            "pillar_count": pillar_count,  # (B, P)
+            "pillars": pillars,          # (B, P, M, 4)
+            "pillar_coords": pillar_coords,
+            "pillar_count": pillar_count,
         }

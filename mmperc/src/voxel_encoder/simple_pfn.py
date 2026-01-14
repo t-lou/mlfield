@@ -8,7 +8,7 @@ class SimplePFN(nn.Module):
     Output: pillar_features (B, P, C_out)
     """
 
-    def __init__(self, in_channels=5, out_channels=64):
+    def __init__(self, in_channels, out_channels=64):
         super().__init__()
         self.linear = nn.Linear(in_channels, out_channels, bias=False)
         self.bn = nn.BatchNorm1d(out_channels)

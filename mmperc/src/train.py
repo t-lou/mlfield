@@ -45,7 +45,7 @@ class FullModel(nn.Module):
 
         # Lidar encoder
         voxelizer = TorchPillarVoxelizer()
-        pfn = SimplePFN(in_channels=5, out_channels=64)
+        pfn = SimplePFN(in_channels=4, out_channels=64)
         backbone = TinyBEVBackbone(in_channels=64, mid_channels=64, out_channels=128)
         bev_w = int((voxelizer.x_max - voxelizer.x_min) / voxelizer.vx)
         bev_h = int((voxelizer.y_max - voxelizer.y_min) / voxelizer.vy)
@@ -56,10 +56,9 @@ class FullModel(nn.Module):
         self.head = DrivableAreaHead(in_channels=128)
 
     def forward(self, points, cam_tokens):
-        vox = self.lidar_encoder(points)["pillars"]  # placeholder
+        vox = self.lidar_encoder(points)
         # TODO: PFN → bev_features
-        bev = self.backbone(vox)
-        fused = self.fusion(bev, cam_tokens)
+        fused = self.fusion(vox, cam_tokens)
         mask = self.head(fused)
         return mask
 

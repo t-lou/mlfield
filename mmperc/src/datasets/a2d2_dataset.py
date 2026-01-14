@@ -61,7 +61,10 @@ class A2D2Dataset(Dataset):
 
     def load_lidar(self, folder, base):
         path = self._find_only_file_with_ext(self.root / folder / "lidar" / self._sub_name, "npz")
-        arr = np.load(path)["points"]
+        points = np.load(path)["points"]
+        reflectance = np.load(path)["reflectance"]
+        timestamp = np.load(path)["timestamp"]
+        arr = np.concatenate([points, reflectance[:, None], timestamp[:, None]], axis=1)
         logging.error(f"Loaded LIDAR from {path} with shape {arr.shape}")
         num_points = min(arr.shape[0], self._num_lidar_points)
         pad = np.zeros((self._num_lidar_points, arr.shape[1]), dtype=arr.dtype)
