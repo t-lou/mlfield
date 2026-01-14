@@ -19,5 +19,5 @@ def rescale_image(x, scale_factor: float = params.IMAGE_SCALE):
     H_new = int(H * scale_factor)
     W_new = int(W * scale_factor)
 
-    x_rescaled = F.interpolate(x, size=(H_new, W_new), mode='bilinear', align_corners=False)
+    x_rescaled = F.interpolate(x, size=(H_new, W_new), mode="bilinear", align_corners=False)
     return x_rescaled

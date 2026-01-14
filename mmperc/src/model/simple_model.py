@@ -1,10 +1,10 @@
 import torch.nn as nn
+from common.utils import rescale_image
 from encoder.tiny_camera_encoder import TinyCameraEncoder
 from encoder_3d.point_pillar_bev import PointPillarBEV
 from fusion.futr_fusion import FuTrFusionBlock
 from head.drivable_head import DrivableAreaHead
 from torch import Tensor
-from common.utils import rescale_image
 
 
 class SimpleModel(nn.Module):

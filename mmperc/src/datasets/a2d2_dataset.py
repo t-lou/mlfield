@@ -1,14 +1,3 @@
-# src/../data
-# |-- a2d2-preview
-# |   |-- LICENSE.txt
-# |   |-- README.txt
-# |   |-- camera_lidar
-# |   |-- camera_lidar_semantic
-# |   |-- camera_lidar_semantic_bboxes
-# |   |-- cams_lidars.json
-# |   `-- tutorial.ipynb
-# `-- a2d2-preview.tar
-
 import json
 import logging
 from pathlib import Path
@@ -22,73 +11,109 @@ from torchvision import transforms
 
 class A2D2Dataset(Dataset):
     """
-    A2D2 loader for folders like:
-    camera_lidar_semantic_bboxes/
-      20180807_145028/
-        camera/cam_front_center/*.png
-        lidar/cam_front_center/*.npz
-        label/cam_front_center/*.png
-        label3D/cam_front_center/*.json
+    A2D2 dataset loader for directory structures like:
+
+        camera_lidar_semantic_bboxes/
+          20180807_145028/
+            camera/cam_front_center/*.png
+            lidar/cam_front_center/*.npz
+            label/cam_front_center/*.png
+            label3D/cam_front_center/*.json
+
+    Loads:
+        - Lidar point clouds (npz)
+        - Camera images or precomputed camera tokens
+        - Semantic segmentation masks
+        - 3D bounding boxes
     """
 
-    def __init__(self, root, use_cam_tokens=False, transform=None):
+    def __init__(
+        self,
+        root: str | Path,
+        use_cam_tokens: bool = False,
+        transform=None,
+        sub_name: str = "cam_front_center",
+        num_lidar_points: int = 10_000,
+    ) -> None:
+        super().__init__()
+
         self.root = Path(root)
         self.use_cam_tokens = use_cam_tokens
         self.transform = transform
 
-        self._sub_name = "cam_front_center"
-        self._num_lidar_points = 10_000
-        self._img_to_tensor = transforms.ToTensor()
+        self.sub_name = sub_name
+        self.num_lidar_points = num_lidar_points
+        self.to_tensor = transforms.ToTensor()
 
-        self.samples = []
+        # ------------------------------------------------------------
+        # Build sample index
+        # ------------------------------------------------------------
+        self.samples: list[tuple[str, str]] = []
+
         for folder in sorted(self.root.iterdir()):
             if not folder.is_dir():
                 continue
-            lidar_dir = folder / "lidar" / self._sub_name
+
+            lidar_dir = folder / "lidar" / self.sub_name
             for file in sorted(lidar_dir.glob("*.npz")):
+                # Example filename:
+                #   20180807_145028_lidar_frontcenter_000000123.npz
+                # → base = 000000123
                 base = file.name.replace("_lidar_frontcenter_", "_")
                 self.samples.append((folder.name, base))
 
-    def __len__(self):
+    def __len__(self) -> int:
         return len(self.samples)
 
+    # ------------------------------------------------------------
+    # Utility
+    # ------------------------------------------------------------
     @staticmethod
-    def _find_only_file_with_ext(directory, ext):
+    def _find_only_file_with_ext(directory: Path, ext: str) -> Path:
         files = list(directory.glob(f"*.{ext}"))
         if len(files) != 1:
             raise ValueError(f"Expected exactly one .{ext} file in {directory}, found {len(files)}")
         return files[0]
 
-    def load_lidar(self, folder, base):
-        path = self._find_only_file_with_ext(self.root / folder / "lidar" / self._sub_name, "npz")
-        points = np.load(path)["points"]
-        reflectance = np.load(path)["reflectance"]
-        timestamp = np.load(path)["timestamp"]
-        arr = np.concatenate([points, reflectance[:, None], timestamp[:, None]], axis=1)
-        logging.error(f"Loaded LIDAR from {path} with shape {arr.shape}")
-        num_points = min(arr.shape[0], self._num_lidar_points)
-        pad = np.zeros((self._num_lidar_points, arr.shape[1]), dtype=arr.dtype)
-        pad[:num_points] = arr[:num_points]
+    # ------------------------------------------------------------
+    # Loaders
+    # ------------------------------------------------------------
+    def load_lidar(self, folder: str, base: str) -> torch.Tensor:
+        path = self._find_only_file_with_ext(self.root / folder / "lidar" / self.sub_name, "npz")
 
-        return torch.tensor(pad, dtype=torch.float32)
+        data = np.load(path)
+        points = data["points"]
+        reflectance = data["reflectance"][:, None]
+        timestamp = data["timestamp"][:, None]
 
-    def load_camera(self, folder, base):
+        arr = np.concatenate([points, reflectance, timestamp], axis=1)
+        logging.debug(f"Loaded LIDAR from {path} with shape {arr.shape}")
+
+        # Pad or truncate to fixed size
+        num = min(arr.shape[0], self.num_lidar_points)
+        padded = np.zeros((self.num_lidar_points, arr.shape[1]), dtype=arr.dtype)
+        padded[:num] = arr[:num]
+
+        return torch.tensor(padded, dtype=torch.float32)
+
+    def load_camera(self, folder: str, base: str) -> torch.Tensor:
         if self.use_cam_tokens:
-            path = self._find_only_file_with_ext(self.root / folder / "camera_tokens" / self._sub_name, "npz")
+            path = self._find_only_file_with_ext(self.root / folder / "camera_tokens" / self.sub_name, "npz")
             arr = np.load(path)
             return torch.tensor(arr, dtype=torch.float32)
-        else:
-            path = self._find_only_file_with_ext(self.root / folder / "camera" / self._sub_name, "png")
-            img = Image.open(path).convert("RGB")
-            return self._img_to_tensor(img)  # now it's a tensor (3, H, W)
 
-    def load_semantics(self, folder, base):
-        path = self._find_only_file_with_ext(self.root / folder / "label" / self._sub_name, "png")
+        path = self._find_only_file_with_ext(self.root / folder / "camera" / self.sub_name, "png")
+        img = Image.open(path).convert("RGB")
+        return self.to_tensor(img)
+
+    def load_semantics(self, folder: str, base: str) -> torch.Tensor:
+        path = self._find_only_file_with_ext(self.root / folder / "label" / self.sub_name, "png")
         arr = np.array(Image.open(path))
         return torch.tensor(arr, dtype=torch.long).unsqueeze(0)
 
-    def load_boxes(self, folder, base):
-        path = self._find_only_file_with_ext(self.root / folder / "label3D" / self._sub_name, "json")
+    def load_boxes(self, folder: str, base: str) -> torch.Tensor:
+        path = self._find_only_file_with_ext(self.root / folder / "label3D" / self.sub_name, "json")
+
         with open(path, "r") as f:
             data = json.load(f)
 
@@ -104,7 +129,10 @@ class A2D2Dataset(Dataset):
 
         return torch.tensor(boxes, dtype=torch.float32)
 
-    def __getitem__(self, idx):
+    # ------------------------------------------------------------
+    # Main API
+    # ------------------------------------------------------------
+    def __getitem__(self, idx: int) -> dict:
         folder, base = self.samples[idx]
 
         points = self.load_lidar(folder, base)
@@ -112,7 +140,12 @@ class A2D2Dataset(Dataset):
         semantics = self.load_semantics(folder, base)
         boxes = self.load_boxes(folder, base)
 
-        sample = {"points": points, "cam_tokens": cam, "semantics": semantics, "gt_boxes": boxes}
+        sample = {
+            "points": points,
+            "cam_tokens": cam,
+            "semantics": semantics,
+            "gt_boxes": boxes,
+        }
 
         if self.transform:
             sample = self.transform(sample)
