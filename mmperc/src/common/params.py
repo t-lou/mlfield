@@ -16,6 +16,16 @@ X_RANGE: tuple[float, float] = (-50.0, 50.0)  # forward/backward
 Y_RANGE: tuple[float, float] = (-50.0, 50.0)  # left/right
 Z_RANGE: tuple[float, float] = (-5.0, 3.0)  # vertical range
 
+# Combined point cloud range (x_min, y_min, z_min, x_max, y_max, z_max)
+PC_RANGE = (
+    X_RANGE[0],
+    Y_RANGE[0],
+    Z_RANGE[0],
+    X_RANGE[1],
+    Y_RANGE[1],
+    Z_RANGE[1],
+)
+
 # -----------------------------
 # Voxel size (meters)
 # -----------------------------
