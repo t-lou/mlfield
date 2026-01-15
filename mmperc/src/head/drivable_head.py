@@ -3,6 +3,7 @@ import torch
 import torch.nn as nn
 
 
+# Note: This Head is dummy and probably not doable with the available data.
 class DrivableAreaHead(nn.Module):
     """
     Lightweight drivable-area segmentation head.
