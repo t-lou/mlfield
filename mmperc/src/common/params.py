@@ -27,20 +27,27 @@ PC_RANGE = (
 )
 
 # -----------------------------
-# Voxel size (meters)
-# -----------------------------
-# (vx, vy, vz)
-VOXEL_SIZE: tuple[float, float, float] = (0.32, 0.32, 8.0)
-
-# -----------------------------
 # Derived BEV grid resolution
 # -----------------------------
 # BEV_W = (x_max - x_min) / voxel_size_x
 # BEV_H = (y_max - y_min) / voxel_size_y
 # These define the spatial resolution of the BEV feature map.
 # -----------------------------
-BEV_W: int = int((X_RANGE[1] - X_RANGE[0]) / VOXEL_SIZE[0])
-BEV_H: int = int((Y_RANGE[1] - Y_RANGE[0]) / VOXEL_SIZE[1])
+BEV_H = 156
+BEV_W = 156
+
+# backbone downsampling factor
+BACKBONE_STRIDE = 2
+
+# -----------------------------
+# Voxel size (meters)
+# -----------------------------
+# (vx, vy, vz)
+VOXEL_SIZE = (
+    (X_RANGE[1] - X_RANGE[0]) / BEV_W,
+    (Y_RANGE[1] - Y_RANGE[0]) / BEV_H,
+    Z_RANGE[1] - Z_RANGE[0],  # vz (full height, pillar)
+)
 
 IMAGE_SCALE = 0.25  # Downsampling factor for camera images
 

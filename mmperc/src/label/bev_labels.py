@@ -59,7 +59,7 @@ def generate_bev_labels_bbox2d(
     reg = torch.zeros((B, 6, bev_h, bev_w), dtype=torch.float32)
     mask = torch.zeros((B, 1, bev_h, bev_w), dtype=torch.float32)
 
-    vx, vy = voxel_size
+    vx, vy, _ = voxel_size
     x_min, y_min = pc_range[0], pc_range[1]
 
     for b in range(B):

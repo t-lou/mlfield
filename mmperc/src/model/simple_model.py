@@ -1,57 +1,102 @@
+import torch
 import torch.nn as nn
 from common.utils import rescale_image
 from encoder.tiny_camera_encoder import TinyCameraEncoder
 from encoder_3d.point_pillar_bev import PointPillarBEV
 from fusion.futr_fusion import FuTrFusionBlock
-from head.drivable_head import DrivableAreaHead
 from torch import Tensor
 
 
 class SimpleModel(nn.Module):
     """
-    Full multimodal model:
+    Multimodal BEV detection model:
     - Lidar → BEV feature map
     - Camera → token embeddings
     - Cross-attention fusion
-    - Drivable area prediction head
+    - BEV detection heads (heatmap + regression)
     """
 
     def __init__(self, bev_channels: int = 128) -> None:
         super().__init__()
 
-        # 3D lidar → BEV feature map
-        self.lidar_encoder = PointPillarBEV()
+        # ---------------------------------------------------------
+        # 1. Lidar encoder → BEV feature map
+        # ---------------------------------------------------------
+        self.lidar_encoder = PointPillarBEV()  # (B, C, H, W)
 
-        # RGB → camera tokens (B, N_cam, bev_channels)
-        self.cam_encoder = TinyCameraEncoder()
+        # ---------------------------------------------------------
+        # 2. Camera encoder → token embeddings
+        # ---------------------------------------------------------
+        self.cam_encoder = TinyCameraEncoder()  # (B, N_cam, C)
 
-        # BEV–camera fusion block
+        # ---------------------------------------------------------
+        # 3. Fusion block (BEV <-> camera tokens)
+        # ---------------------------------------------------------
         self.fusion = FuTrFusionBlock()
 
-        # Final segmentation head
-        self.head = DrivableAreaHead()
+        # ---------------------------------------------------------
+        # 4. Detection heads
+        # ---------------------------------------------------------
 
-    def forward(self, points: Tensor, images: Tensor) -> Tensor:
+        # Heatmap head (CenterNet-style)
+        # Predicts object centers: (B, 1, H, W)
+        self.heatmap_head = nn.Sequential(
+            nn.Conv2d(bev_channels, bev_channels, kernel_size=3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(bev_channels, 1, kernel_size=1),
+        )
+
+        # Regression head
+        # Predicts: dx, dy, log(w), log(l), sin(yaw), cos(yaw)
+        # Shape: (B, 6, H, W)
+        self.reg_head = nn.Sequential(
+            nn.Conv2d(bev_channels, bev_channels, kernel_size=3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(bev_channels, 6, kernel_size=1),
+        )
+
+    def forward(self, points: Tensor, images: Tensor) -> dict:
         """
         Args:
             points: (B, N, 4) lidar point cloud
             images: (B, 3, H, W) RGB camera images
 
         Returns:
-            mask: (B, 1, H_bev, W_bev) drivable area prediction
+            dict with:
+                "heatmap": (B, 1, H_bev, W_bev)
+                "reg":     (B, 6, H_bev, W_bev)
         """
 
-        # Lidar → BEV feature map
-        bev: Tensor = self.lidar_encoder(points)  # (B, 128, H_bev, W_bev)
+        # ---------------------------------------------------------
+        # 1. Lidar → BEV feature map
+        # ---------------------------------------------------------
+        bev: Tensor = self.lidar_encoder(points)  # (B, C, H, W)
 
-        # Camera → tokens
-        images = rescale_image(images)  # Rescale if needed
-        cam_tokens: Tensor = self.cam_encoder(images)  # (B, N_cam, 128)
+        # ---------------------------------------------------------
+        # 2. Camera → tokens
+        # ---------------------------------------------------------
+        images = rescale_image(images)
+        cam_tokens: Tensor = self.cam_encoder(images)  # (B, N_cam, C)
 
-        # Cross-attention fusion
-        bev_fused: Tensor = self.fusion(bev, cam_tokens)  # (B, 128, H_bev, W_bev)
+        # ---------------------------------------------------------
+        # 3. BEV–camera fusion
+        # ---------------------------------------------------------
+        bev_fused: Tensor = self.fusion(bev, cam_tokens)  # (B, C, H, W)
 
-        # Segmentation head
-        mask: Tensor = self.head(bev_fused)
+        # ---------------------------------------------------------
+        # 4. Detection heads
+        # ---------------------------------------------------------
 
-        return mask
+        # Heatmap prediction (sigmoid → probability)
+        heatmap = torch.sigmoid(self.heatmap_head(bev_fused))
+
+        # Regression prediction (raw values)
+        reg = self.reg_head(bev_fused)
+
+        # ---------------------------------------------------------
+        # 5. Return multi-task outputs
+        # ---------------------------------------------------------
+        return {
+            "heatmap": heatmap,
+            "reg": reg,
+        }
