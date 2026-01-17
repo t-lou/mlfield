@@ -27,7 +27,7 @@ def train_one_epoch(model, dataloader, optimizer, device):
 
         # 3. Compute losses
         loss_hm = focal_loss(heatmap_pred, heatmap_gt)
-        loss_reg = l1_loss(reg_pred * mask_gt, reg_gt * mask_gt)
+        loss_reg = l1_loss(reg_pred, reg_gt, mask_gt)
 
         loss = loss_hm + loss_reg
 

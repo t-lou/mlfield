@@ -1,3 +1,4 @@
+import common.params as params
 import torch.nn as nn
 from torch import Tensor
 
@@ -48,7 +49,7 @@ class TinyBEVBackbone(nn.Module):
 
         # Spatial downsampling + channel expansion
         self.down = nn.Sequential(
-            nn.Conv2d(mid_channels, out_channels, kernel_size=3, stride=2, padding=1),
+            nn.Conv2d(mid_channels, out_channels, kernel_size=3, stride=params.BACKBONE_STRIDE, padding=1),
             nn.BatchNorm2d(out_channels),
             nn.ReLU(inplace=True),
         )

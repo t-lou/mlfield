@@ -43,9 +43,7 @@ def draw_gaussian(heatmap: torch.Tensor, cx: int, cy: int, radius: int):
     heatmap[hy0:hy1, hx0:hx1] = torch.max(heatmap[hy0:hy1, hx0:hx1], gaussian[gy0:gy1, gx0:gx1])
 
 
-def generate_bev_labels_bbox2d(
-    gt_boxes, bev_h=params.BEV_H, bev_w=params.BEV_W, voxel_size=params.VOXEL_SIZE, pc_range=params.PC_RANGE
-):
+def generate_bev_labels_bbox2d(gt_boxes):
     """
     gt_boxes: list of tensors, each (N, 7) with [x, y, z, w, l_, h, yaw]
     Returns:
@@ -53,6 +51,10 @@ def generate_bev_labels_bbox2d(
         reg:     (B, 6, H, W)
         mask:    (B, 1, H, W)
     """
+    bev_h = params.BEV_H // params.BACKBONE_STRIDE
+    bev_w = params.BEV_W // params.BACKBONE_STRIDE
+    voxel_size = params.VOXEL_SIZE
+    pc_range = params.PC_RANGE
 
     B = len(gt_boxes)
     heatmap = torch.zeros((B, 1, bev_h, bev_w), dtype=torch.float32)
