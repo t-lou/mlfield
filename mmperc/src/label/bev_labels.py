@@ -53,6 +53,7 @@ def generate_bev_labels_bbox2d(gt_boxes):
     """
     bev_h = params.BEV_H // params.BACKBONE_STRIDE
     bev_w = params.BEV_W // params.BACKBONE_STRIDE
+    stride = float(params.BACKBONE_STRIDE)
     voxel_size = params.VOXEL_SIZE
     pc_range = params.PC_RANGE
 
@@ -68,11 +69,16 @@ def generate_bev_labels_bbox2d(gt_boxes):
         boxes = gt_boxes[b]  # (N, 7)
 
         for box in boxes:
+            if box.abs().sum() == 0:
+                continue
+
             x, y, z, w, l_, h, yaw = box.tolist()
 
             # Convert world coords → BEV grid
-            ix = int((x - x_min) / vx)
-            iy = int((y - y_min) / vy)
+            gx = (x - x_min) / (vx * stride)
+            gy = (y - y_min) / (vy * stride)
+            ix = int(gx)
+            iy = int(gy)
 
             if ix < 0 or ix >= bev_w or iy < 0 or iy >= bev_h:
                 continue

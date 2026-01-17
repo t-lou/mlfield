@@ -34,6 +34,7 @@ class A2D2Dataset(Dataset):
         transform=None,
         sub_name: str = "cam_front_center",
         num_lidar_points: int = 10_000,
+        num_gt_boxes: int = 200,
     ) -> None:
         super().__init__()
 
@@ -43,6 +44,7 @@ class A2D2Dataset(Dataset):
 
         self.sub_name = sub_name
         self.num_lidar_points = num_lidar_points
+        self.num_gt_boxes = num_gt_boxes
         self.to_tensor = transforms.ToTensor()
 
         # ------------------------------------------------------------
@@ -130,12 +132,11 @@ class A2D2Dataset(Dataset):
 
             boxes.append(center + size + [yaw])
 
-        max_num_boxes = 200
-        if len(boxes) > max_num_boxes:
-            logging.warning(f"Truncating {len(boxes)} boxes to {max_num_boxes} boxes")
-            boxes = boxes[:max_num_boxes]
+        if len(boxes) > self.num_gt_boxes:
+            logging.warning(f"Truncating {len(boxes)} boxes to {self.num_gt_boxes} boxes")
+            boxes = boxes[: self.num_gt_boxes]
         else:
-            boxes += [[0.0] * 7] * (max_num_boxes - len(boxes))
+            boxes += [[0.0] * 7] * (self.num_gt_boxes - len(boxes))
 
         if not boxes:
             return torch.zeros((0, 7), dtype=torch.float32)
