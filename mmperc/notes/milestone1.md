@@ -28,7 +28,7 @@ The system follows a simple but extensible design:
 - **Cross‑modal fusion** (FuTr‑style attention)  
 - **Detection heads** → heatmap + regression
 
-`[Anscheinend war das Ergebnis nicht sicher anzuzeigen. Lassen Sie uns die Dinge ändern und etwas anderes ausprobieren!]`
+![Start](./imgs/milestone1_futr.png)
 
 ---
 
@@ -37,7 +37,7 @@ The system follows a simple but extensible design:
 Training was performed on the **A2D2‑preview** subset (10 frames).  
 Below is a comparison between an early epoch and epoch 50, showing how the predicted heatmap becomes sharper and more aligned with the ground truth.
 
-`[Anscheinend war das Ergebnis nicht sicher anzuzeigen. Lassen Sie uns die Dinge ändern und etwas anderes ausprobieren!]`
+![Start](./imgs/milestone1_featuremap.png)
 
 ---
 
