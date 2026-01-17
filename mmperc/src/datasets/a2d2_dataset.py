@@ -112,17 +112,30 @@ class A2D2Dataset(Dataset):
         return torch.tensor(arr, dtype=torch.long).unsqueeze(0)
 
     def load_boxes(self, folder: str, base: str) -> torch.Tensor:
-        path = self._find_only_file_with_ext(self.root / folder / "label3D" / self.sub_name, "json")
+        path = self._find_only_file_with_ext(
+            self.root / folder / "label3D" / self.sub_name,
+            "json",
+        )
 
         with open(path, "r") as f:
             data = json.load(f)
 
         boxes = []
-        for obj in data.get("objects", []):
-            center = obj["center"]
-            size = obj["size"]
-            yaw = obj["rotation"]
+
+        # data is a dict: {"box_0": {...}, "box_1": {...}, ...}
+        for obj in data.values():
+            center = obj["center"]  # [x, y, z]
+            size = obj["size"]  # [dx, dy, dz]
+            yaw = obj.get("rot_angle", 0.0)  # fallback if missing
+
             boxes.append(center + size + [yaw])
+
+        max_num_boxes = 200
+        if len(boxes) > max_num_boxes:
+            logging.warning(f"Truncating {len(boxes)} boxes to {max_num_boxes} boxes")
+            boxes = boxes[:max_num_boxes]
+        else:
+            boxes += [[0.0] * 7] * (max_num_boxes - len(boxes))
 
         if not boxes:
             return torch.zeros((0, 7), dtype=torch.float32)
