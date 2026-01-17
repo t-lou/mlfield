@@ -1,8 +1,8 @@
 import torch
 import torch.nn as nn
 from common.utils import rescale_image
+from encoder.point_pillar_bev import PointPillarBEV
 from encoder.tiny_camera_encoder import TinyCameraEncoder
-from encoder_3d.point_pillar_bev import PointPillarBEV
 from fusion.futr_fusion import FuTrFusionBlock
 from torch import Tensor
 
