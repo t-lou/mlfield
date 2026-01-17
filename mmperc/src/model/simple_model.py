@@ -70,7 +70,7 @@ class SimpleModel(nn.Module):
         # ---------------------------------------------------------
         # 1. Lidar → BEV feature map
         # ---------------------------------------------------------
-        bev: Tensor = self.lidar_encoder(points)  # (B, C, H, W)
+        lidar_token: Tensor = self.lidar_encoder(points)  # (B, C, H, W)
 
         # ---------------------------------------------------------
         # 2. Camera → tokens
@@ -81,7 +81,7 @@ class SimpleModel(nn.Module):
         # ---------------------------------------------------------
         # 3. BEV–camera fusion
         # ---------------------------------------------------------
-        bev_fused: Tensor = self.fusion(bev, cam_tokens)  # (B, C, H, W)
+        bev_fused: Tensor = self.fusion(lidar_token, cam_tokens)  # (B, C, H, W)
 
         # ---------------------------------------------------------
         # 4. Detection heads
