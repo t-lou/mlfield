@@ -51,6 +51,9 @@ VOXEL_SIZE = (
 
 IMAGE_SCALE = 0.25  # Downsampling factor for camera images
 
+# Whether to activate debug plotting
+DEBUG_PLOT_ON = True
+
 # Optional: print for debugging when running this file directly
 if __name__ == "__main__":
     print(f"BEV grid resolution: H={BEV_H}, W={BEV_W}")

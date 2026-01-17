@@ -1,5 +1,8 @@
 import torch
 import torch.nn.functional as F
+from common.debug_ploter import DebugPloter
+
+G_DEBUG_PLOTER = DebugPloter()
 
 
 def focal_loss(pred, gt, alpha=2.0, beta=4.0):
@@ -7,7 +10,8 @@ def focal_loss(pred, gt, alpha=2.0, beta=4.0):
     pred: (B, 1, H, W) after sigmoid
     gt:   (B, 1, H, W) with Gaussian peaks
     """
-    assert pred.shape == gt.shape
+    G_DEBUG_PLOTER.export_heatmap_debug(pred, gt)
+    assert pred.shape == gt.shape, f"pred shape {pred.shape} != gt shape {gt.shape}"
     pos_inds = gt.eq(1).float()
     neg_inds = gt.lt(1).float()
 
