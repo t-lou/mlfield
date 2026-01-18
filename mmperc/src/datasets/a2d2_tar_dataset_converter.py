@@ -28,203 +28,148 @@ class A2D2TarDatasetConverter:
         self._num_lidar_points = num_lidar_points
         self._num_gt_boxes = num_gt_boxes
 
-    def list_timestamps(self):
-        """
-        Find all timestamps under:
-            camera_lidar_semantic_bboxes/<timestamp>/
-        """
-        timestamps = set()
+        # cache member names for faster lookup on WSL
+        self._members = {m.name for m in self.tar.getmembers()}
 
-        for member in self.tar.getmembers():
-            p = PurePosixPath(member.name)
+    def close(self):
+        self.tar.close()
 
-            # Expect: camera_lidar_semantic_bboxes/<timestamp>/...
-            if len(p.parts) >= 2 and p.parts[0] == self._dataset_type:
-                timestamps.add(p.parts[1])
-
-        return sorted(timestamps)
-
-    def find_fc_files(self):
+    def find_fc_files(self) -> list[str]:
         fc_frames = []
-
-        for member in self.tar.getmembers():
-            p = PurePosixPath(member.name)
-
+        for name in self._members:
+            p = PurePosixPath(name)
             if len(p.parts) >= 4:
                 sensor_type, cam_name = p.parts[2], p.parts[3]
-
                 if (
                     sensor_type == self._root_parsing
                     and cam_name == self._name
                     and p.parts[-1].lower().endswith(".png")
                 ):
-                    fc_frames.append(member.name)
-
+                    fc_frames.append(name)
         return fc_frames
 
-    def load_lidar(self, path: PurePosixPath) -> np.ndarray:
-        # Convert PurePosixPath → string for tarfile
-        path_str = str(path)
-
-        # Read raw bytes from tar
-        fileobj = self.tar.extractfile(path_str)
+    def load_img(self, path: PurePosixPath, mode: str) -> np.ndarray:
+        fileobj = self.tar.extractfile(str(path))
         if fileobj is None:
-            raise FileNotFoundError(f"LIDAR file {path_str} not found in tar")
+            raise FileNotFoundError(f"Image file {path} not found in tar")
+        img = Image.open(io.BytesIO(fileobj.read())).convert(mode)
+        return np.array(img)
 
-        # Load npz from in-memory buffer
+    def load_lidar(self, path: PurePosixPath) -> np.ndarray:
+        fileobj = self.tar.extractfile(str(path))
+        if fileobj is None:
+            raise FileNotFoundError(f"LIDAR file {path} not found in tar")
+
         data = np.load(io.BytesIO(fileobj.read()))
-
         points = data["points"]
         reflectance = data["reflectance"][:, None]
         timestamp = data["timestamp"][:, None]
 
         arr = np.concatenate([points, reflectance, timestamp], axis=1)
-        logging.debug(f"Loaded LIDAR from {path_str} with shape {arr.shape}")
+        logging.debug(f"Loaded LIDAR from {path} with shape {arr.shape}")
 
-        # Pad or truncate to fixed size
-        num = min(arr.shape[0], self._num_lidar_points)
         padded = np.zeros((self._num_lidar_points, arr.shape[1]), dtype=arr.dtype)
-        padded[:num] = arr[:num]
-
+        n = min(arr.shape[0], self._num_lidar_points)
+        padded[:n] = arr[:n]
         return padded
 
-    def load_img(self, path: PurePosixPath) -> np.ndarray:
-        path_str = str(path)
-
-        fileobj = self.tar.extractfile(path_str)
-        if fileobj is None:
-            raise FileNotFoundError(f"Camera file {path_str} not found in tar")
-
-        img = Image.open(io.BytesIO(fileobj.read())).convert("RGB")
-
-        # Convert PIL → NumPy
-        return np.array(img)
-
     def load_boxes(self, path: PurePosixPath) -> np.ndarray:
-        path_str = str(path)
-
-        # Read raw bytes from tar
-        fileobj = self.tar.extractfile(path_str)
+        fileobj = self.tar.extractfile(str(path))
         if fileobj is None:
-            raise FileNotFoundError(f"3D box file {path_str} not found in tar")
+            raise FileNotFoundError(f"3D box file {path} not found in tar")
 
-        # Load JSON from in-memory bytes
         data = json.load(io.BytesIO(fileobj.read()))
-
         boxes = []
 
-        # data is a dict: {"box_0": {...}, "box_1": {...}, ...}
         for obj in data.values():
             center = obj["center"]  # [x, y, z]
             size = obj["size"]  # [dx, dy, dz]
-            yaw = obj.get("rot_angle", 0.0)  # fallback if missing
-
-            # center + size + [yaw] → 7 numbers
+            yaw = obj.get("rot_angle", 0.0)
             boxes.append(center + size + [yaw])
 
-        # Pad or truncate to fixed size
-        if len(boxes) > self._num_gt_boxes:
-            logging.warning(f"Truncating {len(boxes)} boxes to {self._num_gt_boxes} boxes")
-            boxes = boxes[: self._num_gt_boxes]
-        else:
-            # pad with zeros
-            boxes += [[0.0] * 7] * (self._num_gt_boxes - len(boxes))
+        padded = np.zeros((self._num_gt_boxes, 7), dtype=np.float32)
+        n = min(len(boxes), self._num_gt_boxes)
+        if n > 0:
+            padded[:n] = np.array(boxes[:n], dtype=np.float32)
+        return padded
 
-        # If no boxes at all
-        if not boxes:
-            return np.zeros((0, 7), dtype=np.float32)
-
-        return np.array(boxes, dtype=np.float32)
-
-    def shuffle_and_group_pngs(self):
-        """
-        Shuffle and group the front center PNG files into groups of given size.
-        """
+    def shuffle_and_group_pngs(self) -> list[list[str]]:
         fc_frames = self.find_fc_files()
         random.shuffle(fc_frames)
 
         grouped = [fc_frames[i : i + self._group_size] for i in range(0, len(fc_frames), self._group_size)]
-        if len(grouped[-1]) < self._group_size:
-            grouped = grouped[:-1]  # drop last incomplete group
-
+        if grouped and len(grouped[-1]) < self._group_size:
+            grouped = grouped[:-1]
         return grouped
 
-    def proceed_one_frame(self, fc_path: str) -> dict:
-        parts = PurePosixPath(fc_path).parts
+    def _build_paths(self, fc_path: str) -> dict:
+        p = PurePosixPath(fc_path)
+        parts = p.parts
 
-        def _conv_lidar() -> PurePosixPath:
-            parts_lidar = list(parts)
-            parts_lidar[1:] = [part.replace("camera", "lidar") for part in parts_lidar[1:]]
-            return PurePosixPath(*parts_lidar).with_suffix(".npz")
-
-        def _conv_semantic() -> PurePosixPath:
-            parts_semantic = list(parts)
-            parts_semantic[1:] = [part.replace("camera", "label") for part in parts_semantic[1:]]
-            return PurePosixPath(*parts_semantic).with_suffix(".png")
-
-        def _conv_bboxes() -> PurePosixPath:
-            parts_bboxes = list(parts)
-            parts_bboxes[1:] = [part.replace("camera", "label3D") for part in parts_bboxes[1:]]
-            return PurePosixPath(*parts_bboxes).with_suffix(".json")
+        def conv(kind: str) -> PurePosixPath:
+            new = list(parts)
+            new[1:] = [part.replace("camera", kind) for part in new[1:]]
+            return PurePosixPath(*new)
 
         paths = {
-            "camera": fc_path,
-            "lidar": _conv_lidar(),
-            "semantics": _conv_semantic(),
-            "gt_boxes": _conv_bboxes(),
+            "camera": p,
+            "lidar": conv("lidar").with_suffix(".npz"),
+            "semantics": conv("label").with_suffix(".png"),
+            "gt_boxes": conv("label3D").with_suffix(".json"),
         }
 
-        for path in paths.values():
-            try:
-                self.tar.getmember(str(path))  # <-- FIX HERE
-            except KeyError:
-                raise FileNotFoundError(f"File {path} not found in tar archive.")
+        for k, v in paths.items():
+            if str(v) not in self._members:
+                raise FileNotFoundError(f"{k} file {v} not found in tar")
+        return paths
+
+    def proceed_one_frame(self, fc_path: str) -> dict:
+        paths = self._build_paths(fc_path)
 
         points = self.load_lidar(paths["lidar"])
-        cam = self.load_img(paths["camera"])
-        semantics = self.load_img(paths["semantics"])
+        cam = self.load_img(paths["camera"], mode="RGB")
+        semantics = self.load_img(paths["semantics"], mode="L")  # label IDs
         boxes = self.load_boxes(paths["gt_boxes"])
 
-        data = {
-            "points": points,
-            "camera": cam,
-            "semantics": semantics,
-            "gt_boxes": boxes,
+        return {
+            "points": points,  # (num_lidar_points, C)
+            "camera": cam,  # (H, W, 3)
+            "semantics": semantics,  # (H, W)
+            "gt_boxes": boxes,  # (num_gt_boxes, 7)
         }
-        return data
 
-    def proceed_one_bunch(self, fc_paths: list[str]):
+    def proceed_one_bunch(self, fc_paths: list[str]) -> dict:
         assert len(fc_paths) == self._group_size, "Input group size does not match expected group size."
-        frames = []
-        for fc_path in fc_paths:
-            frame = self.proceed_one_frame(fc_path)
-            frames.append(frame)
 
-        return frames
+        frames = [self.proceed_one_frame(p) for p in fc_paths]
 
-    def save_bunch(self, frames, output_dir, idx):
-        """
-        Save a list of frame dicts into a single NPZ file.
-        Each frame contains:
-            - points: (N, 5)
-            - camera: (H, W, 3)
-            - semantics: (H, W, 3)
-            - gt_boxes: (num_gt_boxes, 7)
-        """
+        # stack for compact, fast loading
+        points = np.stack([f["points"] for f in frames], axis=0)
+        camera = np.stack([f["camera"] for f in frames], axis=0)
+        semantics = np.stack([f["semantics"] for f in frames], axis=0)
+        gt_boxes = np.stack([f["gt_boxes"] for f in frames], axis=0)
 
-        # Flatten into keyword arguments for np.savez
-        npz_dict = {}
+        return {
+            "points": points,  # (B, num_lidar_points, C)
+            "camera": camera,  # (B, H, W, 3)
+            "semantics": semantics,  # (B, H, W)
+            "gt_boxes": gt_boxes,  # (B, num_gt_boxes, 7)
+        }
 
-        for i, frame in enumerate(frames):
-            npz_dict[f"points_{i:04d}"] = frame["points"]
-            npz_dict[f"camera_{i:04d}"] = frame["camera"]
-            npz_dict[f"semantics_{i:04d}"] = frame["semantics"]
-            npz_dict[f"gt_boxes_{i:04d}"] = frame["gt_boxes"]
+    def save_bunch(self, batch: dict, output_dir: Path, idx: int) -> Path:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        out_path = output_dir / f"a2d2_{idx:04d}.npz"
 
-        out_path = str(output_dir / f"a2d2_{idx:04d}.npz")
-        np.savez(out_path, **npz_dict)
+        # compressed for disk + WSL friendliness
+        np.savez_compressed(
+            out_path,
+            points=batch["points"],
+            camera=batch["camera"],
+            semantics=batch["semantics"],
+            gt_boxes=batch["gt_boxes"],
+        )
 
-        logging.info(f"Saved {out_path} with {len(frames)} frames")
+        logging.info(f"Saved {out_path} with batch size {batch['points'].shape[0]}")
         return out_path
 
 
