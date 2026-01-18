@@ -142,7 +142,9 @@ def visualize_npz_frame(npz_path: Path, frame_idx: int):
 
     # Extract frame
     points = npz["points"][frame_idx][:, :3]  # XYZ only
+    points = points[~np.all(points == 0, axis=1)]  # remove zero points
     gt_boxes = npz["gt_boxes"][frame_idx]
+    gt_boxes = gt_boxes[~np.all(gt_boxes == 0, axis=1)]  # remove zero boxes
 
     print(f"Loaded frame {frame_idx} from {npz_path}")
     print(f"Points shape: {points.shape}")
