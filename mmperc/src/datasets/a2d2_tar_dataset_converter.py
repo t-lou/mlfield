@@ -2,60 +2,107 @@ import io
 import json
 import logging
 import random
+import shutil
 import sys
 import tarfile
 from pathlib import Path, PurePosixPath
+from typing import Dict, List
 
 import numpy as np
 from PIL import Image
 
 
 class A2D2TarDatasetConverter:
+    """
+    Convert A2D2 tar archives into compact, batched NPZ files.
+
+    Each batch contains:
+        - points:    (B, num_lidar_points, C)
+        - camera:    (B, H, W, 3)
+        - semantics: (B, H, W)
+        - gt_boxes:  (B, num_gt_boxes, 7)
+    """
+
     def __init__(
         self,
         tar_path: str,
         group_size: int = 200,
         num_lidar_points: int = 12_000,
         num_gt_boxes: int = 200,
-    ):
+    ) -> None:
         self.tar_path = tar_path
         self.tar = tarfile.open(tar_path, "r")
 
+        # A2D2 dataset structure parameters
         self._name = "cam_front_center"
         self._root_parsing = "camera"
         self._dataset_type = "camera_lidar_semantic_bboxes"
+
+        # batching parameters
         self._group_size = group_size
         self._num_lidar_points = num_lidar_points
         self._num_gt_boxes = num_gt_boxes
 
-        # cache member names for faster lookup on WSL
+        # Cache all member names for fast lookup (important on WSL)
         self._members = {m.name for m in self.tar.getmembers()}
 
-    def close(self):
+    def close(self) -> None:
+        """Close the underlying tar file."""
         self.tar.close()
 
-    def find_fc_files(self) -> list[str]:
-        fc_frames = []
+    # ----------------------------------------------------------------------
+    # Discovery
+    # ----------------------------------------------------------------------
+
+    def find_fc_files(self) -> List[str]:
+        """
+        Find all front-center camera PNGs inside the tar.
+        """
+        fc_frames: List[str] = []
+
         for name in self._members:
             p = PurePosixPath(name)
             if len(p.parts) >= 4:
                 sensor_type, cam_name = p.parts[2], p.parts[3]
-                if (
-                    sensor_type == self._root_parsing
-                    and cam_name == self._name
-                    and p.parts[-1].lower().endswith(".png")
-                ):
+                if sensor_type == self._root_parsing and cam_name == self._name and p.suffix.lower() == ".png":
                     fc_frames.append(name)
+
         return fc_frames
 
+    def shuffle_and_group_pngs(self) -> List[List[str]]:
+        """
+        Shuffle and group front-center PNGs into fixed-size batches.
+        """
+        fc_frames = self.find_fc_files()
+        random.shuffle(fc_frames)
+
+        groups = [fc_frames[i : i + self._group_size] for i in range(0, len(fc_frames), self._group_size)]
+
+        # Drop incomplete final group
+        if groups and len(groups[-1]) < self._group_size:
+            groups = groups[:-1]
+
+        return groups
+
+    # ----------------------------------------------------------------------
+    # Loading helpers
+    # ----------------------------------------------------------------------
+
     def load_img(self, path: PurePosixPath, mode: str) -> np.ndarray:
+        """
+        Load an image from the tar and return as a NumPy array.
+        """
         fileobj = self.tar.extractfile(str(path))
         if fileobj is None:
             raise FileNotFoundError(f"Image file {path} not found in tar")
+
         img = Image.open(io.BytesIO(fileobj.read())).convert(mode)
         return np.array(img)
 
     def load_lidar(self, path: PurePosixPath) -> np.ndarray:
+        """
+        Load lidar .npz from tar, pad/truncate to fixed number of points.
+        """
         fileobj = self.tar.extractfile(str(path))
         if fileobj is None:
             raise FileNotFoundError(f"LIDAR file {path} not found in tar")
@@ -74,12 +121,15 @@ class A2D2TarDatasetConverter:
         return padded
 
     def load_boxes(self, path: PurePosixPath) -> np.ndarray:
+        """
+        Load 3D bounding boxes from JSON and pad to fixed count.
+        """
         fileobj = self.tar.extractfile(str(path))
         if fileobj is None:
             raise FileNotFoundError(f"3D box file {path} not found in tar")
 
         data = json.load(io.BytesIO(fileobj.read()))
-        boxes = []
+        boxes: List[List[float]] = []
 
         for obj in data.values():
             center = obj["center"]  # [x, y, z]
@@ -91,18 +141,17 @@ class A2D2TarDatasetConverter:
         n = min(len(boxes), self._num_gt_boxes)
         if n > 0:
             padded[:n] = np.array(boxes[:n], dtype=np.float32)
+
         return padded
 
-    def shuffle_and_group_pngs(self) -> list[list[str]]:
-        fc_frames = self.find_fc_files()
-        random.shuffle(fc_frames)
+    # ----------------------------------------------------------------------
+    # Path resolution
+    # ----------------------------------------------------------------------
 
-        grouped = [fc_frames[i : i + self._group_size] for i in range(0, len(fc_frames), self._group_size)]
-        if grouped and len(grouped[-1]) < self._group_size:
-            grouped = grouped[:-1]
-        return grouped
-
-    def _build_paths(self, fc_path: str) -> dict:
+    def _build_paths(self, fc_path: str) -> Dict[str, PurePosixPath]:
+        """
+        Given a camera PNG path, build corresponding lidar, semantic, and box paths.
+        """
         p = PurePosixPath(fc_path)
         parts = p.parts
 
@@ -118,49 +167,56 @@ class A2D2TarDatasetConverter:
             "gt_boxes": conv("label3D").with_suffix(".json"),
         }
 
-        for k, v in paths.items():
-            if str(v) not in self._members:
-                raise FileNotFoundError(f"{k} file {v} not found in tar")
+        # Validate existence
+        for key, path in paths.items():
+            if str(path) not in self._members:
+                raise FileNotFoundError(f"{key} file {path} not found in tar")
+
         return paths
 
-    def proceed_one_frame(self, fc_path: str) -> dict:
+    # ----------------------------------------------------------------------
+    # Frame and batch processing
+    # ----------------------------------------------------------------------
+
+    def proceed_one_frame(self, fc_path: str) -> Dict[str, np.ndarray]:
+        """
+        Load all modalities for a single frame.
+        """
         paths = self._build_paths(fc_path)
 
-        points = self.load_lidar(paths["lidar"])
-        cam = self.load_img(paths["camera"], mode="RGB")
-        semantics = self.load_img(paths["semantics"], mode="L")  # label IDs
-        boxes = self.load_boxes(paths["gt_boxes"])
-
         return {
-            "points": points,  # (num_lidar_points, C)
-            "camera": cam,  # (H, W, 3)
-            "semantics": semantics,  # (H, W)
-            "gt_boxes": boxes,  # (num_gt_boxes, 7)
+            "points": self.load_lidar(paths["lidar"]),
+            "camera": self.load_img(paths["camera"], mode="RGB"),
+            "semantics": self.load_img(paths["semantics"], mode="L"),
+            "gt_boxes": self.load_boxes(paths["gt_boxes"]),
         }
 
-    def proceed_one_bunch(self, fc_paths: list[str]) -> dict:
-        assert len(fc_paths) == self._group_size, "Input group size does not match expected group size."
+    def proceed_one_bunch(self, fc_paths: List[str]) -> Dict[str, np.ndarray]:
+        """
+        Load and stack a batch of frames into compact arrays.
+        """
+        assert len(fc_paths) == self._group_size, "Incorrect group size"
 
         frames = [self.proceed_one_frame(p) for p in fc_paths]
 
-        # stack for compact, fast loading
-        points = np.stack([f["points"] for f in frames], axis=0)
-        camera = np.stack([f["camera"] for f in frames], axis=0)
-        semantics = np.stack([f["semantics"] for f in frames], axis=0)
-        gt_boxes = np.stack([f["gt_boxes"] for f in frames], axis=0)
-
         return {
-            "points": points,  # (B, num_lidar_points, C)
-            "camera": camera,  # (B, H, W, 3)
-            "semantics": semantics,  # (B, H, W)
-            "gt_boxes": gt_boxes,  # (B, num_gt_boxes, 7)
+            "points": np.stack([f["points"] for f in frames], axis=0),
+            "camera": np.stack([f["camera"] for f in frames], axis=0),
+            "semantics": np.stack([f["semantics"] for f in frames], axis=0),
+            "gt_boxes": np.stack([f["gt_boxes"] for f in frames], axis=0),
         }
 
-    def save_bunch(self, batch: dict, output_dir: Path, idx: int) -> Path:
+    # ----------------------------------------------------------------------
+    # Saving
+    # ----------------------------------------------------------------------
+
+    def save_bunch(self, batch: Dict[str, np.ndarray], output_dir: Path, idx: int) -> Path:
+        """
+        Save a batch to a compressed NPZ file.
+        """
         output_dir.mkdir(parents=True, exist_ok=True)
         out_path = output_dir / f"a2d2_{idx:04d}.npz"
 
-        # compressed for disk + WSL friendliness
         np.savez_compressed(
             out_path,
             points=batch["points"],
@@ -173,27 +229,27 @@ class A2D2TarDatasetConverter:
         return out_path
 
 
-if __name__ == "__main__":
-    import shutil
-    from pathlib import Path
+# ----------------------------------------------------------------------
+# Main script
+# ----------------------------------------------------------------------
 
+if __name__ == "__main__":
     tar_path = sys.argv[1]
     output_path = Path(sys.argv[2])
 
-    # 1. If the folder exists, delete it recursively
+    # Clean output directory
     if output_path.exists():
         shutil.rmtree(output_path)
-
-    # 2. Create it recursively (including missing parents)
     output_path.mkdir(parents=True, exist_ok=True)
 
     converter = A2D2TarDatasetConverter(tar_path)
 
-    groups = converter.shuffle_and_group_pngs()
+    try:
+        groups = converter.shuffle_and_group_pngs()
 
-    # here possible truncation for testing
+        for idx, group in enumerate(groups, start=1):
+            batch = converter.proceed_one_bunch(group)
+            converter.save_bunch(batch, output_path, idx)
 
-    for idx, group in enumerate(groups):
-        frames = converter.proceed_one_bunch(group)
-        # Here you would save 'frames' to 'output_path' as needed
-        converter.save_bunch(frames, output_path, idx)
+    finally:
+        converter.close()
