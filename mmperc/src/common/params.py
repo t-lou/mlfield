@@ -12,8 +12,8 @@ BEV_CHANNELS = 128  # Number of channels in BEV feature map
 # -----------------------------
 # Lidar region of interest (meters)
 # -----------------------------
-X_RANGE: tuple[float, float] = (-50.0, 50.0)  # forward/backward
-Y_RANGE: tuple[float, float] = (-50.0, 50.0)  # left/right
+X_RANGE: tuple[float, float] = (0.0, 120.0)  # forward/backward
+Y_RANGE: tuple[float, float] = (-60.0, 60.0)  # left/right
 Z_RANGE: tuple[float, float] = (-5.0, 3.0)  # vertical range
 
 # Combined point cloud range (x_min, y_min, z_min, x_max, y_max, z_max)
