@@ -1,17 +1,10 @@
 """
-a2d2_visualizer.py
+A2D2 NPZ Visualizer
 
-A clean, extensible 3D visualizer for A2D2 LiDAR scenes.
-Supports:
-- Loading LiDAR point clouds (.npy)
-- Loading 3D bounding boxes from A2D2 JSON
-- Rendering point clouds + 3D boxes
-- Adjustable point size, line width, background color
-- Easy extension for keyboard controls or animation
+Usage:
+    python a2d2_visualizer.py batch_0001.npz  17
 """
 
-import glob
-import json
 import sys
 from pathlib import Path
 
@@ -19,111 +12,13 @@ import numpy as np
 import open3d as o3d
 
 # ================================================================
-# Utility: Find a single file by extension + optional partial name
-# ================================================================
-
-
-def find_only_file_with_ext_and_partial_name(
-    directory: Path,
-    extensions: str | list[str] | tuple[str, ...],
-    partial_name: str | list[str] | tuple[str, ...] | None = None,
-    recursive: bool = True,
-) -> Path:
-    """
-    Search for exactly one file in `directory` (optionally recursive) matching:
-      - one or more extensions
-      - optional partial name(s)
-
-    Returns:
-        Path to the unique matching file.
-
-    Raises:
-        ValueError if zero or multiple files match.
-    """
-
-    # Normalize extensions
-    if isinstance(extensions, str):
-        extensions = [extensions]
-
-    # Build glob patterns
-    patterns = [str(directory / "**" / f"*.{ext}") if recursive else str(directory / f"*.{ext}") for ext in extensions]
-
-    # Collect matching files
-    files = []
-    for pattern in patterns:
-        files.extend(glob.glob(pattern, recursive=recursive))
-
-    # Normalize partial name(s)
-    if partial_name is not None:
-        if isinstance(partial_name, str):
-            partials = [partial_name]
-        else:
-            partials = list(partial_name)
-
-        # Filter: must contain all partial substrings
-        for p in partials:
-            files = [f for f in files if p in f]
-
-    # Enforce exactly one match
-    if len(files) != 1:
-        raise ValueError(
-            f"Expected exactly one file with extensions {extensions} in {directory}, "
-            f"found {len(files)} after filtering with {partial_name}"
-        )
-
-    return Path(files[0])
-
-
-def load_lidar_points(path: Path, partial_name: str | None = None) -> np.ndarray:
-    """
-    Loads LiDAR points from either .npy or .npz.
-    Returns Nx3 XYZ points.
-    """
-
-    lidar_path = find_only_file_with_ext_and_partial_name(path, ["npy", "npz"], partial_name)
-    if lidar_path.suffix == ".npy":
-        data = np.load(lidar_path)
-        raise ValueError(
-            f"Loaded LiDAR data in single array, please check contents: shape={data.shape}, dtype={data.dtype}"
-        )
-    elif lidar_path.suffix == ".npz":
-        npz = np.load(lidar_path)
-        assert "points" in npz, f"NPZ contains keys: {[k for k in npz.files]}"
-        data = npz["points"]
-    else:
-        raise ValueError(f"Unsupported LiDAR file extension: {lidar_path.suffix}")
-
-    # Ensure Nx3
-    print(f"Loaded LiDAR data shape: {data.shape}")
-    if data.shape[1] >= 3:
-        return data[:, :3]
-
-    raise ValueError(f"Loaded LiDAR data has invalid shape {data.shape}, expected at least 3 columns")
-
-
-def load_labels(path: Path, partial_name: str | None = None) -> dict:
-    """
-    Loads the A2D2 JSON label file.
-    """
-    label_partial_name = ["label"] + ([partial_name] if partial_name else [])
-    json_path = find_only_file_with_ext_and_partial_name(path, "json", label_partial_name)
-    with open(json_path, "r") as f:
-        return json.load(f)
-
-
-# ================================================================
 # 3D Box Construction
 # ================================================================
 
 
 def make_box_from_corners(corners, color=[1, 0, 0]):
-    """
-    Create an Open3D LineSet from 8 corner points.
-    corners: list of 8 (x, y, z)
-    """
     corners = np.array(corners)
 
-    # 12 edges of a cuboid
     edges = [
         [0, 1],
         [1, 2],
@@ -143,28 +38,52 @@ def make_box_from_corners(corners, color=[1, 0, 0]):
     box.points = o3d.utility.Vector3dVector(corners)
     box.lines = o3d.utility.Vector2iVector(edges)
     box.colors = o3d.utility.Vector3dVector([color] * len(edges))
-
     return box
 
 
-def create_3d_boxes_from_labels(labels: dict) -> list[o3d.geometry.LineSet]:
+def create_3d_boxes_from_gt(gt_boxes: np.ndarray) -> list[o3d.geometry.LineSet]:
     """
-    Convert A2D2 JSON labels into Open3D LineSets.
+    Convert (num_boxes, 7) array into Open3D LineSets.
+    Format per box: [x, y, z, dx, dy, dz, yaw]
     """
     objects = []
 
-    for key, box in labels.items():
-        corners = box["3d_points"]
-        cls = box["class"]
+    for box in gt_boxes:
+        if np.allclose(box, 0):
+            continue  # padded box
 
-        # Class‑based colors
-        color = {
-            "Pedestrian": [1, 0, 0],  # red
-            "Car": [0, 1, 0],  # green
-            "Truck": [0, 0, 1],  # blue
-        }.get(cls, [1, 1, 0])  # default: yellow
+        x, y, z, dx, dy, dz, yaw = box
 
-        objects.append(make_box_from_corners(corners, color))
+        # Compute 8 corners of the oriented box
+        # A2D2 uses yaw around Z axis
+        c, s = np.cos(yaw), np.sin(yaw)
+
+        # Local corners before rotation
+        local = np.array(
+            [
+                [-dx / 2, -dy / 2, -dz / 2],
+                [dx / 2, -dy / 2, -dz / 2],
+                [dx / 2, dy / 2, -dz / 2],
+                [-dx / 2, dy / 2, -dz / 2],
+                [-dx / 2, -dy / 2, dz / 2],
+                [dx / 2, -dy / 2, dz / 2],
+                [dx / 2, dy / 2, dz / 2],
+                [-dx / 2, dy / 2, dz / 2],
+            ]
+        )
+
+        # Rotation matrix around Z
+        R = np.array(
+            [
+                [c, -s, 0],
+                [s, c, 0],
+                [0, 0, 1],
+            ]
+        )
+
+        corners = (R @ local.T).T + np.array([x, y, z])
+
+        objects.append(make_box_from_corners(corners, color=[1, 0, 0]))
 
     return objects
 
@@ -175,15 +94,6 @@ def create_3d_boxes_from_labels(labels: dict) -> list[o3d.geometry.LineSet]:
 
 
 class A2D2Visualizer3D:
-    """
-    A general-purpose 3D visualizer for LiDAR scenes.
-
-    Usage:
-        viz = LidarSceneVisualizer(point_size=3, line_width=2)
-        viz.add_geometries([pcd] + boxes)
-        viz.run()
-    """
-
     def __init__(
         self,
         window_name="A2D2 3D Viewer",
@@ -196,14 +106,12 @@ class A2D2Visualizer3D:
         self.vis = o3d.visualization.Visualizer()
         self.vis.create_window(window_name, width, height)
 
-        self.render_opt = self.vis.get_render_option()
-        self.render_opt.background_color = bg_color
-        self.render_opt.point_size = point_size
-        self.render_opt.line_width = line_width
+        opt = self.vis.get_render_option()
+        opt.background_color = bg_color
+        opt.point_size = point_size
+        opt.line_width = line_width
 
         self.geometries = []
-
-    # ---------------- Geometry Management ----------------
 
     def add(self, geom):
         self.vis.add_geometry(geom)
@@ -213,25 +121,6 @@ class A2D2Visualizer3D:
         for g in geoms:
             self.add(g)
 
-    # ---------------- Rendering Controls ----------------
-
-    def set_point_size(self, size: float):
-        self.render_opt.point_size = size
-
-    def set_line_width(self, width: float):
-        self.render_opt.line_width = width
-
-    def set_background(self, color):
-        self.render_opt.background_color = color
-
-    def update(self):
-        for g in self.geometries:
-            self.vis.update_geometry(g)
-        self.vis.poll_events()
-        self.vis.update_renderer()
-
-    # ---------------- Main Loop ----------------
-
     def run(self):
         self.vis.run()
 
@@ -240,16 +129,24 @@ class A2D2Visualizer3D:
 
 
 # ================================================================
-# High-level Scene Visualizer
+# High-level NPZ Visualizer
 # ================================================================
 
 
-def visualize_scene(path: Path, partial_name: str | None = None):
+def visualize_npz_frame(npz_path: Path, frame_idx: int):
     """
-    Loads LiDAR + labels from a directory and visualizes them.
+    Load a single frame from an NPZ chunk and visualize it.
     """
-    points = load_lidar_points(path, partial_name)
-    labels = load_labels(path, partial_name)
+
+    npz = np.load(npz_path)
+
+    # Extract frame
+    points = npz["points"][frame_idx][:, :3]  # XYZ only
+    gt_boxes = npz["gt_boxes"][frame_idx]
+
+    print(f"Loaded frame {frame_idx} from {npz_path}")
+    print(f"Points shape: {points.shape}")
+    print(f"GT boxes shape: {gt_boxes.shape}")
 
     # Build point cloud
     pcd = o3d.geometry.PointCloud()
@@ -257,7 +154,7 @@ def visualize_scene(path: Path, partial_name: str | None = None):
     pcd.paint_uniform_color([0.6, 0.6, 0.6])
 
     # Build 3D boxes
-    boxes = create_3d_boxes_from_labels(labels)
+    boxes = create_3d_boxes_from_gt(gt_boxes)
 
     # Visualize
     viz = A2D2Visualizer3D(point_size=3, line_width=2)
@@ -271,6 +168,9 @@ def visualize_scene(path: Path, partial_name: str | None = None):
 # ================================================================
 
 if __name__ == "__main__":
-    scene_path = Path(sys.argv[1])
-    assert scene_path.is_dir(), f"Provided path {scene_path} is not a directory"
-    visualize_scene(scene_path)
+    npz_path = Path(sys.argv[1])
+    frame_idx = int(sys.argv[2])
+
+    assert npz_path.is_file(), f"NPZ file not found: {npz_path}"
+
+    visualize_npz_frame(npz_path, frame_idx)
