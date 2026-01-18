@@ -1,10 +1,10 @@
 import io
+import json
 import logging
 import random
 import sys
 import tarfile
-from pathlib import PurePosixPath
-import json
+from pathlib import Path, PurePosixPath
 
 import numpy as np
 from PIL import Image
@@ -49,10 +49,6 @@ class A2D2TarDatasetConverter:
 
         for member in self.tar.getmembers():
             p = PurePosixPath(member.name)
-
-            if len(fc_frames) > 300:
-                print("Shortened for testing purposes.")
-                break  # shorten for testing, TODO remove
 
             if len(p.parts) >= 4:
                 sensor_type, cam_name = p.parts[2], p.parts[3]
@@ -198,16 +194,61 @@ class A2D2TarDatasetConverter:
         return data
 
     def proceed_one_bunch(self, fc_paths: list[str]):
-        assert len(fc_paths) == self._group_size, (self._group_size, len(fc_paths))
         assert len(fc_paths) == self._group_size, "Input group size does not match expected group size."
+        frames = []
         for fc_path in fc_paths:
-            names = self.proceed_one_frame(fc_path)
-            _ = names  # TODO: process/store the data as needed
+            frame = self.proceed_one_frame(fc_path)
+            frames.append(frame)
+
+        return frames
+
+    def save_bunch(self, frames, output_dir, idx):
+        """
+        Save a list of frame dicts into a single NPZ file.
+        Each frame contains:
+            - points: (N, 5)
+            - camera: (H, W, 3)
+            - semantics: (H, W, 3)
+            - gt_boxes: (num_gt_boxes, 7)
+        """
+
+        # Flatten into keyword arguments for np.savez
+        npz_dict = {}
+
+        for i, frame in enumerate(frames):
+            npz_dict[f"points_{i:04d}"] = frame["points"]
+            npz_dict[f"camera_{i:04d}"] = frame["camera"]
+            npz_dict[f"semantics_{i:04d}"] = frame["semantics"]
+            npz_dict[f"gt_boxes_{i:04d}"] = frame["gt_boxes"]
+
+        out_path = str(output_dir / f"a2d2_{idx:04d}.npz")
+        np.savez(out_path, **npz_dict)
+
+        logging.info(f"Saved {out_path} with {len(frames)} frames")
+        return out_path
 
 
 if __name__ == "__main__":
+    import shutil
+    from pathlib import Path
+
     tar_path = sys.argv[1]
+    output_path = Path(sys.argv[2])
+
+    # 1. If the folder exists, delete it recursively
+    if output_path.exists():
+        shutil.rmtree(output_path)
+
+    # 2. Create it recursively (including missing parents)
+    output_path.mkdir(parents=True, exist_ok=True)
+
     converter = A2D2TarDatasetConverter(tar_path)
 
     groups = converter.shuffle_and_group_pngs()
-    converter.proceed_one_bunch(groups[0])
+
+    # here possible truncation for testing
+
+    for idx, group in enumerate(groups):
+        frames = converter.proceed_one_bunch(group)
+        # Here you would save 'frames' to 'output_path' as needed
+        converter.save_bunch(frames, output_path, idx)
