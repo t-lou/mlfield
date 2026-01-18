@@ -76,12 +76,12 @@ class SimpleModel(nn.Module):
         # 2. Camera → tokens
         # ---------------------------------------------------------
         images = rescale_image(images)
-        cam_tokens: Tensor = self.cam_encoder(images)  # (B, N_cam, C)
+        camera: Tensor = self.cam_encoder(images)  # (B, N_cam, C)
 
         # ---------------------------------------------------------
         # 3. BEV–camera fusion
         # ---------------------------------------------------------
-        bev_fused: Tensor = self.fusion(lidar_token, cam_tokens)  # (B, C, H, W)
+        bev_fused: Tensor = self.fusion(lidar_token, camera)  # (B, C, H, W)
 
         # ---------------------------------------------------------
         # 4. Detection heads

@@ -1,167 +1,61 @@
-import json
-import logging
 from pathlib import Path
+from typing import Any, Dict, List, Tuple
 
 import numpy as np
 import torch
-from PIL import Image
 from torch.utils.data import Dataset
-from torchvision import transforms
 
 
 class A2D2Dataset(Dataset):
     """
-    A2D2 dataset loader for directory structures like:
+    PyTorch Dataset for loading A2D2 chunked NPZ files.
 
-        camera_lidar_semantic_bboxes/
-          20180807_145028/
-            camera/cam_front_center/*.png
-            lidar/cam_front_center/*.npz
-            label/cam_front_center/*.png
-            label3D/cam_front_center/*.json
+    Each NPZ file contains:
+        points:    (B, N, C)
+        camera:    (B, H, W, 3)
+        semantics: (B, H, W)
+        gt_boxes:  (B, M, 7)
 
-    Loads:
-        - Lidar point clouds (npz)
-        - Camera images or precomputed camera tokens
-        - Semantic segmentation masks
-        - 3D bounding boxes
+    The dataset flattens all chunks into a global index:
+        global_idx → (chunk_idx, frame_idx)
     """
 
-    def __init__(
-        self,
-        root: str | Path,
-        use_cam_tokens: bool = False,
-        transform=None,
-        sub_name: str = "cam_front_center",
-        num_lidar_points: int = 10_000,
-        num_gt_boxes: int = 200,
-    ) -> None:
-        super().__init__()
-
+    def __init__(self, root: Path):
         self.root = Path(root)
-        self.use_cam_tokens = use_cam_tokens
-        self.transform = transform
 
-        self.sub_name = sub_name
-        self.num_lidar_points = num_lidar_points
-        self.num_gt_boxes = num_gt_boxes
-        self.to_tensor = transforms.ToTensor()
+        # List of NPZ chunk files
+        self.chunk_paths: List[Path] = sorted(self.root.glob("*.npz"))
+        if not self.chunk_paths:
+            raise RuntimeError(f"No .npz files found in {self.root}")
 
-        # ------------------------------------------------------------
-        # Build sample index
-        # ------------------------------------------------------------
-        self.samples: list[tuple[str, str]] = []
-
-        for folder in sorted(self.root.iterdir()):
-            if not folder.is_dir():
-                continue
-
-            lidar_dir = folder / "lidar" / self.sub_name
-            for file in sorted(lidar_dir.glob("*.npz")):
-                # Example filename:
-                #   20180807_145028_lidar_frontcenter_000000123.npz
-                # → base = 000000123
-                base = file.name.replace("_lidar_frontcenter_", "_")
-                self.samples.append((folder.name, base))
+        # Build global index map
+        self.index_map: List[Tuple[int, int]] = []
+        for ci, path in enumerate(self.chunk_paths):
+            with np.load(path) as data:
+                num_frames = data["points"].shape[0]
+            for fi in range(num_frames):
+                self.index_map.append((ci, fi))
 
     def __len__(self) -> int:
-        return len(self.samples)
+        return len(self.index_map)
 
-    # ------------------------------------------------------------
-    # Utility
-    # ------------------------------------------------------------
-    @staticmethod
-    def _find_only_file_with_ext(directory: Path, ext: str) -> Path:
-        files = list(directory.glob(f"*.{ext}"))
-        if len(files) != 1:
-            raise ValueError(f"Expected exactly one .{ext} file in {directory}, found {len(files)}")
-        return files[0]
+    def __getitem__(self, idx: int) -> Dict[str, Any]:
+        """
+        Load a single frame from the appropriate chunk.
+        """
+        chunk_idx, frame_idx = self.index_map[idx]
+        chunk_path = self.chunk_paths[chunk_idx]
 
-    # ------------------------------------------------------------
-    # Loaders
-    # ------------------------------------------------------------
-    def load_lidar(self, folder: str, base: str) -> torch.Tensor:
-        path = self._find_only_file_with_ext(self.root / folder / "lidar" / self.sub_name, "npz")
+        with np.load(chunk_path) as data:
+            # Convert to tensors
+            points = torch.from_numpy(data["points"][frame_idx]).float()
+            camera = torch.from_numpy(data["camera"][frame_idx]).permute(2, 0, 1).float()
+            semantics = torch.from_numpy(data["semantics"][frame_idx]).long()
+            gt_boxes = torch.from_numpy(data["gt_boxes"][frame_idx]).float()
 
-        data = np.load(path)
-        points = data["points"]
-        reflectance = data["reflectance"][:, None]
-        timestamp = data["timestamp"][:, None]
-
-        arr = np.concatenate([points, reflectance, timestamp], axis=1)
-        logging.debug(f"Loaded LIDAR from {path} with shape {arr.shape}")
-
-        # Pad or truncate to fixed size
-        num = min(arr.shape[0], self.num_lidar_points)
-        padded = np.zeros((self.num_lidar_points, arr.shape[1]), dtype=arr.dtype)
-        padded[:num] = arr[:num]
-
-        return torch.tensor(padded, dtype=torch.float32)
-
-    def load_camera(self, folder: str, base: str) -> torch.Tensor:
-        if self.use_cam_tokens:
-            path = self._find_only_file_with_ext(self.root / folder / "camera_tokens" / self.sub_name, "npz")
-            arr = np.load(path)
-            return torch.tensor(arr, dtype=torch.float32)
-
-        path = self._find_only_file_with_ext(self.root / folder / "camera" / self.sub_name, "png")
-        img = Image.open(path).convert("RGB")
-        return self.to_tensor(img)
-
-    def load_semantics(self, folder: str, base: str) -> torch.Tensor:
-        path = self._find_only_file_with_ext(self.root / folder / "label" / self.sub_name, "png")
-        arr = np.array(Image.open(path))
-        return torch.tensor(arr, dtype=torch.long).unsqueeze(0)
-
-    def load_boxes(self, folder: str, base: str) -> torch.Tensor:
-        path = self._find_only_file_with_ext(
-            self.root / folder / "label3D" / self.sub_name,
-            "json",
-        )
-
-        with open(path, "r") as f:
-            data = json.load(f)
-
-        boxes = []
-
-        # data is a dict: {"box_0": {...}, "box_1": {...}, ...}
-        for obj in data.values():
-            center = obj["center"]  # [x, y, z]
-            size = obj["size"]  # [dx, dy, dz]
-            yaw = obj.get("rot_angle", 0.0)  # fallback if missing
-
-            boxes.append(center + size + [yaw])
-
-        if len(boxes) > self.num_gt_boxes:
-            logging.warning(f"Truncating {len(boxes)} boxes to {self.num_gt_boxes} boxes")
-            boxes = boxes[: self.num_gt_boxes]
-        else:
-            boxes += [[0.0] * 7] * (self.num_gt_boxes - len(boxes))
-
-        if not boxes:
-            return torch.zeros((0, 7), dtype=torch.float32)
-
-        return torch.tensor(boxes, dtype=torch.float32)
-
-    # ------------------------------------------------------------
-    # Main API
-    # ------------------------------------------------------------
-    def __getitem__(self, idx: int) -> dict:
-        folder, base = self.samples[idx]
-
-        points = self.load_lidar(folder, base)
-        cam = self.load_camera(folder, base)
-        semantics = self.load_semantics(folder, base)
-        boxes = self.load_boxes(folder, base)
-
-        sample = {
-            "points": points,
-            "cam_tokens": cam,
-            "semantics": semantics,
-            "gt_boxes": boxes,
+        return {
+            "points": points,  # (N, C)
+            "camera": camera,  # (3, H, W)
+            "semantics": semantics,  # (H, W)
+            "gt_boxes": gt_boxes,  # (M, 7)
         }
-
-        if self.transform:
-            sample = self.transform(sample)
-
-        return sample

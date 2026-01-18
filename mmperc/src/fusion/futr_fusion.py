@@ -9,7 +9,7 @@ class FuTrFusionBlock(nn.Module):
 
     Inputs:
         bev:        (B, C, H, W) BEV feature map from lidar backbone
-        cam_tokens: (B, N_cam, C) camera tokens from camera encoder
+        camera: (B, N_cam, C) camera tokens from camera encoder
 
     Output:
         fused_bev:  (B, C, H, W) fused BEV feature map
@@ -46,10 +46,10 @@ class FuTrFusionBlock(nn.Module):
         self.norm1 = nn.LayerNorm(bev_channels)
         self.norm2 = nn.LayerNorm(bev_channels)
 
-    def forward(self, bev: Tensor, cam_tokens: Tensor) -> Tensor:
+    def forward(self, bev: Tensor, camera: Tensor) -> Tensor:
         """
         bev:        (B, C, H, W)
-        cam_tokens: (B, N_cam, C)
+        camera: (B, N_cam, C)
 
         Returns:
             fused_bev: (B, C, H, W)
@@ -70,8 +70,8 @@ class FuTrFusionBlock(nn.Module):
         # ------------------------------------------------------------
         attn_out, _ = self.cross_attn(
             query=bev_tokens,  # (B, HW, C)
-            key=cam_tokens,  # (B, N_cam, C)
-            value=cam_tokens,  # (B, N_cam, C)
+            key=camera,  # (B, N_cam, C)
+            value=camera,  # (B, N_cam, C)
         )
 
         # Residual connection + norm

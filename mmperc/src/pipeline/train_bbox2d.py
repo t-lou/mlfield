@@ -8,7 +8,7 @@ def train_one_epoch(model, dataloader, optimizer, device):
 
     for batch in dataloader:
         points = batch["points"].to(device)
-        images = batch["cam_tokens"].to(device)
+        images = batch["camera"].to(device)
         gt_boxes = batch["gt_boxes"]  # list of tensors, not moved to device yet
 
         optimizer.zero_grad()

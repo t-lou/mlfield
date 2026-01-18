@@ -9,8 +9,8 @@ from torch.utils.data import DataLoader
 def main():
     device = get_best_device()
 
-    path_dataset = "./data/a2d2-preview/camera_lidar_semantic_bboxes"
-    dataset = A2D2Dataset(root=path_dataset, use_cam_tokens=False)
+    path_dataset = "./data/a2d2/"
+    dataset = A2D2Dataset(root=path_dataset)
     dataloader = DataLoader(dataset, batch_size=2, shuffle=True)
 
     model = SimpleModel().to(device)
