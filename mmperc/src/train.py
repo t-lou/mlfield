@@ -2,7 +2,7 @@ import torch.optim as optim
 from common.device import get_best_device
 from datasets.a2d2_dataset import A2D2Dataset
 from model.simple_model import SimpleModel
-from pipeline.train_bbox2d import train_one_epoch
+from pipeline.train_bbox2d import train_model
 from torch.utils.data import DataLoader
 
 
@@ -16,10 +16,7 @@ def main():
     model = SimpleModel().to(device)
     optimizer = optim.Adam(model.parameters(), lr=1e-4)
 
-    num_epochs = 50
-    for epoch in range(num_epochs):
-        loss = train_one_epoch(model, dataloader, optimizer, device, epoch=epoch, num_epochs=num_epochs)
-        print(f"Epoch {epoch}: loss={loss:.4f}")
+    train_model(model, dataloader, optimizer, device, num_epochs=50, ckpt_dir="checkpoints")
 
 
 if __name__ == "__main__":
