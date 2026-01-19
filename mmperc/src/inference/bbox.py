@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import os
 from typing import List, Tuple
 
 import common.params as params
 import torch
 from common.bev_utils import get_res, grid_to_xy_stride
+from common.device import get_best_device
+from datasets.a2d2_dataset import A2D2Dataset
+from model.simple_model import SimpleModel
+from torch.utils.data import DataLoader
 
 # ================================================================
 # 1. Heatmap Top-K Extraction
@@ -172,3 +177,44 @@ def model_inference(
         boxes = decode_boxes(xs, ys, reg_vals)
 
     return boxes, scores
+
+
+class ModelInferenceWrapper:
+    def __init__(self, ckpt_dir="checkpoints"):
+        # 1. Build model on CPU
+        self.model = SimpleModel().to("cpu")
+
+        # 2. Load checkpoint safely
+        latest_path = os.path.join(ckpt_dir, "simple_model_latest.pt")
+        state = torch.load(latest_path, map_location="cpu")
+        self.model.load_state_dict(state)
+        self.model.eval()
+
+        # 3. Move model to best device
+        self.device = get_best_device()
+        self.model = self.model.to(self.device)
+
+    def infer(self, points: torch.Tensor, images: torch.Tensor, K: int = 50):
+        # Ensure inputs are on the same device as the model
+        points = points.to(self.device)
+        images = images.to(self.device)
+
+        return model_inference(self.model, points, images, K)
+
+    def infer_a2d2_dataset(self, path_dataset: str, K: int = 50):
+        dataset = A2D2Dataset(root=path_dataset)
+        dataloader = DataLoader(dataset, batch_size=1, shuffle=False)
+
+        all_boxes = []
+        all_scores = []
+
+        for batch in dataloader:
+            points = batch["points"].to(self.device)
+            images = batch["camera"].to(self.device)
+
+            boxes, scores = self.infer(points, images, K)
+
+            all_boxes.extend(boxes)
+            all_scores.append(scores.cpu())  # FIXED
+
+        return all_boxes, all_scores
