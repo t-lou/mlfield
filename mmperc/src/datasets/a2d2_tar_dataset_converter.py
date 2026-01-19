@@ -10,6 +10,7 @@ from typing import Dict, List
 
 import numpy as np
 from PIL import Image
+from tqdm import tqdm
 
 
 class A2D2TarDatasetConverter:
@@ -247,7 +248,8 @@ if __name__ == "__main__":
     try:
         groups = converter.shuffle_and_group_pngs()
 
-        for idx, group in enumerate(groups, start=1):
+        # tqdm shows progress, ETA, speed, etc.
+        for idx, group in enumerate(tqdm(groups, desc="Converting groups"), start=1):
             batch = converter.proceed_one_bunch(group)
             converter.save_bunch(batch, output_path, idx)
 

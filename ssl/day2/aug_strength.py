@@ -1,8 +1,8 @@
 import torch
+import torch.nn.functional as F
+import torchvision.models as models
 import torchvision.transforms as T
 from torchvision.datasets import CIFAR10
-import torchvision.models as models
-import torch.nn.functional as F
 
 # Define transforms
 weak = T.Compose([T.RandomResizedCrop(32, scale=(0.8, 1.0)), T.RandomHorizontalFlip(), T.ToTensor()])
