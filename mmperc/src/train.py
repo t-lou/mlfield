@@ -16,8 +16,9 @@ def main():
     model = SimpleModel().to(device)
     optimizer = optim.Adam(model.parameters(), lr=1e-4)
 
-    for epoch in range(50):
-        loss = train_one_epoch(model, dataloader, optimizer, device)
+    num_epochs = 50
+    for epoch in range(num_epochs):
+        loss = train_one_epoch(model, dataloader, optimizer, device, epoch=epoch, num_epochs=num_epochs)
         print(f"Epoch {epoch}: loss={loss:.4f}")
 
 
