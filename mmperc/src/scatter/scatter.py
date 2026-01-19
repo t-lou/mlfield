@@ -1,10 +1,11 @@
 import torch
+from common.bev_utils import xy_to_grid  # your new helper
 from torch import Tensor
 
 
 def scatter_to_bev(
     pillar_features: Tensor,
-    pillar_coords: Tensor,
+    pillar_coords_xy: Tensor,  # world coords (x, y) for each pillar
     bev_h: int,
     bev_w: int,
 ) -> Tensor:
@@ -14,8 +15,8 @@ def scatter_to_bev(
     Args:
         pillar_features: (B, P, C)
             Per‑pillar feature vectors.
-        pillar_coords:   (B, P, 2)
-            Integer pillar coordinates (ix, iy) for each pillar.
+        pillar_coords_xy: (B, P, 2)
+            World coordinates (x, y) for each pillar.
         bev_h: Height of the BEV grid.
         bev_w: Width of the BEV grid.
 
@@ -26,17 +27,25 @@ def scatter_to_bev(
     B, P, C = pillar_features.shape
     device = pillar_features.device
 
-    # Initialize empty BEV grid
     bev = torch.zeros(B, C, bev_h, bev_w, device=device)
 
     for b in range(B):
-        coords = pillar_coords[b]  # (P, 2)
         feats = pillar_features[b]  # (P, C)
+        coords_xy = pillar_coords_xy[b]  # (P, 2)
 
-        ix = coords[:, 0].long()
-        iy = coords[:, 1].long()
+        # Convert all (x, y) → (ix, iy) using your unified helper
+        ix_list = []
+        iy_list = []
 
-        # Keep only coordinates inside the BEV grid
+        for x, y in coords_xy:
+            ix, iy = xy_to_grid(float(x), float(y))
+            ix_list.append(ix)
+            iy_list.append(iy)
+
+        ix = torch.tensor(ix_list, device=device, dtype=torch.long)
+        iy = torch.tensor(iy_list, device=device, dtype=torch.long)
+
+        # Keep only valid pillars
         valid = (ix >= 0) & (ix < bev_w) & (iy >= 0) & (iy < bev_h)
         if not valid.any():
             continue
@@ -45,7 +54,7 @@ def scatter_to_bev(
         iy = iy[valid]
         feats = feats[valid]  # (P_valid, C)
 
-        # Scatter features into BEV grid
-        bev[b, :, iy, ix] = feats.t()  # (C, H, W)
+        # Scatter into BEV grid
+        bev[b, :, iy, ix] = feats.t()
 
     return bev

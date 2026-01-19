@@ -1,16 +1,10 @@
 from __future__ import annotations
 
-from typing import Dict, List, Tuple
+from typing import List, Tuple
 
 import common.params as params
 import torch
-
-# TODO use the params from common.params
-_ = params
-GRID_RES: float = 0.2  # meters per pixel
-X_OFFSET: float = -50.0  # world origin offset in X
-Y_OFFSET: float = -50.0  # world origin offset in Y
-
+from common.bev_utils import get_res, grid_to_xy_stride
 
 # ================================================================
 # 1. Heatmap Top-K Extraction
@@ -97,6 +91,9 @@ def decode_boxes(xs: torch.Tensor, ys: torch.Tensor, reg_vals: torch.Tensor) -> 
                [x, y, z, w, l, h, yaw]
     """
     B, C, K = xs.shape
+    stride = params.BACKBONE_STRIDE
+    res_x, res_y = get_res()
+
     boxes: List[List[List[float]]] = []
 
     for b in range(B):
@@ -104,15 +101,18 @@ def decode_boxes(xs: torch.Tensor, ys: torch.Tensor, reg_vals: torch.Tensor) -> 
 
         for c in range(C):
             for k in range(K):
-                x_pix = xs[b, c, k].item()
-                y_pix = ys[b, c, k].item()
+                ix = xs[b, c, k].item()
+                iy = ys[b, c, k].item()
 
                 dx, dy, dz, w, l_, h, yaw = reg_vals[b, c, k].tolist()
 
-                # Convert pixel → world coordinates
-                x = x_pix * GRID_RES + X_OFFSET + dx
-                y = y_pix * GRID_RES + Y_OFFSET + dy
-                z = dz
+                # 1. Convert grid index → world coordinate of cell origin
+                cell_x, cell_y = grid_to_xy_stride(ix, iy)
+
+                # 2. Convert normalized offsets → meters
+                x = cell_x + dx * (res_x * stride)
+                y = cell_y + dy * (res_y * stride)
+                z = dz  # unchanged
 
                 boxes_b.append([x, y, z, w, l_, h, yaw])
 
@@ -127,14 +127,17 @@ def decode_boxes(xs: torch.Tensor, ys: torch.Tensor, reg_vals: torch.Tensor) -> 
 
 
 def model_inference(
-    model: torch.nn.Module, points: torch.Tensor, images: torch.Tensor, K: int = 50
-) -> Tuple[List[List[List[float]]], torch.Tensor]:
+    model: torch.nn.Module,
+    points: torch.Tensor,
+    images: torch.Tensor,
+    K: int = 50,
+):
     """
     Run inference on a batch and decode bounding boxes.
 
     Args:
         model:  detection model
-        points: (B, N, C) lidar input
+        points: (B, N, 4) lidar input
         images: (B, 3, H, W) camera input
         K:      number of top-K peaks per class
 
@@ -145,13 +148,27 @@ def model_inference(
     model.eval()
 
     with torch.no_grad():
-        pred: Dict[str, torch.Tensor] = model(points, images)
+        # ---------------------------------------------------------
+        # 1. Forward pass through your full multimodal model
+        # ---------------------------------------------------------
+        pred = model(points, images)
 
-        heatmap = pred["heatmap"]  # (B, C, H, W)
-        reg = pred["reg"]  # (B, 7, H, W)
+        heatmap = pred["heatmap"]  # (B, C, H_bev, W_bev)
+        reg = pred["reg"]  # (B, 6, H_bev, W_bev)
 
+        # ---------------------------------------------------------
+        # 2. Top-K heatmap peaks
+        # ---------------------------------------------------------
         scores, xs, ys = topk_heatmap(heatmap, K)
+
+        # ---------------------------------------------------------
+        # 3. Gather regression values at peak locations
+        # ---------------------------------------------------------
         reg_vals = gather_regression(reg, xs, ys)
+
+        # ---------------------------------------------------------
+        # 4. Decode boxes into world coordinates
+        # ---------------------------------------------------------
         boxes = decode_boxes(xs, ys, reg_vals)
 
     return boxes, scores
