@@ -1,114 +1,195 @@
-Nice, this is a good moment to cleanly separate “what the model can do” from “which modalities you actually use”.
+You’re absolutely right to pause here — **your current training loop only computes losses** (heatmap + regression), but it never **decodes** the model’s output back into **actual bounding boxes**.
 
-Here’s a simple, explicit way to make it configurable:
+That’s normal.  
+Most detection models have *two phases*:
 
-- one flag: `modality in {"lidar", "camera", "both"}`
-- only build the encoders you need
-- route the forward pass accordingly
-- keep the detection heads identical (always operate on a BEV feature map)
+1. **Training**  
+   - Predict heatmap + regression  
+   - Compute loss  
+   - No decoding needed
+
+2. **Inference / Evaluation**  
+   - Predict heatmap + regression  
+   - **Decode** into real bounding boxes  
+   - Apply NMS  
+   - Return final detections
+
+Right now, you only implemented **phase 1**.
+
+Let’s add **phase 2**.
 
 ---
 
-### 1. Make the model modality‑aware
+# ⭐ What your model outputs today
+
+Your model returns:
 
 ```python
-class SimpleModel(nn.Module):
-    def __init__(self, bev_channels: int = 128, modality: str = "both") -> None:
-        super().__init__()
-        assert modality in {"lidar", "camera", "both"}
-        self.modality = modality
-
-        # 1. Lidar encoder
-        if modality in {"lidar", "both"}:
-            self.lidar_encoder = PointPillarBEV()  # (B, C, H, W)
-        else:
-            self.lidar_encoder = None
-
-        # 2. Camera encoder
-        if modality in {"camera", "both"}:
-            self.cam_encoder = TinyCameraEncoder()  # (B, N_cam, C)
-        else:
-            self.cam_encoder = None
-
-        # 3. Fusion block (only needed when using both)
-        if modality == "both":
-            self.fusion = FuTrFusionBlock()
-        else:
-            self.fusion = None
-
-        # 4. Optional: camera‑only BEV projector
-        if modality == "camera":
-            # map camera tokens → BEV feature map
-            self.cam_bev_projector = CameraBEVProjector(bev_channels=bev_channels)
-        else:
-            self.cam_bev_projector = None
-
-        # 5. Detection heads (shared)
-        self.heatmap_head = nn.Sequential(
-            nn.Conv2d(bev_channels, bev_channels, kernel_size=3, padding=1),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(bev_channels, 1, kernel_size=1),
-        )
-        self.reg_head = nn.Sequential(
-            nn.Conv2d(bev_channels, bev_channels, kernel_size=3, padding=1),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(bev_channels, 6, kernel_size=1),
-        )
+pred = model(points, images)
+heatmap_pred = pred["heatmap"]   # shape: (B, C, H, W)
+reg_pred     = pred["reg"]       # shape: (B, 7, H, W)
 ```
 
-You can define `CameraBEVProjector` however you like (e.g., learned BEV queries + cross‑attention, or a simple MLP+reshape if you already know the BEV grid size).
+This is a **CenterNet‑style representation**:
+
+- heatmap → object centers  
+- regression → (x_offset, y_offset, z, dx, dy, dz, yaw)
+
+To get actual boxes, you need to:
+
+1. **Find peaks in the heatmap**  
+2. **Extract regression values at those peaks**  
+3. **Convert them into world‑space boxes**
+
+Let’s build that.
 
 ---
 
-### 2. Route the forward pass by modality
+# ⭐ Step 1 — Heatmap peak detection
 
 ```python
-    def forward(self, points: Tensor | None, images: Tensor | None) -> dict:
-        # Lidar path
-        if self.modality in {"lidar", "both"}:
-            assert points is not None, "points must be provided for lidar or both"
-            bev_lidar: Tensor = self.lidar_encoder(points)  # (B, C, H, W)
-        else:
-            bev_lidar = None
+import torch
+import torch.nn.functional as F
 
-        # Camera path
-        if self.modality in {"camera", "both"}:
-            assert images is not None, "images must be provided for camera or both"
-            images = rescale_image(images)
-            cam_tokens: Tensor = self.cam_encoder(images)  # (B, N_cam, C)
-        else:
-            cam_tokens = None
 
-        # Fusion / selection
-        if self.modality == "both":
-            bev_fused: Tensor = self.fusion(bev_lidar, cam_tokens)  # (B, C, H, W)
-        elif self.modality == "lidar":
-            bev_fused = bev_lidar
-        elif self.modality == "camera":
-            bev_fused = self.cam_bev_projector(cam_tokens)  # (B, C, H, W)
-        else:
-            raise RuntimeError("Unknown modality")
+def topk_heatmap(heatmap: torch.Tensor, K: int = 50):
+    """
+    heatmap: (B, C, H, W)
+    Returns top-K scores and indices.
+    """
+    B, C, H, W = heatmap.shape
 
-        # Heads
-        heatmap = torch.sigmoid(self.heatmap_head(bev_fused))
-        reg = self.reg_head(bev_fused)
+    # Flatten spatial dims
+    heatmap_flat = heatmap.view(B, C, -1)
 
-        return {"heatmap": heatmap, "reg": reg}
+    # Top-K per class
+    scores, indices = torch.topk(heatmap_flat, K)
+
+    ys = indices // W
+    xs = indices % W
+
+    return scores, xs, ys
 ```
 
 ---
 
-### 3. How you’d actually use it
+# ⭐ Step 2 — Gather regression values at peak locations
 
 ```python
-# lidar‑only
-model = SimpleModel(bev_channels=128, modality="lidar")
+def gather_regression(reg_pred, xs, ys):
+    """
+    reg_pred: (B, 7, H, W)
+    xs, ys: (B, C, K)
+    Returns regression values at peak positions.
+    """
+    B, C, K = xs.shape
+    reg = []
 
-# camera‑only
-model = SimpleModel(bev_channels=128, modality="camera")
+    for b in range(B):
+        reg_b = []
+        for c in range(C):
+            x = xs[b, c]
+            y = ys[b, c]
+            reg_b.append(reg_pred[b, :, y, x].T)  # (K, 7)
+        reg.append(torch.stack(reg_b))  # (C, K, 7)
 
-# both
-model = SimpleModel(bev_channels=128, modality="both")
+    return torch.stack(reg)  # (B, C, K, 7)
 ```
 
-The only extra piece you need to design is `CameraBEVProjector` (camera‑only path). For a first version, you can even start with lidar‑only + both, and leave camera‑only as a TODO until you decide how you want to lift camera tokens into BEV.
+---
+
+# ⭐ Step 3 — Convert to bounding boxes
+
+Assuming your BEV grid has known resolution:
+
+```python
+GRID_RES = 0.2  # meters per pixel
+X_OFFSET = -50  # world origin offset
+Y_OFFSET = -50
+```
+
+```python
+def decode_boxes(xs, ys, reg_vals):
+    """
+    xs, ys: (B, C, K)
+    reg_vals: (B, C, K, 7)
+    Returns list of decoded boxes per batch.
+    """
+    B, C, K = xs.shape
+    boxes = []
+
+    for b in range(B):
+        boxes_b = []
+        for c in range(C):
+            for k in range(K):
+                x_pix = xs[b, c, k].item()
+                y_pix = ys[b, c, k].item()
+
+                dx, dy, dz, w, l, h, yaw = reg_vals[b, c, k].tolist()
+
+                # Convert pixel → world coordinates
+                x = x_pix * GRID_RES + X_OFFSET + dx
+                y = y_pix * GRID_RES + Y_OFFSET + dy
+                z = dz
+
+                boxes_b.append([x, y, z, w, l, h, yaw])
+
+        boxes.append(boxes_b)
+
+    return boxes
+```
+
+---
+
+# ⭐ Step 4 — Wrap it into a clean inference function
+
+```python
+def model_inference(model, points, images, K=50):
+    model.eval()
+    with torch.no_grad():
+        pred = model(points, images)
+        heatmap = pred["heatmap"]
+        reg = pred["reg"]
+
+        scores, xs, ys = topk_heatmap(heatmap, K)
+        reg_vals = gather_regression(reg, xs, ys)
+        boxes = decode_boxes(xs, ys, reg_vals)
+
+    return boxes, scores
+```
+
+---
+
+# ⭐ Step 5 — Use it during evaluation
+
+```python
+boxes, scores = model_inference(model, points, images)
+```
+
+Now you have **real bounding boxes** in world coordinates.
+
+---
+
+# 🎯 Summary
+
+Your training loop is correct — it should *not* output boxes.
+
+To output bounding boxes, you need:
+
+- heatmap peak detection  
+- regression gathering  
+- decoding into world coordinates  
+
+I gave you a clean, modular implementation of all three.
+
+---
+
+If you want, I can also help you:
+
+- integrate NMS  
+- visualize predicted boxes in Open3D  
+- overlay predictions on camera images  
+- export predictions to KITTI format  
+- evaluate mAP  
+
+Just tell me where you want to go next.
