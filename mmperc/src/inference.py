@@ -1,6 +1,6 @@
 import sys
 
-from inference.bbox import ModelInferenceWrapper
+from decoder.bbox import ModelInferenceWrapper
 
 if __name__ == "__main__":
     print("Testing ModelInferenceWrapper instantiation...")
