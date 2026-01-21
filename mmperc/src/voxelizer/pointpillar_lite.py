@@ -36,10 +36,6 @@ class PointpillarLite:
         self.max_points_per_pillar = max_points_per_pillar
         self.max_pillars = max_pillars
 
-        # Derived BEV grid resolution
-        self.grid_x = int((self.x_max - self.x_min) / self.vx)
-        self.grid_y = int((self.y_max - self.y_min) / self.vy)
-
     def __call__(self, points: Tensor) -> Dict[str, Tensor]:
         """
         Args:
