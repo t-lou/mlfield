@@ -1,3 +1,5 @@
+import logging
+
 import torch
 import torch.nn.functional as F
 from common.debug_ploter import DebugPloter
@@ -12,6 +14,11 @@ def focal_loss(pred, gt, alpha=2.0, beta=4.0):
     """
     G_DEBUG_PLOTER.export_heatmap_debug(pred, gt)
     assert pred.shape == gt.shape, f"pred shape {pred.shape} != gt shape {gt.shape}"
+
+    # debug grid indexing
+    logging.debug("GT max at:", torch.nonzero(gt[0, 0] == gt[0, 0].max()))
+    logging.debug("Pred max at:", torch.nonzero(pred[0, 0] == pred[0, 0].max()))
+
     pos_inds = gt.eq(1).float()
     neg_inds = gt.lt(1).float()
 
