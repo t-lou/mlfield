@@ -9,14 +9,14 @@ from torch.utils.data import DataLoader
 def main():
     device = get_best_device()
 
-    path_dataset = "./data/a2d2/"
+    path_dataset = "/workspace/mmperc/data/a2d2"
     dataset = A2D2Dataset(root=path_dataset)
     dataloader = DataLoader(dataset, batch_size=2, shuffle=True)
 
     model = SimpleModel().to(device)
     optimizer = optim.Adam(model.parameters(), lr=1e-4)
 
-    train_model(model, dataloader, optimizer, device, num_epochs=50, ckpt_dir="checkpoints")
+    train_model(model, dataloader, optimizer, device, num_epochs=5, ckpt_dir="checkpoints")
 
 
 if __name__ == "__main__":
