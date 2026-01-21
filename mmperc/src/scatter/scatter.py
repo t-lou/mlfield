@@ -1,5 +1,4 @@
 import torch
-from common.bev_utils import xy_to_grid  # your new helper
 from torch import Tensor
 
 
@@ -34,16 +33,8 @@ def scatter_to_bev(
         coords_xy = pillar_coords_xy[b]  # (P, 2)
 
         # Convert all (x, y) → (ix, iy) using your unified helper
-        ix_list = []
-        iy_list = []
-
-        for x, y in coords_xy:
-            ix, iy = xy_to_grid(float(x), float(y))
-            ix_list.append(ix)
-            iy_list.append(iy)
-
-        ix = torch.tensor(ix_list, device=device, dtype=torch.long)
-        iy = torch.tensor(iy_list, device=device, dtype=torch.long)
+        ix = coords_xy[:, 0].long()
+        iy = coords_xy[:, 1].long()
 
         # Keep only valid pillars
         valid = (ix >= 0) & (ix < bev_w) & (iy >= 0) & (iy < bev_h)
