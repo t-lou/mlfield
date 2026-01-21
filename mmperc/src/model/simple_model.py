@@ -1,3 +1,4 @@
+import common.params as params
 import torch
 import torch.nn as nn
 from common.utils import rescale_image
@@ -16,7 +17,7 @@ class SimpleModel(nn.Module):
     - BEV detection heads (heatmap + regression)
     """
 
-    def __init__(self, bev_channels: int = 128) -> None:
+    def __init__(self, bev_channels: int = params.BEV_CHANNELS) -> None:
         super().__init__()
 
         # ---------------------------------------------------------
