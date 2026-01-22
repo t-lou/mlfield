@@ -3,7 +3,52 @@ from typing import Any, Dict, List, Tuple
 
 import numpy as np
 import torch
+from label.bev_labels import generate_bev_labels_bbox2d
 from torch.utils.data import Dataset
+
+
+def bev_collate(batch):
+    """
+    Collate function for A2D2Dataset with fixed-size padded NPZ data.
+
+    Input batch: list of dicts, each containing:
+        points:    (num_lidar_points, C)
+        camera:    (3, H, W)
+        semantics: (H, W)
+        gt_boxes:  (num_gt_boxes, 7)
+
+    Output:
+        points:      (B, num_lidar_points, C)
+        camera:      (B, 3, H, W)
+        semantics:   (B, H, W)
+        gt_boxes:    (B, num_gt_boxes, 7)
+        heatmap_gt:  (B, 1, H_bev, W_bev)
+        reg_gt:      (B, 6, H_bev, W_bev)
+        mask_gt:     (B, 1, H_bev, W_bev)
+    """
+
+    # Fixed-size tensors → stack directly
+    points = torch.stack([item["points"] for item in batch])  # (B, P, C)
+    camera = torch.stack([item["camera"] for item in batch])  # (B, 3, H, W)
+    semantics = torch.stack([item["semantics"] for item in batch])  # (B, H, W)
+    gt_boxes = torch.stack([item["gt_boxes"] for item in batch])  # (B, M, 7)
+
+    # Convert gt_boxes to list of tensors for BEV label generation
+    # (because generate_bev_labels_bbox2d expects a list of (N_i, 7))
+    gt_boxes_list = [gt_boxes[i] for i in range(gt_boxes.shape[0])]
+
+    # Generate BEV labels once per batch
+    heatmap_gt, reg_gt, mask_gt = generate_bev_labels_bbox2d(gt_boxes_list)
+
+    return {
+        "points": points,
+        "camera": camera,
+        "semantics": semantics,
+        "gt_boxes": gt_boxes,
+        "heatmap_gt": heatmap_gt,
+        "reg_gt": reg_gt,
+        "mask_gt": mask_gt,
+    }
 
 
 class A2D2Dataset(Dataset):

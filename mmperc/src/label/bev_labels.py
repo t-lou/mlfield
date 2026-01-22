@@ -5,6 +5,19 @@ import common.params as params
 import torch
 from common.bev_utils import get_res, xy_to_grid_stride
 
+GAUSSIAN_CACHE = {}
+
+
+def get_gaussian(radius: int, device, dtype):
+    key = (radius, device, dtype)
+    if key not in GAUSSIAN_CACHE:
+        xs = torch.arange(-radius, radius + 1, device=device, dtype=dtype)
+        ys = torch.arange(-radius, radius + 1, device=device, dtype=dtype)
+        yy, xx = torch.meshgrid(ys, xs, indexing="ij")
+        dist = xx * xx + yy * yy
+        GAUSSIAN_CACHE[key] = torch.exp(-dist / (2 * (radius**2))).to(device=device, dtype=dtype)
+    return GAUSSIAN_CACHE[key]
+
 
 def draw_gaussian(heatmap: torch.Tensor, cx: int, cy: int, radius: int) -> None:
     """
@@ -15,13 +28,8 @@ def draw_gaussian(heatmap: torch.Tensor, cx: int, cy: int, radius: int) -> None:
     radius: Gaussian radius in pixels
     """
     H, W = heatmap.shape
-    diameter = 2 * radius + 1
-
-    gaussian = torch.zeros((diameter, diameter), dtype=heatmap.dtype, device=heatmap.device)
-    for dy in range(-radius, radius + 1):
-        for dx in range(-radius, radius + 1):
-            dist = dx * dx + dy * dy
-            gaussian[dy + radius, dx + radius] = math.exp(-dist / (2 * (radius**2)))
+    gaussian = get_gaussian(radius, heatmap.device, heatmap.dtype)
+    diameter = gaussian.shape[0]
 
     x0 = cx - radius
     y0 = cy - radius
@@ -38,10 +46,7 @@ def draw_gaussian(heatmap: torch.Tensor, cx: int, cy: int, radius: int) -> None:
     hx1 = min(W, x1)
     hy1 = min(H, y1)
 
-    heatmap[hy0:hy1, hx0:hx1] = torch.max(
-        heatmap[hy0:hy1, hx0:hx1],
-        gaussian[gy0:gy1, gx0:gx1],
-    )
+    heatmap[hy0:hy1, hx0:hx1] = torch.max(heatmap[hy0:hy1, hx0:hx1], gaussian[gy0:gy1, gx0:gx1])
 
 
 def generate_bev_labels_bbox2d(
@@ -60,9 +65,9 @@ def generate_bev_labels_bbox2d(
     bev_w = params.BEV_W // stride
 
     B = len(gt_boxes)
-    heatmap = torch.zeros((B, 1, bev_h, bev_w), dtype=torch.float32)
+    heatmap = torch.zeros((B, 1, bev_h, bev_w), dtype=torch.float16)
     reg = torch.zeros((B, 6, bev_h, bev_w), dtype=torch.float32)
-    mask = torch.zeros((B, 1, bev_h, bev_w), dtype=torch.float32)
+    mask = torch.zeros((B, 1, bev_h, bev_w), dtype=torch.uint8)
 
     for b in range(B):
         boxes = gt_boxes[b]  # (N, 7)
@@ -100,21 +105,16 @@ def generate_bev_labels_bbox2d(
             dx = (x - cell_x) / (res_x * stride)
             dy = (y - cell_y) / (res_y * stride)
 
-            reg[b, :, iy, ix] = torch.tensor(
-                [
-                    dx,
-                    dy,
-                    math.log(w),
-                    math.log(l_),
-                    math.sin(yaw),
-                    math.cos(yaw),
-                ],
-                dtype=torch.float32,
-            )
+            reg[b, 0, iy, ix] = dx
+            reg[b, 1, iy, ix] = dy
+            reg[b, 2, iy, ix] = math.log(w)
+            reg[b, 3, iy, ix] = math.log(l_)
+            reg[b, 4, iy, ix] = math.sin(yaw)
+            reg[b, 5, iy, ix] = math.cos(yaw)
 
             # -------------------------------
             # 4. Mask
             # -------------------------------
-            mask[b, 0, iy, ix] = 1.0
+            mask[b, 0, iy, ix] = 1
 
     return heatmap, reg, mask

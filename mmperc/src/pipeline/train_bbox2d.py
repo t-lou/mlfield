@@ -13,7 +13,6 @@ from common.archive import (
     find_latest_epoch_checkpoint,
     save_checkpoint,
 )
-from label.bev_labels import generate_bev_labels_bbox2d
 from losses.detection_losses import focal_loss, l1_loss
 from torch.utils.data import DataLoader
 from tqdm import tqdm
@@ -107,7 +106,7 @@ def train_one_epoch(
     for batch in progress:
         points: torch.Tensor = batch["points"].to(device)
         images: torch.Tensor = batch["camera"].to(device)
-        gt_boxes = batch["gt_boxes"]
+        # gt_boxes directly from dataloader
 
         optimizer.zero_grad()
 
@@ -115,10 +114,9 @@ def train_one_epoch(
         heatmap_pred = pred["heatmap"]
         reg_pred = pred["reg"]
 
-        heatmap_gt, reg_gt, mask_gt = generate_bev_labels_bbox2d(gt_boxes)
-        heatmap_gt = heatmap_gt.to(device)
-        reg_gt = reg_gt.to(device)
-        mask_gt = mask_gt.to(device)
+        heatmap_gt: torch.Tensor = batch["heatmap_gt"].to(device)
+        reg_gt: torch.Tensor = batch["reg_gt"].to(device)
+        mask_gt: torch.Tensor = batch["mask_gt"].to(device)
 
         loss_hm = focal_loss(heatmap_pred, heatmap_gt)
         loss_reg = l1_loss(reg_pred, reg_gt, mask_gt)
