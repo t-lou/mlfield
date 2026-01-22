@@ -114,6 +114,7 @@ class A2D2TarDatasetConverter:
         timestamp = data["timestamp"][:, None]
 
         arr = np.concatenate([points, reflectance, timestamp], axis=1)
+        arr = arr.astype(np.float32)
         logging.debug(f"Loaded LIDAR from {path} with shape {arr.shape}")
 
         padded = np.zeros((self._num_lidar_points, arr.shape[1]), dtype=arr.dtype)
