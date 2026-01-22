@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import math
 import os
-from typing import List, Tuple
+from typing import Tuple
 
 import common.params as params
 import torch
@@ -82,42 +83,50 @@ def gather_regression(reg_pred: torch.Tensor, xs: torch.Tensor, ys: torch.Tensor
 # ================================================================
 
 
-def decode_boxes(xs: torch.Tensor, ys: torch.Tensor, reg_vals: torch.Tensor) -> List[List[List[float]]]:
+def decode_boxes(xs: torch.Tensor, ys: torch.Tensor, reg_vals: torch.Tensor):
     """
-    Decode predicted boxes into world coordinates.
-
-    Args:
-        xs:       (B, C, K)
-        ys:       (B, C, K)
-        reg_vals: (B, C, K, 7)
+    xs:       (B, C, K) integer grid x indices
+    ys:       (B, C, K) integer grid y indices
+    reg_vals: (B, C, K, 6) regression values:
+              [dx, dy, log_w, log_l, sin_yaw, cos_yaw]
 
     Returns:
-        boxes: list of length B, each containing a list of boxes:
+        boxes: list of B lists, each containing:
                [x, y, z, w, l, h, yaw]
     """
     B, C, K = xs.shape
     stride = params.BACKBONE_STRIDE
     res_x, res_y = get_res()
 
-    boxes: List[List[List[float]]] = []
+    boxes = []
 
     for b in range(B):
-        boxes_b: List[List[float]] = []
+        boxes_b = []
 
         for c in range(C):
             for k in range(K):
-                ix = xs[b, c, k].item()
-                iy = ys[b, c, k].item()
+                ix = int(xs[b, c, k].item())
+                iy = int(ys[b, c, k].item())
 
-                dx, dy, dz, w, l_, h, yaw = reg_vals[b, c, k].tolist()
+                dx, dy, log_w, log_l, sin_yaw, cos_yaw = reg_vals[b, c, k].tolist()
 
-                # 1. Convert grid index → world coordinate of cell origin
+                # 1. Grid → world cell origin
                 cell_x, cell_y = grid_to_xy_stride(ix, iy)
 
-                # 2. Convert normalized offsets → meters
+                # 2. Decode center
                 x = cell_x + dx * (res_x * stride)
                 y = cell_y + dy * (res_y * stride)
-                z = dz  # unchanged
+
+                # 3. Decode size
+                w = math.exp(log_w)
+                l_ = math.exp(log_l)
+
+                # 4. Decode yaw
+                yaw = math.atan2(sin_yaw, cos_yaw)
+
+                # 5. z and h are NOT encoded — set defaults or predict elsewhere
+                z = 0.0
+                h = 1.5
 
                 boxes_b.append([x, y, z, w, l_, h, yaw])
 
