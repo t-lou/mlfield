@@ -51,6 +51,11 @@ VOXEL_SIZE = (
 
 IMAGE_SCALE = 0.25  # Downsampling factor for camera images
 
+# -----------------------------
+# Number of semantic classes
+# -----------------------------
+NUM_SEM_CLASSES = 38
+
 # Whether to activate debug plotting
 DEBUG_PLOT_ON = True
 

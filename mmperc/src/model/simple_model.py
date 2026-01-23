@@ -5,6 +5,7 @@ from common.utils import rescale_image
 from encoder.point_pillar_bev import PointPillarBEV
 from encoder.tiny_camera_encoder import TinyCameraEncoder
 from fusion.futr_fusion import FuTrFusionBlock
+from head.full_res_seg_head import FullResSegHead
 from torch import Tensor
 
 
@@ -41,7 +42,7 @@ class SimpleModel(nn.Module):
 
         # Heatmap head (CenterNet-style)
         # Predicts object centers: (B, 1, H, W)
-        self.heatmap_head = nn.Sequential(
+        self.bbox_heatmap_head = nn.Sequential(
             nn.Conv2d(bev_channels, bev_channels, kernel_size=3, padding=1),
             nn.ReLU(inplace=True),
             nn.Conv2d(bev_channels, 1, kernel_size=1),
@@ -50,11 +51,14 @@ class SimpleModel(nn.Module):
         # Regression head
         # Predicts: dx, dy, log(w), log(l), sin(yaw), cos(yaw)
         # Shape: (B, 6, H, W)
-        self.reg_head = nn.Sequential(
+        self.bbox_reg_head = nn.Sequential(
             nn.Conv2d(bev_channels, bev_channels, kernel_size=3, padding=1),
             nn.ReLU(inplace=True),
             nn.Conv2d(bev_channels, 6, kernel_size=1),
         )
+
+        # Semantic segmentation head
+        self.sem_head = FullResSegHead(in_channels=self.cam_encoder.out_channels, num_classes=params.NUM_SEM_CLASSES)
 
     def forward(self, points: Tensor, images: Tensor) -> dict:
         """
@@ -77,27 +81,31 @@ class SimpleModel(nn.Module):
         # 2. Camera → tokens
         # ---------------------------------------------------------
         images = rescale_image(images)
-        camera: Tensor = self.cam_encoder(images)  # (B, N_cam, C)
+        camera_tokens, cam_feat = self.cam_encoder(images)
 
         # ---------------------------------------------------------
         # 3. BEV–camera fusion
         # ---------------------------------------------------------
-        bev_fused: Tensor = self.fusion(lidar_token, camera)  # (B, C, H, W)
+        bev_fused: Tensor = self.fusion(lidar_token, camera_tokens)  # (B, C, H, W)
 
         # ---------------------------------------------------------
         # 4. Detection heads
         # ---------------------------------------------------------
 
         # Heatmap prediction (sigmoid → probability)
-        heatmap = torch.sigmoid(self.heatmap_head(bev_fused))
+        bbox_heatmap = torch.sigmoid(self.heatmap_head(bev_fused))
 
         # Regression prediction (raw values)
-        reg = self.reg_head(bev_fused)
+        bbox_reg = self.reg_head(bev_fused)
+
+        # Semantic segmentation prediction
+        sem_logits = self.sem_head(cam_feat)
 
         # ---------------------------------------------------------
         # 5. Return multi-task outputs
         # ---------------------------------------------------------
         return {
-            "heatmap": heatmap,
-            "reg": reg,
+            "bbox_heatmap": bbox_heatmap,
+            "bbox_reg": bbox_reg,
+            "sem_logits": sem_logits,
         }

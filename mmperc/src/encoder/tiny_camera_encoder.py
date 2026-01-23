@@ -12,6 +12,8 @@ class TinyCameraEncoder(nn.Module):
 
     Into a sequence of camera tokens:
         (B, N_cam, C)
+    and a feature map:
+        (B, C, H', W')
 
     where:
         - N_cam = H' * W' after downsampling
@@ -47,6 +49,7 @@ class TinyCameraEncoder(nn.Module):
         Returns:
             tokens: (B, N_cam, out_channels)
                     where N_cam = H' * W' after downsampling
+            feat:   (B, out_channels, H', W')
         """
         # Extract CNN features
         feat: Tensor = self.conv(x)  # (B, C, H', W')
@@ -59,4 +62,4 @@ class TinyCameraEncoder(nn.Module):
         # Normalize token embeddings
         tokens = self.norm(tokens)
 
-        return tokens
+        return tokens, feat
