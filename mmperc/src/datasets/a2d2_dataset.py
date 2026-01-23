@@ -1,15 +1,19 @@
+import io
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
 import numpy as np
 import torch
 from label.bev_labels import generate_bev_labels_bbox2d
+from PIL import Image
 from torch.utils.data import Dataset
 
 
 def bev_collate(batch):
     """
     Collate function for A2D2Dataset with fixed-size padded NPZ data.
+
+    Lidar timestamps are ignored in this function.
 
     Input batch: list of dicts, each containing:
         points:    (num_lidar_points, C)
@@ -56,7 +60,7 @@ class A2D2Dataset(Dataset):
     PyTorch Dataset for loading A2D2 chunked NPZ files.
 
     Each NPZ file contains:
-        points:    (B, N, C)
+        points:    (B, N, C) without timestamps
         camera:    (B, H, W, 3)
         semantics: (B, H, W)
         gt_boxes:  (B, M, 7)
@@ -91,11 +95,20 @@ class A2D2Dataset(Dataset):
         chunk_idx, frame_idx = self.index_map[idx]
         chunk_path = self.chunk_paths[chunk_idx]
 
-        with np.load(chunk_path) as data:
-            # Convert to tensors
-            points = torch.from_numpy(data["points"][frame_idx]).float()
-            camera = torch.from_numpy(data["camera"][frame_idx]).permute(2, 0, 1).float()
-            semantics = torch.from_numpy(data["semantics"][frame_idx]).long()
+        with np.load(chunk_path, allow_pickle=True) as data:
+            # LiDAR
+            points = torch.from_numpy(data["points"][frame_idx]).half()
+
+            # --- NEW: decode PNG camera bytes ---
+            cam_bytes = data["camera"][frame_idx]  # this is a bytes object
+            cam_img = Image.open(io.BytesIO(cam_bytes))  # PIL Image
+            cam_np = np.array(cam_img)  # (H, W, 3)
+            camera = torch.from_numpy(cam_np).permute(2, 0, 1).half() / 255.0  # (3, H, W), normalized to [0, 1]
+
+            # Semantics (still raw uint8 array)
+            semantics = torch.from_numpy(data["semantics"][frame_idx])
+
+            # Boxes
             gt_boxes = torch.from_numpy(data["gt_boxes"][frame_idx]).float()
 
         return {

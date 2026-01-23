@@ -114,16 +114,19 @@ class A2D2TarDatasetConverter:
         data = np.load(io.BytesIO(fileobj.read()))
         points = data["points"]
         reflectance = data["reflectance"][:, None]
-        timestamp = data["timestamp"][:, None]
 
-        arr = np.concatenate([points, reflectance, timestamp], axis=1)
-        arr = arr.astype(np.float32)
+        arr = np.concatenate([points, reflectance], axis=1)
+        arr = arr.astype(np.float16)
         logging.debug(f"Loaded LIDAR from {path} with shape {arr.shape}")
 
         padded = np.zeros((self._num_lidar_points, arr.shape[1]), dtype=arr.dtype)
         n = min(arr.shape[0], self._num_lidar_points)
         padded[:n] = arr[:n]
-        return padded
+
+        # timestamp are huge int64 values, ignore for now
+        padded_timestamp = np.zeros((self._num_lidar_points,), dtype=np.int64)
+        padded_timestamp[:n] = data["timestamp"][:n]
+        return padded, padded_timestamp
 
     def load_boxes(self, path: PurePosixPath) -> np.ndarray:
         """
@@ -253,8 +256,12 @@ class A2D2TarDatasetConverter:
         # Convert to class IDs
         sem_class = self.convert_semantic_rgb_to_class(sem_rgb)
 
+        # Read lidar points and timestamp separately
+        lidar_xyzi, lidar_timestamp = self.load_lidar(paths["lidar"])
+
         return {
-            "points": self.load_lidar(paths["lidar"]),
+            "points": lidar_xyzi,
+            "points_timestamp": lidar_timestamp,
             "camera": self.load_img(paths["camera"], mode="RGB"),
             "semantics": sem_class,
             "gt_boxes": self.load_boxes(paths["gt_boxes"]),
@@ -270,7 +277,8 @@ class A2D2TarDatasetConverter:
 
         return {
             "points": np.stack([f["points"] for f in frames], axis=0),
-            "camera": np.stack([f["camera"] for f in frames], axis=0),
+            "points_timestamp": np.stack([f["points_timestamp"] for f in frames], axis=0),
+            "camera": np.array([self.encode_png(f["camera"]) for f in frames], dtype=object),
             "semantics": np.stack([f["semantics"] for f in frames], axis=0),
             "gt_boxes": np.stack([f["gt_boxes"] for f in frames], axis=0),
         }
@@ -289,6 +297,7 @@ class A2D2TarDatasetConverter:
         np.savez_compressed(
             out_path,
             points=batch["points"],
+            points_timestamp=batch["points_timestamp"],
             camera=batch["camera"],
             semantics=batch["semantics"],
             gt_boxes=batch["gt_boxes"],
@@ -296,6 +305,16 @@ class A2D2TarDatasetConverter:
 
         logging.info(f"Saved {out_path} with batch size {batch['points'].shape[0]}")
         return out_path
+
+    # ----------------------------------------------------------------------
+    # Compress RGB images to PNG bytes
+    # ----------------------------------------------------------------------
+
+    def encode_png(self, img_array: np.ndarray) -> bytes:
+        img = Image.fromarray(img_array)
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        return buf.getvalue()
 
 
 # ----------------------------------------------------------------------
