@@ -1,7 +1,6 @@
 import common.params as params
 import torch
 import torch.nn as nn
-from common.utils import rescale_image
 from encoder.point_pillar_bev import PointPillarBEV
 from encoder.tiny_camera_encoder import TinyCameraEncoder
 from fusion.futr_fusion import FuTrFusionBlock
@@ -80,7 +79,6 @@ class SimpleModel(nn.Module):
         # ---------------------------------------------------------
         # 2. Camera → tokens
         # ---------------------------------------------------------
-        images = rescale_image(images)
         camera_tokens, cam_feat = self.cam_encoder(images)
 
         # ---------------------------------------------------------
@@ -93,10 +91,10 @@ class SimpleModel(nn.Module):
         # ---------------------------------------------------------
 
         # Heatmap prediction (sigmoid → probability)
-        bbox_heatmap = torch.sigmoid(self.heatmap_head(bev_fused))
+        bbox_heatmap = torch.sigmoid(self.bbox_heatmap_head(bev_fused))
 
         # Regression prediction (raw values)
-        bbox_reg = self.reg_head(bev_fused)
+        bbox_reg = self.bbox_reg_head(bev_fused)
 
         # Semantic segmentation prediction
         sem_logits = self.sem_head(cam_feat)

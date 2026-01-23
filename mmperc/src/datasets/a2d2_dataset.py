@@ -103,7 +103,7 @@ class A2D2Dataset(Dataset):
             cam_bytes = data["camera"][frame_idx]  # this is a bytes object
             cam_img = Image.open(io.BytesIO(cam_bytes))  # PIL Image
             cam_np = np.array(cam_img)  # (H, W, 3)
-            camera = torch.from_numpy(cam_np).permute(2, 0, 1).half() / 255.0  # (3, H, W), normalized to [0, 1]
+            camera = torch.from_numpy(cam_np).permute(2, 0, 1).float() / 255.0  # (3, H, W), normalized to [0, 1]
 
             # Semantics (still raw uint8 array)
             semantics = torch.from_numpy(data["semantics"][frame_idx])
