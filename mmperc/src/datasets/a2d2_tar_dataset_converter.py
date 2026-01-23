@@ -6,7 +6,7 @@ import shutil
 import sys
 import tarfile
 from pathlib import Path, PurePosixPath
-from typing import Dict, List
+from typing import Dict, List, Tuple
 
 import numpy as np
 from PIL import Image
@@ -46,6 +46,9 @@ class A2D2TarDatasetConverter:
 
         # Cache all member names for fast lookup (important on WSL)
         self._members = {m.name for m in self.tar.getmembers()}
+
+        # Load semantic mapping from color to class ID
+        self.color_to_class, self.class_to_color, self.class_to_name = self._load_semantic_mapping()
 
     def close(self) -> None:
         """Close the underlying tar file."""
@@ -146,6 +149,65 @@ class A2D2TarDatasetConverter:
 
         return padded
 
+    def _load_semantic_mapping(self) -> Dict[Tuple[int, int, int], int]:
+        """
+        Load A2D2 class_list.json from the tar archive and convert hex colors to RGB → class_id mapping.
+        """
+        # Try to find the JSON inside the tar
+        json_candidates = [name for name in self._members if name.endswith("class_list.json")]
+
+        if len(json_candidates) != 1:
+            raise FileNotFoundError("A2D2 class_list.json not found in tar or multiple candidates found.")
+
+        json_path = json_candidates[0]
+        fileobj = self.tar.extractfile(json_path)
+        if fileobj is None:
+            raise FileNotFoundError(f"Could not extract {json_path}")
+
+        data = json.load(io.BytesIO(fileobj.read()))
+
+        color_to_class = {}
+        class_to_name = {}
+        class_to_color = {}
+
+        # Assign class IDs in the order they appear
+        for cid, (hex_color, name) in enumerate(data.items()):
+            # Convert "#rrggbb" → (R,G,B)
+            hex_color = hex_color.lstrip("#")
+            rgb = tuple(int(hex_color[i : i + 2], 16) for i in (0, 2, 4))
+
+            color_to_class[rgb] = cid
+            class_to_color[cid] = rgb
+            class_to_name[cid] = name
+
+        return color_to_class, class_to_color, class_to_name
+
+    def convert_semantic_rgb_to_class(self, rgb_img: np.ndarray) -> np.ndarray:
+        """
+        Convert an RGB semantic mask (H, W, 3) into class IDs (H, W).
+        """
+        H, W, _ = rgb_img.shape
+        class_mask = np.zeros((H, W), dtype=np.uint8)
+
+        # Flatten for vectorized matching
+        flat = rgb_img.reshape(-1, 3).astype(np.uint32)
+        out = class_mask.reshape(-1)
+
+        # Build a lookup table for speed
+        # Convert RGB triplet → int key
+        keys = (flat[:, 0] << 16) + (flat[:, 1] << 8) + flat[:, 2]
+
+        # Precompute mapping in same integer space
+        lut = {}
+        for (r, g, b), cid in self.color_to_class.items():
+            lut[(r << 16) + (g << 8) + b] = cid
+
+        # Vectorized mapping
+        for k, cid in lut.items():
+            out[keys == k] = cid
+
+        return class_mask
+
     # ----------------------------------------------------------------------
     # Path resolution
     # ----------------------------------------------------------------------
@@ -186,10 +248,15 @@ class A2D2TarDatasetConverter:
         """
         paths = self._build_paths(fc_path)
 
+        # Load semantic PNG as RGB
+        sem_rgb = self.load_img(paths["semantics"], mode="RGB")
+        # Convert to class IDs
+        sem_class = self.convert_semantic_rgb_to_class(sem_rgb)
+
         return {
             "points": self.load_lidar(paths["lidar"]),
             "camera": self.load_img(paths["camera"], mode="RGB"),
-            "semantics": self.load_img(paths["semantics"], mode="L"),
+            "semantics": sem_class,
             "gt_boxes": self.load_boxes(paths["gt_boxes"]),
         }
 
