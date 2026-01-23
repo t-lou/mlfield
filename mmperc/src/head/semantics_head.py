@@ -1,7 +1,7 @@
 from torch import Tensor, nn
 
 
-class FullResSegHead(nn.Module):
+class FullResSemHead(nn.Module):
     """
     Lightweight full-resolution semantic segmentation head.
 

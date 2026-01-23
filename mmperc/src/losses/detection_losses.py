@@ -1,6 +1,7 @@
 import logging
 
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 from common.debug_ploter import DebugPloter
 
@@ -48,3 +49,6 @@ def l1_loss(pred, gt, mask):
     loss = F.l1_loss(pred * mask, gt * mask, reduction="sum")
     denom = mask.sum() + 1e-6
     return loss / denom
+
+
+sem_loss_fn = nn.CrossEntropyLoss(ignore_index=255)

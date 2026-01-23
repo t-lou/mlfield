@@ -23,6 +23,8 @@ class TinyCameraEncoder(nn.Module):
     def __init__(self) -> None:
         super().__init__()
 
+        self.out_channels = params.BEV_CHANNELS
+
         # A small CNN backbone that downsamples the image 3 times.
         # Each stride=2 halves spatial resolution.
         # Final output: (B, out_channels, H', W')
@@ -33,13 +35,13 @@ class TinyCameraEncoder(nn.Module):
             nn.Conv2d(32, 64, kernel_size=3, stride=2, padding=1),
             nn.BatchNorm2d(64),
             nn.ReLU(inplace=True),
-            nn.Conv2d(64, params.BEV_CHANNELS, kernel_size=3, stride=2, padding=1),
-            nn.BatchNorm2d(params.BEV_CHANNELS),
+            nn.Conv2d(64, self.out_channels, kernel_size=3, stride=2, padding=1),
+            nn.BatchNorm2d(self.out_channels),
             nn.ReLU(inplace=True),
         )
 
         # LayerNorm applied after flattening into tokens
-        self.norm = nn.LayerNorm(params.BEV_CHANNELS)
+        self.norm = nn.LayerNorm(self.out_channels)
 
     def forward(self, x: Tensor) -> Tensor:
         """

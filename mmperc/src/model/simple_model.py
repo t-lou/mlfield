@@ -5,7 +5,7 @@ from common.utils import rescale_image
 from encoder.point_pillar_bev import PointPillarBEV
 from encoder.tiny_camera_encoder import TinyCameraEncoder
 from fusion.futr_fusion import FuTrFusionBlock
-from head.full_res_seg_head import FullResSegHead
+from head.semantics_head import FullResSemHead
 from torch import Tensor
 
 
@@ -58,7 +58,7 @@ class SimpleModel(nn.Module):
         )
 
         # Semantic segmentation head
-        self.sem_head = FullResSegHead(in_channels=self.cam_encoder.out_channels, num_classes=params.NUM_SEM_CLASSES)
+        self.sem_head = FullResSemHead(in_channels=self.cam_encoder.out_channels, num_classes=params.NUM_SEM_CLASSES)
 
     def forward(self, points: Tensor, images: Tensor) -> dict:
         """

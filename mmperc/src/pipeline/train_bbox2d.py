@@ -13,7 +13,7 @@ from common.archive import (
     find_latest_epoch_checkpoint,
     save_checkpoint,
 )
-from losses.detection_losses import focal_loss, l1_loss
+from losses.detection_losses import focal_loss, l1_loss, sem_loss_fn
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
@@ -111,16 +111,19 @@ def train_one_epoch(
         optimizer.zero_grad()
 
         pred: Dict[str, torch.Tensor] = model(points, images)
-        heatmap_pred = pred["heatmap"]
-        reg_pred = pred["reg"]
+        heatmap_pred = pred["bbox_heatmap"]
+        reg_pred = pred["bbox_reg"]
+        sem_pred = pred["sem_logits"]
 
         heatmap_gt: torch.Tensor = batch["heatmap_gt"].to(device)
         reg_gt: torch.Tensor = batch["reg_gt"].to(device)
         mask_gt: torch.Tensor = batch["mask_gt"].to(device)
+        sem_gt: torch.Tensor = batch["semantics"].to(device)
 
         loss_hm = focal_loss(heatmap_pred, heatmap_gt)
         loss_reg = l1_loss(reg_pred, reg_gt, mask_gt)
-        loss = loss_hm + loss_reg
+        sem_loss = sem_loss_fn(sem_pred, sem_gt)
+        loss = loss_hm + loss_reg + sem_loss
 
         loss.backward()
         optimizer.step()
