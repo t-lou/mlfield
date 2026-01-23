@@ -44,7 +44,10 @@ class SimpleModel(nn.Module):
         self.bbox_heatmap_head = nn.Sequential(
             nn.Conv2d(bev_channels, bev_channels, kernel_size=3, padding=1),
             nn.ReLU(inplace=True),
-            nn.Conv2d(bev_channels, 1, kernel_size=1),
+            nn.Upsample(scale_factor=2, mode="bilinear", align_corners=False),  # Smooth upsampling
+            nn.Conv2d(bev_channels, bev_channels // 2, kernel_size=3, padding=1),  # Refine
+            nn.ReLU(inplace=True),
+            nn.Conv2d(bev_channels // 2, 1, kernel_size=1),
         )
 
         # Regression head
@@ -53,7 +56,10 @@ class SimpleModel(nn.Module):
         self.bbox_reg_head = nn.Sequential(
             nn.Conv2d(bev_channels, bev_channels, kernel_size=3, padding=1),
             nn.ReLU(inplace=True),
-            nn.Conv2d(bev_channels, 6, kernel_size=1),
+            nn.Upsample(scale_factor=2, mode="bilinear", align_corners=False),  # Smooth upsampling
+            nn.Conv2d(bev_channels, bev_channels // 2, kernel_size=3, padding=1),  # Refine
+            nn.ReLU(inplace=True),
+            nn.Conv2d(bev_channels // 2, 6, kernel_size=1),
         )
 
         # Semantic segmentation head

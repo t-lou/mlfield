@@ -11,7 +11,7 @@ def main():
 
     path_dataset = "/workspace/mmperc/data/a2d2"
     dataset = A2D2Dataset(root=path_dataset)
-    dataloader = DataLoader(dataset, batch_size=8, shuffle=True, collate_fn=bev_collate)
+    dataloader = DataLoader(dataset, batch_size=2, shuffle=True, collate_fn=bev_collate)
 
     model = SimpleModel().to(device)
     optimizer = optim.Adam(model.parameters(), lr=1e-4)

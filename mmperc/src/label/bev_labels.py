@@ -3,7 +3,7 @@ from typing import List
 
 import common.params as params
 import torch
-from common.bev_utils import get_res, xy_to_grid_stride
+from common.bev_utils import get_res, xy_to_grid
 
 GAUSSIAN_CACHE = {}
 
@@ -60,9 +60,8 @@ def generate_bev_labels_bbox2d(
         reg:     (B, 6, H_out, W_out)
         mask:    (B, 1, H_out, W_out)
     """
-    stride = params.BACKBONE_STRIDE
-    bev_h = params.BEV_H // stride
-    bev_w = params.BEV_W // stride
+    bev_h = params.BEV_H
+    bev_w = params.BEV_W
 
     B = len(gt_boxes)
     heatmap = torch.zeros((B, 1, bev_h, bev_w), dtype=torch.float16)
@@ -79,9 +78,9 @@ def generate_bev_labels_bbox2d(
             x, y, z, w, l_, h, yaw = box.tolist()
 
             # -------------------------------
-            # 1. World → BEV grid (stride-aware)
+            # 1. World → BEV grid
             # -------------------------------
-            ix, iy = xy_to_grid_stride(x, y)
+            ix, iy = xy_to_grid(x, y)
 
             if ix < 0 or ix >= bev_w or iy < 0 or iy >= bev_h:
                 continue
@@ -95,15 +94,13 @@ def generate_bev_labels_bbox2d(
             # -------------------------------
             # 3. Regression targets
             # -------------------------------
-            # Use the same convention as before: offsets normalized by voxel size.
-            # Note: ix, iy are on the downsampled grid, so multiply by stride.
             res_x, res_y = get_res()
 
-            cell_x = params.X_RANGE[0] + ix * (res_x * stride)
-            cell_y = params.Y_RANGE[0] + iy * (res_y * stride)
+            cell_x = params.X_RANGE[0] + ix * res_x
+            cell_y = params.Y_RANGE[0] + iy * res_y
 
-            dx = (x - cell_x) / (res_x * stride)
-            dy = (y - cell_y) / (res_y * stride)
+            dx = (x - cell_x) / res_x
+            dy = (y - cell_y) / res_y
 
             reg[b, 0, iy, ix] = dx
             reg[b, 1, iy, ix] = dy
