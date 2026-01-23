@@ -2,6 +2,7 @@ import io
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
+import common.params as params
 import numpy as np
 import torch
 from label.bev_labels import generate_bev_labels_bbox2d
@@ -106,7 +107,8 @@ class A2D2Dataset(Dataset):
             camera = torch.from_numpy(cam_np).permute(2, 0, 1).float() / 255.0  # (3, H, W), normalized to [0, 1]
 
             # Semantics (still raw uint8 array)
-            semantics = torch.from_numpy(data["semantics"][frame_idx])
+            semantics = torch.from_numpy(data["semantics"][frame_idx]).clone()
+            semantics[semantics >= params.NUM_SEM_CLASSES] = 255
 
             # Boxes
             gt_boxes = torch.from_numpy(data["gt_boxes"][frame_idx]).float()
