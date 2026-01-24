@@ -48,6 +48,16 @@ install_nvidia_repo() {
   sudo apt update
 }
 
+# Load optional local overrides
+if [ -f ".devcontainer/local.env" ]; then
+    echo "Loading local overrides from .devcontainer/local.env"
+    set -a
+    source .devcontainer/local.env
+    set +a
+else
+    echo "No local.env found, using defaults"
+fi
+
 # -----------------------------
 # GPU CHECK 1: nvidia-smi in WSL
 # -----------------------------

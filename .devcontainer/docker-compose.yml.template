@@ -13,6 +13,7 @@ services:
     volumes:
       - ${WS_DIR}:/workspace
       - mlfield-home-${USERNAME}:/home/${USERNAME}
+      - ${DATASET_DIR:-/dev/null}:/mnt/dataset:ro
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
