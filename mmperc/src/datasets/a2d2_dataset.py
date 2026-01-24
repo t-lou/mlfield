@@ -5,6 +5,9 @@ from typing import Any, Dict, List, Tuple
 import common.params as params
 import numpy as np
 import torch
+from common.utils import rescale_image
+
+# local dependencies
 from label.bev_labels import generate_bev_labels_bbox2d
 from PIL import Image
 from torch.utils.data import Dataset
@@ -104,10 +107,13 @@ class A2D2Dataset(Dataset):
             cam_bytes = data["camera"][frame_idx]  # this is a bytes object
             cam_img = Image.open(io.BytesIO(cam_bytes))  # PIL Image
             cam_np = np.array(cam_img)  # (H, W, 3)
-            camera = torch.from_numpy(cam_np).permute(2, 0, 1).float() / 255.0  # (3, H, W), normalized to [0, 1]
+            camera = torch.from_numpy(cam_np)
+            camera = camera.permute(2, 0, 1).float() / 255.0  # (3, H, W), normalized to [0, 1]
+            camera = rescale_image(camera, is_label=False)
 
             # Semantics (still raw uint8 array)
             semantics = torch.from_numpy(data["semantics"][frame_idx]).clone()
+            semantics = rescale_image(semantics, is_label=True)
             semantics[semantics >= params.NUM_SEM_CLASSES] = 255
 
             # Boxes
