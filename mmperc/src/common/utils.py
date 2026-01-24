@@ -80,3 +80,13 @@ def encode_png_array(img_array: np.ndarray) -> bytes:
     buf = io.BytesIO()
     img.save(buf, format="PNG")
     return buf.getvalue()
+
+
+def colorize_semantics(sem_pred, class_to_color):
+    H, W = sem_pred.shape
+    sem_rgb = np.zeros((H, W, 3), dtype=np.uint8)
+
+    for cid, rgb in class_to_color.items():
+        sem_rgb[sem_pred == cid] = rgb
+
+    return sem_rgb

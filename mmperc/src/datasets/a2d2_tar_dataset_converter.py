@@ -283,16 +283,26 @@ class A2D2TarDatasetConverter:
 
         # Extract raw camera arrays
         camera_arrays = [f["camera"] for f in frames]
+
         # Parallel PNG encoding
         max_workers = min(os.cpu_count(), 16)
         with ProcessPoolExecutor(max_workers=max_workers) as executor:
             camera_pngs = list(executor.map(encode_png_array, camera_arrays))
 
+        # Raw semantic labels
+        sem_raw = np.stack([f["semantics"] for f in frames], axis=0)
+
+        # Convert dicts → list of pairs (portable, no pickle)
+        class_to_color_list = [(cid, rgb) for cid, rgb in self.class_to_color.items()]
+        class_to_name_list = [(cid, name) for cid, name in self.class_to_name.items()]
+
         return {
             "points": np.stack([f["points"] for f in frames], axis=0),
             "points_timestamp": np.stack([f["points_timestamp"] for f in frames], axis=0),
             "camera": np.array(camera_pngs, dtype=object),
-            "semantics": np.stack([f["semantics"] for f in frames], axis=0),
+            "semantics": sem_raw,
+            "semantics_mapping_color": np.array(class_to_color_list, dtype=object),
+            "semantics_mapping_name": np.array(class_to_name_list, dtype=object),
             "gt_boxes": np.stack([f["gt_boxes"] for f in frames], axis=0),
         }
 

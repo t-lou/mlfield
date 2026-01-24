@@ -4,17 +4,12 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from common.debug_ploter import DebugPloter
-
-G_DEBUG_PLOTER = DebugPloter()
-
 
 def focal_loss(pred, gt, alpha=2.0, beta=4.0):
     """
     pred: (B, 1, H, W) after sigmoid
     gt:   (B, 1, H, W) with Gaussian peaks
     """
-    G_DEBUG_PLOTER.export_heatmap_debug(pred, gt)
     assert pred.shape == gt.shape, f"pred shape {pred.shape} != gt shape {gt.shape}"
 
     # debug grid indexing

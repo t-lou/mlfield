@@ -10,6 +10,7 @@ import torch
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
+import common.debug_ploter as debug_ploter
 from common.archive import (
     archive_existing_model,
     ensure_dir,
@@ -31,6 +32,7 @@ def train_model(
     num_epochs: int = 1,
     ckpt_dir="checkpoints",
 ) -> float:
+    debug_ploter.init_plot()
     ensure_dir(ckpt_dir)
     latest_path = os.path.join(ckpt_dir, "simple_model_latest.pt")
 
@@ -104,6 +106,7 @@ def train_one_epoch(
     recent_losses: deque[float] = deque(maxlen=20)
     progress = tqdm(dataloader, desc=f"Epoch {epoch}/{num_epochs}", leave=False)
 
+    id_batch = 0
     for batch in progress:
         points: torch.Tensor = batch["points"].to(device)
         images: torch.Tensor = batch["camera"].to(device)
@@ -116,10 +119,10 @@ def train_one_epoch(
         reg_pred = pred["bbox_reg"]
         sem_pred = pred["sem_logits"]
 
-        heatmap_gt: torch.Tensor = batch["heatmap_gt"].to(device)
-        reg_gt: torch.Tensor = batch["reg_gt"].to(device)
-        mask_gt: torch.Tensor = batch["mask_gt"].to(device)
-        sem_gt: torch.Tensor = batch["semantics"].to(device)
+        heatmap_gt: torch.Tensor = batch["heatmap_gt"].to(device).clone()
+        reg_gt: torch.Tensor = batch["reg_gt"].to(device).clone()
+        mask_gt: torch.Tensor = batch["mask_gt"].to(device).clone()
+        sem_gt: torch.Tensor = batch["semantics"].to(device).clone()
 
         # refactor later
         H_gt, W_gt = sem_gt.shape[-2], sem_gt.shape[-1]
@@ -131,6 +134,17 @@ def train_one_epoch(
 
         loss.backward()
         optimizer.step()
+
+        # Plot for debugging
+        debug_ploter.export_bbox_heatmap_debug(heatmap_pred[0, 0, ...], heatmap_gt[0, 0, ...], epoch, id_batch)
+        # class_to_color = batch["semantics_mapping_color"][0]  # from your npz
+        # debug_ploter.export_semantic_debug(
+        #     sem_pred[0, ...],  # (C, H, W)
+        #     sem_gt[0, ...],  # (H, W)
+        #     class_to_color,  # list of (cid, rgb)
+        #     epoch,
+        #     id_batch,
+        # )
 
         current_loss = loss.item()
         recent_losses.append(current_loss)
