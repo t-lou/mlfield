@@ -1,10 +1,11 @@
 import logging
 
+from torch import Tensor, nn
+
 import common.params as params
 from backbone.tiny_bev_backbone import TinyBEVBackbone
 from encoder.simple_pfn import SimplePFN
 from scatter.scatter import scatter_to_bev
-from torch import Tensor, nn
 from voxelizer.pointpillar_lite import PointpillarLite
 
 

@@ -2,15 +2,16 @@ import io
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
-import common.params as params
 import numpy as np
 import torch
+from PIL import Image
+from torch.utils.data import Dataset
+
+import common.params as params
 from common.utils import rescale_image
 
 # local dependencies
 from label.bev_labels import generate_bev_labels_bbox2d
-from PIL import Image
-from torch.utils.data import Dataset
 
 
 def bev_collate(batch):

@@ -1,8 +1,9 @@
 import math
 from typing import List
 
-import common.params as params
 import torch
+
+import common.params as params
 from common.bev_utils import get_res, xy_to_grid
 
 GAUSSIAN_CACHE = {}

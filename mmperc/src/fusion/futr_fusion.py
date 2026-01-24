@@ -1,6 +1,7 @@
-import common.params as params
 import torch.nn as nn
 from torch import Tensor
+
+import common.params as params
 
 
 class FuTrFusionBlock(nn.Module):

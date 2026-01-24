@@ -1,8 +1,9 @@
 from pathlib import Path
 
-import common.params as params
 import matplotlib.pyplot as plt
 from torch import Tensor
+
+import common.params as params
 
 
 class DebugPloter:

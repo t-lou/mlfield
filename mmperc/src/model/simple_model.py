@@ -1,11 +1,12 @@
-import common.params as params
 import torch
 import torch.nn as nn
+from torch import Tensor
+
+import common.params as params
 from encoder.point_pillar_bev import PointPillarBEV
 from encoder.tiny_camera_encoder import TinyCameraEncoder
 from fusion.futr_fusion import FuTrFusionBlock
 from head.semantics_head import FullResSemHead
-from torch import Tensor
 
 
 class SimpleModel(nn.Module):

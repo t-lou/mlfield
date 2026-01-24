@@ -1,6 +1,7 @@
-import common.params as params
 import torch
 import torch.nn as nn
+
+import common.params as params
 
 
 # Note: This Head is dummy and probably not doable with the available data.

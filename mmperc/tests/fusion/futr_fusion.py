@@ -1,4 +1,5 @@
 import torch
+
 from common.device import get_best_device
 from fusion.futr_fusion import FuTrFusionBlock
 

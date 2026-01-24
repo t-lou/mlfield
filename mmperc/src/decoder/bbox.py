@@ -4,13 +4,14 @@ import math
 import os
 from typing import Tuple
 
-import common.params as params
 import torch
+from torch.utils.data import DataLoader
+
+import common.params as params
 from common.bev_utils import get_res, grid_to_xy_stride
 from common.device import get_best_device
 from datasets.a2d2_dataset import A2D2Dataset
 from model.simple_model import SimpleModel
-from torch.utils.data import DataLoader
 
 # ================================================================
 # 1. Heatmap Top-K Extraction

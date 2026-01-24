@@ -1,8 +1,9 @@
 from typing import Dict, Tuple
 
-import common.params as params
 import torch
 from torch import Tensor
+
+import common.params as params
 
 
 class PointpillarLite:

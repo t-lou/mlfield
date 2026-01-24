@@ -1,9 +1,10 @@
 import torch.optim as optim
+from torch.utils.data import DataLoader
+
 from common.device import get_best_device
 from datasets.a2d2_dataset import A2D2Dataset, bev_collate
 from model.simple_model import SimpleModel
 from pipeline.train_bbox2d import train_model
-from torch.utils.data import DataLoader
 
 
 def main():

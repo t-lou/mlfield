@@ -1,5 +1,10 @@
-import common.params as params
+import io
+
+import numpy as np
 import torch.nn.functional as F
+from PIL import Image
+
+import common.params as params
 
 
 def rescale_image(x, scale_factor: float = params.IMAGE_SCALE, is_label: bool = False):
@@ -65,3 +70,13 @@ def rescale_image(x, scale_factor: float = params.IMAGE_SCALE, is_label: bool = 
         if x_rescaled.shape[0] == 1:
             return x_rescaled[0]
         return x_rescaled
+
+
+# ----------------------------------------------------------------------
+# Compress RGB images to PNG bytes
+# ----------------------------------------------------------------------
+def encode_png_array(img_array: np.ndarray) -> bytes:
+    img = Image.fromarray(img_array)
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()

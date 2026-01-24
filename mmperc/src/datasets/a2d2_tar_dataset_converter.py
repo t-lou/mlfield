@@ -1,16 +1,20 @@
 import io
 import json
 import logging
+import os
 import random
 import shutil
 import sys
 import tarfile
+from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path, PurePosixPath
 from typing import Dict, List, Tuple
 
 import numpy as np
 from PIL import Image
 from tqdm import tqdm
+
+from common.utils import encode_png_array
 
 
 class A2D2TarDatasetConverter:
@@ -49,6 +53,8 @@ class A2D2TarDatasetConverter:
 
         # Load semantic mapping from color to class ID
         self.color_to_class, self.class_to_color, self.class_to_name = self._load_semantic_mapping()
+
+        logging.info(f"Tar file {self.tar_path} parsed.")
 
     def close(self) -> None:
         """Close the underlying tar file."""
@@ -275,10 +281,17 @@ class A2D2TarDatasetConverter:
 
         frames = [self.proceed_one_frame(p) for p in fc_paths]
 
+        # Extract raw camera arrays
+        camera_arrays = [f["camera"] for f in frames]
+        # Parallel PNG encoding
+        max_workers = min(os.cpu_count(), 16)
+        with ProcessPoolExecutor(max_workers=max_workers) as executor:
+            camera_pngs = list(executor.map(encode_png_array, camera_arrays))
+
         return {
             "points": np.stack([f["points"] for f in frames], axis=0),
             "points_timestamp": np.stack([f["points_timestamp"] for f in frames], axis=0),
-            "camera": np.array([self.encode_png(f["camera"]) for f in frames], dtype=object),
+            "camera": np.array(camera_pngs, dtype=object),
             "semantics": np.stack([f["semantics"] for f in frames], axis=0),
             "gt_boxes": np.stack([f["gt_boxes"] for f in frames], axis=0),
         }
@@ -305,16 +318,6 @@ class A2D2TarDatasetConverter:
 
         logging.info(f"Saved {out_path} with batch size {batch['points'].shape[0]}")
         return out_path
-
-    # ----------------------------------------------------------------------
-    # Compress RGB images to PNG bytes
-    # ----------------------------------------------------------------------
-
-    def encode_png(self, img_array: np.ndarray) -> bytes:
-        img = Image.fromarray(img_array)
-        buf = io.BytesIO()
-        img.save(buf, format="PNG")
-        return buf.getvalue()
 
 
 # ----------------------------------------------------------------------

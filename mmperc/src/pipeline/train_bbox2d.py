@@ -7,6 +7,9 @@ from collections import deque
 from typing import Dict
 
 import torch
+from torch.utils.data import DataLoader
+from tqdm import tqdm
+
 from common.archive import (
     archive_existing_model,
     ensure_dir,
@@ -14,8 +17,6 @@ from common.archive import (
     save_checkpoint,
 )
 from losses.detection_losses import focal_loss, l1_loss, sem_loss_fn
-from torch.utils.data import DataLoader
-from tqdm import tqdm
 
 # ================================================================
 # Continuous Training Loop
