@@ -137,14 +137,14 @@ def train_one_epoch(
 
         # Plot for debugging
         debug_ploter.export_bbox_heatmap_debug(heatmap_pred[0, 0, ...], heatmap_gt[0, 0, ...], epoch, id_batch)
-        # class_to_color = batch["semantics_mapping_color"][0]  # from your npz
-        # debug_ploter.export_semantic_debug(
-        #     sem_pred[0, ...],  # (C, H, W)
-        #     sem_gt[0, ...],  # (H, W)
-        #     class_to_color,  # list of (cid, rgb)
-        #     epoch,
-        #     id_batch,
-        # )
+        class_to_color = batch["semantics_mapping_color"][0]  # from your npz
+        debug_ploter.export_semantic_debug(
+            sem_pred[0, ...],  # (C, H, W)
+            sem_gt[0, ...],  # (H, W)
+            class_to_color,  # list of (cid, rgb)
+            epoch,
+            id_batch,
+        )
 
         current_loss = loss.item()
         recent_losses.append(current_loss)

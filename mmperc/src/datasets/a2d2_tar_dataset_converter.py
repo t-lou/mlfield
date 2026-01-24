@@ -323,6 +323,8 @@ class A2D2TarDatasetConverter:
             points_timestamp=batch["points_timestamp"],
             camera=batch["camera"],
             semantics=batch["semantics"],
+            semantics_mapping_color=batch["semantics_mapping_color"],
+            semantics_mapping_name=batch["semantics_mapping_name"],
             gt_boxes=batch["gt_boxes"],
         )
 

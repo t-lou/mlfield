@@ -43,7 +43,7 @@ def export_bbox_heatmap_debug(pred, gt, id_epoch=0, id_sample=0) -> None:
     plt.close()
 
 
-def export_semantic_debug(self, pred_logits, gt_sem, class_to_color, id_epoch=0, id_sample=0):
+def export_semantic_debug(pred_logits, gt_sem, class_to_color, id_epoch=0, id_sample=0):
     if not params.DEBUG_PLOT_ON:
         return
 
