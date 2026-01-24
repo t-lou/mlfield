@@ -152,4 +152,6 @@ def train_one_epoch(
 
         progress.set_postfix(loss=f"{current_loss:.2f}", avg20=f"{avg20:.2f}")
 
+        id_batch += 1
+
     return sum(recent_losses) / len(recent_losses)
