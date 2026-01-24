@@ -9,10 +9,20 @@ from pipeline.train_bbox2d import train_model
 
 def main():
     device = get_best_device()
+    batch_size = 2
 
     path_dataset = "/workspace/mmperc/data/a2d2"
     dataset = A2D2Dataset(root=path_dataset)
-    dataloader = DataLoader(dataset, batch_size=2, shuffle=True, collate_fn=bev_collate)
+    dataloader = DataLoader(
+        dataset,
+        batch_size=batch_size,
+        shuffle=True,
+        collate_fn=bev_collate,
+        num_workers=8,
+        pin_memory=True,
+        persistent_workers=True,
+        prefetch_factor=4,
+    )
 
     model = SimpleModel().to(device)
     optimizer = optim.Adam(model.parameters(), lr=1e-4)
