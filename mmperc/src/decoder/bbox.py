@@ -1,16 +1,19 @@
 from __future__ import annotations
 
+import io
 import math
 import os
 from typing import Tuple
 
+import numpy as np
 import torch
+from PIL import Image
 from torch.utils.data import DataLoader
 
 import common.params as params
 from common.bev_utils import get_res, grid_to_xy_stride
 from common.device import get_best_device
-from datasets.a2d2_dataset import A2D2Dataset
+from datasets.a2d2_dataset import A2D2Dataset, bev_collate
 from model.simple_model import SimpleModel
 
 # ================================================================
@@ -211,20 +214,57 @@ class ModelInferenceWrapper:
 
         return model_inference(self.model, points, images, K)
 
-    def infer_a2d2_dataset(self, path_dataset: str, K: int = 50):
+    def infer_a2d2_dataset(self, path_dataset: str, path_output: str, K: int = 50):
+        assert path_output.endswith(".npz"), "path_output must be an .npz file"
+        out_dir = os.path.dirname(path_output)
+        os.makedirs(out_dir, exist_ok=True)
+
         dataset = A2D2Dataset(root=path_dataset)
-        dataloader = DataLoader(dataset, batch_size=1, shuffle=False)
+        dataloader = DataLoader(
+            dataset,
+            batch_size=4,
+            shuffle=True,
+            collate_fn=bev_collate,
+            num_workers=8,
+            pin_memory=True,
+            persistent_workers=True,
+            prefetch_factor=4,
+        )
 
-        all_boxes = []
-        all_scores = []
-
-        for batch in dataloader:
+        for idx, batch in enumerate(dataloader):
             points = batch["points"].to(self.device)
             images = batch["camera"].to(self.device)
 
+            # 1. Run inference
             boxes, scores = self.infer(points, images, K)
 
-            all_boxes.extend(boxes)
-            all_scores.append(scores.cpu())  # FIXED
+            # 2. Forward pass again to get semantic logits
+            with torch.no_grad():
+                pred = self.model(points, images)
+                sem_logits = pred["sem_logits"][0].cpu()  # (C, H, W)
+                sem_pred = sem_logits.argmax(dim=0).numpy()  # (H, W)
 
-        return all_boxes, all_scores
+            # 3. Convert semantic prediction to RGB (same as debug plot)
+            class_to_color = batch["semantics_mapping_color"][0]
+            sem_rgb = np.zeros((*sem_pred.shape, 3), dtype=np.uint8)
+            for cid, rgb in class_to_color:
+                sem_rgb[sem_pred == cid] = rgb
+
+            # 4. Encode semantic RGB as PNG bytes
+            png_buffer = io.BytesIO()
+            Image.fromarray(sem_rgb).save(png_buffer, format="PNG")
+            png_bytes = png_buffer.getvalue()
+
+            # 5. Save NPZ
+            np.savez_compressed(
+                os.path.join(out_dir, f"sample_{idx:06d}.npz"),
+                points=batch["points"][0].numpy(),  # original point cloud
+                bboxes=np.array(boxes[0], dtype=np.float32),
+                heatmap_scores=scores.cpu().numpy(),
+                sem_logits=sem_logits.numpy(),  # raw logits
+                sem_pred=sem_pred,  # decoded class map
+                sem_rgb=sem_rgb,  # RGB visualization
+                sem_rgb_png=png_bytes,  # PNG bytes
+            )
+
+        print(f"Saved inference results to: {out_dir}")

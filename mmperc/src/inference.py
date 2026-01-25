@@ -8,7 +8,9 @@ if __name__ == "__main__":
         model_inference_wrapper = ModelInferenceWrapper()
         print("ModelInferenceWrapper instantiated successfully.")
 
-        results = model_inference_wrapper.infer_a2d2_dataset("/workspace/mmperc/data/a2d2")
+        results = model_inference_wrapper.infer_a2d2_dataset(
+            "/workspace/mmperc/data/a2d2", "/workspace/mmperc/data/a2d2_output.npz"
+        )
         print(results)
 
     except Exception as e:
