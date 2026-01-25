@@ -2,6 +2,7 @@ import torch.nn as nn
 from torch import Tensor
 
 import common.params as params
+from common.model_config import model_config
 from encoder.point_pillar_bev import PointPillarBEV
 from encoder.tiny_camera_encoder import TinyCameraEncoder
 from fusion.futr_fusion import FuTrFusionBlock
@@ -21,20 +22,26 @@ class SimpleModel(nn.Module):
     def __init__(self, bev_channels: int = params.BEV_CHANNELS) -> None:
         super().__init__()
 
+        assert model_config["use_lidar"] or model_config["use_camera"], "Hey, both lidar and camera off."
+
         # ---------------------------------------------------------
         # 1. Lidar encoder → BEV feature map
         # ---------------------------------------------------------
-        self.lidar_encoder = PointPillarBEV()  # (B, C, H, W)
+        if model_config["use_lidar"]:
+            self.lidar_encoder = PointPillarBEV()  # (B, C, H, W)
 
         # ---------------------------------------------------------
         # 2. Camera encoder → token embeddings
         # ---------------------------------------------------------
-        self.cam_encoder = TinyCameraEncoder()  # (B, N_cam, C)
+        if model_config["use_camera"]:
+            self.cam_encoder = TinyCameraEncoder()  # (B, N_cam, C)
 
         # ---------------------------------------------------------
         # 3. Fusion block (BEV <-> camera tokens)
         # ---------------------------------------------------------
-        self.fusion = FuTrFusionBlock()
+        self._use_fusion = model_config["use_lidar"] and model_config["use_camera"]
+        if self._use_fusion:
+            self.fusion = FuTrFusionBlock()
 
         # ---------------------------------------------------------
         # 4. Detection heads
@@ -46,10 +53,15 @@ class SimpleModel(nn.Module):
         # Regression head
         # Predicts: dx, dy, log(w), log(l), sin(yaw), cos(yaw)
         # Shape: (B, 6, H, W)
-        self.bbox_head = BBox2dHead(bev_channels)
+
+        if model_config["heads"].get("bbox", False):
+            self.bbox_head = BBox2dHead(bev_channels)
 
         # Semantic segmentation head
-        self.sem_head = FullResSemHead(in_channels=self.cam_encoder.out_channels, num_classes=params.NUM_SEM_CLASSES)
+        if model_config["heads"].get("semantics", False):
+            self.sem_head = FullResSemHead(
+                in_channels=self.cam_encoder.out_channels, num_classes=params.NUM_SEM_CLASSES
+            )
 
     def forward(self, points: Tensor, images: Tensor) -> dict:
         """
@@ -91,34 +103,41 @@ class SimpleModel(nn.Module):
         # ---------------------------------------------------------
         # 1. Lidar → BEV feature map
         # ---------------------------------------------------------
-        lidar_token: Tensor = self.lidar_encoder(points)  # (B, C, H, W)
+        if model_config["use_lidar"]:
+            lidar_token: Tensor = self.lidar_encoder(points)  # (B, C, H, W)
 
         # ---------------------------------------------------------
         # 2. Camera → tokens
         # ---------------------------------------------------------
-        camera_tokens, cam_feat = self.cam_encoder(images)
+        if model_config["use_camera"]:
+            camera_tokens, cam_feat = self.cam_encoder(images)
 
         # ---------------------------------------------------------
         # 3. BEV–camera fusion
         # ---------------------------------------------------------
-        bev_fused: Tensor = self.fusion(lidar_token, camera_tokens)  # (B, C, H, W)
+        if self._use_fusion:
+            bev_fused: Tensor = self.fusion(lidar_token, camera_tokens)  # (B, C, H, W)
+        elif model_config["use_lidar"]:
+            bev_fused = lidar_token
+        else:
+            bev_fused = camera_tokens
+
+        # Prepare output
+        outputs = {}
 
         # ---------------------------------------------------------
         # 4. Detection heads
         # ---------------------------------------------------------
 
         # BBox2d predictions
-        bbox_features = self.bbox_head(bev_fused)
-        bbox_heatmap, bbox_reg = bbox_features["heatmap"], bbox_features["reg"]
+        if hasattr(self, "bbox_head"):
+            bbox_features = self.bbox_head(bev_fused)
+            bbox_heatmap, bbox_reg = bbox_features["heatmap"], bbox_features["reg"]
+            outputs["bbox_heatmap"] = bbox_heatmap
+            outputs["bbox_reg"] = bbox_reg
 
         # Semantic segmentation prediction
-        sem_logits = self.sem_head(cam_feat)
+        if hasattr(self, "sem_head"):
+            outputs["sem_logits"] = self.sem_head(cam_feat)
 
-        # ---------------------------------------------------------
-        # 5. Return multi-task outputs
-        # ---------------------------------------------------------
-        return {
-            "bbox_heatmap": bbox_heatmap,
-            "bbox_reg": bbox_reg,
-            "sem_logits": sem_logits,
-        }
+        return outputs
