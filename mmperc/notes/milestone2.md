@@ -101,3 +101,34 @@ The multi-task architecture is functioning as intended. Both heads are producing
 
 Generated on: 2026-01-24Location: Munich, Germany
 
+---
+
+## Update 25.01.2026
+
+Still each epoch trained with 200 samples.
+
+### 1st frame in epoch 3
+
+![Start](./imgs/milestone2_debug_heatmaps_2_0.png)
+![Start](./imgs/milestone2_debug_sem_2_0.png)
+
+### 2nd frame in epoch 3
+
+![Start](./imgs/milestone2_debug_heatmaps_2_1.png)
+![Start](./imgs/milestone2_debug_sem_2_1.png)
+
+### 3rd frame in epoch 3
+
+![Start](./imgs/milestone2_debug_heatmaps_2_2.png)
+![Start](./imgs/milestone2_debug_sem_2_2.png)
+
+### 3rd frame in epoch 3
+
+![Start](./imgs/milestone2_debug_heatmaps_2_3.png)
+![Start](./imgs/milestone2_debug_sem_2_3.png)
+
+### 3rd frame in epoch 3
+
+![Start](./imgs/milestone2_debug_heatmaps_2_4.png)
+![Start](./imgs/milestone2_debug_sem_2_4.png)
+

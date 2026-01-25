@@ -39,7 +39,7 @@ def export_bbox_heatmap_debug(pred, gt, id_epoch=0, id_sample=0) -> None:
 
     plt.tight_layout()
     path = Path("debug_plots")
-    plt.savefig(path / f"debug_heatmaps_{id_epoch} _{id_sample}.png")
+    plt.savefig(path / f"debug_heatmaps_{id_epoch}_{id_sample}.png")
     plt.close()
 
 
