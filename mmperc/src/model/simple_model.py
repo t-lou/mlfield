@@ -99,6 +99,9 @@ class SimpleModel(nn.Module):
             - Detection heads operate on fused BEV features.
             - Semantic head operates on camera feature maps.
         """
+        lidar_token = None
+        camera_tokens = None
+        cam_feat = None
 
         # ---------------------------------------------------------
         # 1. Lidar → BEV feature map
@@ -118,9 +121,7 @@ class SimpleModel(nn.Module):
         if self._use_fusion:
             bev_fused: Tensor = self.fusion(lidar_token, camera_tokens)  # (B, C, H, W)
         elif model_config["use_lidar"]:
-            bev_fused = lidar_token
-        else:
-            bev_fused = camera_tokens
+            bev_fused = lidar_token if model_config["use_lidar"] else camera_tokens
 
         # Prepare output
         outputs = {}
@@ -138,6 +139,7 @@ class SimpleModel(nn.Module):
 
         # Semantic segmentation prediction
         if hasattr(self, "sem_head"):
-            outputs["sem_logits"] = self.sem_head(cam_feat)
+            sem_feature = self.sem_head(cam_feat)
+            outputs["sem_logits"] = sem_feature
 
         return outputs
