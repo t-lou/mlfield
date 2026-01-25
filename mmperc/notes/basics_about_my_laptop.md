@@ -46,13 +46,13 @@ with torch.cuda.amp.autocast():
 ---
 
 ### 2. **Keep batch size modest**
-Stick to `batch_size = 4` or `6` for multi-task models.  
+Stick to `batch_size = 4` or `6` for multi-task models.
 You’ll avoid VRAM overflow and keep training stable.
 
 ---
 
 ### 3. **Use `num_workers = 4` or `6`**
-Your CPU can handle parallel dataloading well.  
+Your CPU can handle parallel dataloading well.
 Avoid `num_workers = 0` — it bottlenecks everything.
 
 ---
@@ -63,28 +63,55 @@ Your RAM is limited. Let workers load on demand.
 ---
 
 ### 5. **Free up disk space**
-You’re down to ~47 GB free.  
+You’re down to ~47 GB free.
 Delete old logs, checkpoints, or unused datasets — aim for at least 100 GB free.
 
 ---
 
 ### 6. **Use WSL2 + Docker (if not already)**
-For reproducibility and Linux-native tooling.  
+For reproducibility and Linux-native tooling.
 Your GPU is supported via CUDA passthrough.
 
 ---
 
 ### 7. **Profile your pipeline**
-Use `torch.utils.bottleneck` or `nvprof` to find slow spots.  
+Use `torch.utils.bottleneck` or `nvprof` to find slow spots.
 You’ll likely see dataloader or image decode as the top bottlenecks.
 
 ---
 
 If you want, I can help you:
 
-- write a GPU memory profiler  
-- optimize your Docker setup  
-- build a RAM-aware caching strategy  
-- compress your NPZs safely without losing speed  
+- write a GPU memory profiler
+- optimize your Docker setup
+- build a RAM-aware caching strategy
+- compress your NPZs safely without losing speed
 
 Just tell me how deep you want to go.
+
+---
+
+GPU usage by the end of milestone2 (multi-task)
+
+```
+Sun Jan 25 14:35:07 2026
++-----------------------------------------------------------------------------------------+
+| NVIDIA-SMI 575.57.04              Driver Version: 576.52         CUDA Version: 12.9     |
+|-----------------------------------------+------------------------+----------------------+
+| GPU  Name                 Persistence-M | Bus-Id          Disp.A | Volatile Uncorr. ECC |
+| Fan  Temp   Perf          Pwr:Usage/Cap |           Memory-Usage | GPU-Util  Compute M. |
+|                                         |                        |               MIG M. |
+|=========================================+========================+======================|
+|   0  NVIDIA GeForce RTX 2050        On  |   00000000:01:00.0  On |                  N/A |
+| N/A   51C    P3              3W /   39W |    3571MiB /   4096MiB |      2%      Default |
+|                                         |                        |                  N/A |
++-----------------------------------------+------------------------+----------------------+
+
++-----------------------------------------------------------------------------------------+
+| Processes:                                                                              |
+|  GPU   GI   CI              PID   Type   Process name                        GPU Memory |
+|        ID   ID                                                               Usage      |
+|=========================================================================================|
+|    0   N/A  N/A             355      C   /python3.12                           N/A      |
++-----------------------------------------------------------------------------------------+
+```
