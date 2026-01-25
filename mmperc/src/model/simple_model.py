@@ -6,6 +6,7 @@ import common.params as params
 from encoder.point_pillar_bev import PointPillarBEV
 from encoder.tiny_camera_encoder import TinyCameraEncoder
 from fusion.futr_fusion import FuTrFusionBlock
+from head.bbox2d_head import BBox2dHead
 from head.semantics_head import FullResSemHead
 
 
@@ -40,28 +41,13 @@ class SimpleModel(nn.Module):
         # 4. Detection heads
         # ---------------------------------------------------------
 
-        # Heatmap head (CenterNet-style)
+        # BBox head (CenterNet-style)
         # Predicts object centers: (B, 1, H, W)
-        self.bbox_heatmap_head = nn.Sequential(
-            nn.Conv2d(bev_channels, bev_channels, kernel_size=3, padding=1),
-            nn.ReLU(inplace=True),
-            nn.Upsample(scale_factor=2, mode="bilinear", align_corners=False),  # Smooth upsampling
-            nn.Conv2d(bev_channels, bev_channels // 2, kernel_size=3, padding=1),  # Refine
-            nn.ReLU(inplace=True),
-            nn.Conv2d(bev_channels // 2, 1, kernel_size=1),
-        )
-
+        # and
         # Regression head
         # Predicts: dx, dy, log(w), log(l), sin(yaw), cos(yaw)
         # Shape: (B, 6, H, W)
-        self.bbox_reg_head = nn.Sequential(
-            nn.Conv2d(bev_channels, bev_channels, kernel_size=3, padding=1),
-            nn.ReLU(inplace=True),
-            nn.Upsample(scale_factor=2, mode="bilinear", align_corners=False),  # Smooth upsampling
-            nn.Conv2d(bev_channels, bev_channels // 2, kernel_size=3, padding=1),  # Refine
-            nn.ReLU(inplace=True),
-            nn.Conv2d(bev_channels // 2, 6, kernel_size=1),
-        )
+        self.bbox_head = BBox2dHead(bev_channels)
 
         # Semantic segmentation head
         self.sem_head = FullResSemHead(in_channels=self.cam_encoder.out_channels, num_classes=params.NUM_SEM_CLASSES)
@@ -97,11 +83,12 @@ class SimpleModel(nn.Module):
         # 4. Detection heads
         # ---------------------------------------------------------
 
+        # BBox2d
+        bbox_features = self.bbox_head(bev_fused)
         # Heatmap prediction (sigmoid → probability)
-        bbox_heatmap = torch.sigmoid(self.bbox_heatmap_head(bev_fused))
-
+        bbox_heatmap = torch.sigmoid(bbox_features["heatmap"])
         # Regression prediction (raw values)
-        bbox_reg = self.bbox_reg_head(bev_fused)
+        bbox_reg = bbox_features["reg"]
 
         # Semantic segmentation prediction
         sem_logits = self.sem_head(cam_feat)
