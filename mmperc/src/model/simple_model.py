@@ -53,14 +53,39 @@ class SimpleModel(nn.Module):
 
     def forward(self, points: Tensor, images: Tensor) -> dict:
         """
+        Forward pass of the multi-task BEV + camera fusion model.
+
         Args:
-            points: (B, N, 4) lidar point cloud
-            images: (B, 3, H, W) RGB camera images
+            points:
+                LiDAR point cloud tensor of shape (B, N, 4),
+                where N is the number of points and each point is (x, y, z, intensity).
+
+            images:
+                RGB camera images of shape (B, 3, H_img, W_img).
 
         Returns:
-            dict with:
-                "heatmap": (B, 1, H_bev, W_bev)
-                "reg":     (B, 6, H_bev, W_bev)
+            dict with the following keys:
+
+                "bbox_heatmap":
+                    Tensor of shape (B, 1, H_bev, W_bev)
+                    CenterNet-style heatmap predicting object centers in BEV.
+
+                "bbox_reg":
+                    Tensor of shape (B, 6, H_bev, W_bev)
+                    Regression outputs for each BEV cell:
+                        [dx, dy, log(w), log(l), sin(yaw), cos(yaw)].
+
+                "sem_logits":
+                    Tensor of shape (B, C_sem, H_img', W_img')
+                    Per-pixel semantic segmentation logits from the camera branch.
+                    (H_img', W_img' depend on the camera encoder/decoder resolution.)
+
+        Notes:
+            - LiDAR is encoded into a BEV feature map.
+            - Camera images are encoded into tokens + feature maps.
+            - Fusion combines BEV and camera tokens.
+            - Detection heads operate on fused BEV features.
+            - Semantic head operates on camera feature maps.
         """
 
         # ---------------------------------------------------------
