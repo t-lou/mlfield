@@ -1,4 +1,3 @@
-import torch
 import torch.nn as nn
 from torch import Tensor
 
@@ -83,12 +82,9 @@ class SimpleModel(nn.Module):
         # 4. Detection heads
         # ---------------------------------------------------------
 
-        # BBox2d
+        # BBox2d predictions
         bbox_features = self.bbox_head(bev_fused)
-        # Heatmap prediction (sigmoid → probability)
-        bbox_heatmap = torch.sigmoid(bbox_features["heatmap"])
-        # Regression prediction (raw values)
-        bbox_reg = bbox_features["reg"]
+        bbox_heatmap, bbox_reg = bbox_features["heatmap"], bbox_features["reg"]
 
         # Semantic segmentation prediction
         sem_logits = self.sem_head(cam_feat)
