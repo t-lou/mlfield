@@ -8,11 +8,11 @@ My private playground and notes collection for ML.
 
 **mlfield** is a modular repository designed for:
 
-- Fast iteration on ML experiments  
-- Clean separation of ideas into themed subfolders  
-- Reproducible development environments  
-- Notes, insights, and research logs that accompany experiments  
-- Future expansion into multimodal, SSL, and robotics‑related workflows  
+- Fast iteration on ML experiments
+- Clean separation of ideas into themed subfolders
+- Reproducible development environments
+- Notes, insights, and research logs that accompany experiments
+- Future expansion into multimodal, SSL, and robotics‑related workflows
 
 It’s intentionally lightweight and flexible — a “field notebook” for machine learning.
 
@@ -47,3 +47,22 @@ bash mlfield/.devcontainer/launch.sh
 ```
 
 After creation with bash, optionally reopen the folder with VS Code inside a container. Please reopen only, rebuilding will break.
+
+---
+
+### 📁 Optional Dataset Mount (`DATASET_DIR` via `local.env`)
+
+You can mount a local dataset into the container by defining `DATASET_DIR` in your `.devcontainer/local.env` file:
+
+```
+DATASET_DIR=/path/to/your/dataset
+```
+
+The compose file uses:
+
+```
+- ${DATASET_DIR:-/dev/null}:/mnt/dataset:ro
+```
+
+If `DATASET_DIR` is set in `.devcontainer/local.env`, that directory is mounted read‑only at `/mnt/dataset`.
+If it’s missing, the mount safely falls back to `/dev/null`.
