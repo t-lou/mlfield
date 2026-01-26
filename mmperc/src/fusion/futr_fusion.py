@@ -1,6 +1,6 @@
-import torch
 import torch.nn as nn
 from torch import Tensor
+
 import common.params as params
 
 
@@ -61,8 +61,8 @@ class FuTrFusionBlock(nn.Module):
 
         # Camera queries → BEV keys/values
         attn_out, _ = self.cross_attn(
-            query=cam_tokens,     # (B, N_cam, C)
-            key=bev_tokens,       # (B, HW, C)
+            query=cam_tokens,  # (B, N_cam, C)
+            key=bev_tokens,  # (B, HW, C)
             value=bev_tokens,
         )
 

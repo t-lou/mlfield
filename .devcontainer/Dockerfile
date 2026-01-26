@@ -19,15 +19,18 @@ RUN rm -f /usr/lib/python3.*/EXTERNALLY-MANAGED
 RUN pip3 install --no-cache-dir torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu129
 
 # Optional: common ML packages
-RUN pip3 install --no-cache-dir numpy scipy scikit-learn matplotlib jupyterlab notebook
+RUN pip3 install --no-cache-dir numpy scipy scikit-learn matplotlib jupyterlab notebook pytest
+
+# Install new deps
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        graphviz \
+    && rm -rf /var/lib/apt/lists/*
 
 # 1. Define Build Arguments with defaults (e.g., 1000 is common for non-root users)
 ARG HOST_UID
 ARG HOST_GID
 ARG USERNAME
-
-# For testing
-RUN pip3 install --no-cache-dir pytest
 
 # Rename the existing user/group if UID/GID already exist
 RUN if getent passwd $HOST_UID; then \

@@ -1,4 +1,6 @@
+graphviz
 matplotlib
 numpy
 open3d
+torchviz
 tqdm
