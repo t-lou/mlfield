@@ -3,6 +3,7 @@ from dataclasses import dataclass
 import torch.optim as optim
 from torch.utils.data import DataLoader
 
+import common.params as params
 from common.device import get_best_device
 from datasets.a2d2_dataset import A2D2Dataset, bev_collate
 from model.simple_model import SimpleModel
@@ -42,7 +43,7 @@ def main():
     }
     chosen_setting = settings["lite"]
 
-    path_dataset = "/workspace/mmperc/data/a2d2"
+    path_dataset = params.PATH_TRAIN
     dataset = A2D2Dataset(root=path_dataset)
     dataloader = DataLoader(
         dataset,

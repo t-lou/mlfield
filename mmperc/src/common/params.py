@@ -7,6 +7,8 @@ These values define:
 - the resulting BEV grid resolution (BEV_H, BEV_W)
 """
 
+PATH_TRAIN = "/workspace/mmperc/data/a2d2"
+
 BEV_CHANNELS = 128  # Number of channels in BEV feature map
 
 # -----------------------------

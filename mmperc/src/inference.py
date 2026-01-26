@@ -1,5 +1,6 @@
 import sys
 
+import common.params as params
 from decoder.bbox import ModelInferenceWrapper
 
 if __name__ == "__main__":
@@ -9,7 +10,7 @@ if __name__ == "__main__":
         print("ModelInferenceWrapper instantiated successfully.")
 
         results = model_inference_wrapper.infer_a2d2_dataset(
-            "/workspace/mmperc/data/a2d2", "/workspace/mmperc/data/a2d2_output.npz"
+            params.PATH_TRAIN, "/workspace/mmperc/data/a2d2_output.npz"
         )
         print(results)
 

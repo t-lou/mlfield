@@ -6,6 +6,8 @@ import torch
 from torch import Tensor
 from torch.utils.data import DataLoader
 
+import common.params as params
+
 
 def move_to_device(batch: Dict[str, Tensor], device: str) -> Dict[str, Tensor]:
     """
@@ -114,7 +116,7 @@ if __name__ == "__main__":
     device: str = get_best_device()
     print(f"Using device: {device}")
 
-    dataset = A2D2Dataset("/workspace/mmperc/data/a2d2")
+    dataset = A2D2Dataset(params.PATH_TRAIN)
     model = SimpleModel().to(device)
 
     param_mem_mb: float = get_parameter_size(model) / 1024**2
