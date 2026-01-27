@@ -10,6 +10,7 @@ services:
       network: host
     container_name: mlfield-${USERNAME}
     runtime: nvidia
+    shm_size: "2gb"
     volumes:
       - ${WS_DIR}:/workspace
       - mlfield-home-${USERNAME}:/home/${USERNAME}
