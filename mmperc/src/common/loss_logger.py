@@ -24,7 +24,7 @@ class EpochLoss:
 
 
 class JSONLossLLogger:
-    def __init__(self, path: str, cache_size: int = 20):
+    def __init__(self, path: str, cache_size: int = 10):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._cache_size = cache_size

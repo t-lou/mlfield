@@ -138,10 +138,10 @@ def train_one_epoch(
         loss_record = loss_logger.EpochLoss(
             epoch_id=epoch,
             batch_id=id_batch,
-            loss_hm=loss_hm,
-            loss_reg=loss_reg,
-            loss_sem=sem_loss,
-            loss_total=loss,
+            loss_hm=loss_hm.detach().cpu().item(),
+            loss_reg=loss_reg.detach().cpu().item(),
+            loss_sem=sem_loss.detach().cpu().item(),
+            loss_total=loss.detach().cpu().item(),
         )
         logger.append(loss_record)
 
