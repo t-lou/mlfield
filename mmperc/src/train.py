@@ -1,3 +1,4 @@
+import sys
 from dataclasses import dataclass
 
 import torch.optim as optim
@@ -19,9 +20,10 @@ class TrainConfig:
     pin_memory: bool = False
     persistent_workers: bool = False
     shuffle: bool = True
+    num_epoch: int = 10
 
 
-def main():
+def main(config_name: str):
     device = get_best_device()
     settings = {
         "lite": TrainConfig(
@@ -31,6 +33,7 @@ def main():
             pin_memory=False,
             persistent_workers=False,
             shuffle=True,
+            num_epoch=1,
         ),
         "normal": TrainConfig(
             batch_size=16,
@@ -39,9 +42,12 @@ def main():
             pin_memory=True,
             persistent_workers=True,
             shuffle=True,
+            num_epoch=10,
         ),
     }
-    chosen_setting = settings["lite"]
+    assert config_name in settings, f"Config {config_name} not found."
+
+    chosen_setting = settings[config_name]
 
     path_dataset = params.PATH_TRAIN
     dataset = A2D2Dataset(root=path_dataset)
@@ -59,8 +65,9 @@ def main():
     model = SimpleModel().to(device)
     optimizer = optim.Adam(model.parameters(), lr=1e-4)
 
-    train_model(model, dataloader, optimizer, device, num_epochs=5, ckpt_dir="checkpoints")
+    train_model(model, dataloader, optimizer, device, num_epochs=chosen_setting.prefetch_factor, ckpt_dir="checkpoints")
 
 
 if __name__ == "__main__":
-    main()
+    config_name = sys.argv[1] if len(sys.argv) > 1 else "normal"
+    main(config_name)
