@@ -11,6 +11,7 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 import common.debug_ploter as debug_ploter
+import common.loss_logger as loss_logger
 from common.archive import (
     archive_existing_model,
     ensure_dir,
@@ -106,6 +107,8 @@ def train_one_epoch(
     recent_losses: deque[float] = deque(maxlen=20)
     progress = tqdm(dataloader, desc=f"Epoch {epoch}/{num_epochs}", leave=False)
 
+    logger = loss_logger.JSONLossLLogger("logs/train_log.json")
+
     id_batch = 0
     for batch in progress:
         points: torch.Tensor = batch["points"].to(device)
@@ -131,6 +134,16 @@ def train_one_epoch(
         loss_hm = focal_loss(heatmap_pred, heatmap_gt)
         loss_reg = l1_loss(reg_pred, reg_gt, mask_gt)
         loss = loss_hm + loss_reg + sem_loss
+
+        loss_record = loss_logger.EpochLoss(
+            epoch_id=epoch,
+            batch_id=id_batch,
+            loss_hm=loss_hm,
+            loss_reg=loss_reg,
+            loss_sem=sem_loss,
+            loss_total=loss,
+        )
+        logger.append(loss_record)
 
         loss.backward()
         optimizer.step()
