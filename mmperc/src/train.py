@@ -8,7 +8,7 @@ import common.params as params
 from common.device import get_best_device
 from datasets.a2d2_dataset import A2D2Dataset, bev_collate
 from model.simple_model import SimpleModel
-from pipeline.train_bbox2d import train_model
+from pipeline.train_a2d2 import train_model
 
 
 @dataclass
@@ -49,11 +49,22 @@ def main(config_name: str):
 
     chosen_setting = settings[config_name]
 
-    path_dataset = params.PATH_TRAIN
-    dataset = A2D2Dataset(root=path_dataset)
-    dataloader = DataLoader(
-        dataset,
+    dataset_train = A2D2Dataset(root=params.PATH_TRAIN)
+    dataloader_train = DataLoader(
+        dataset_train,
         batch_size=chosen_setting.batch_size,
+        shuffle=True,
+        collate_fn=bev_collate,
+        num_workers=chosen_setting.num_workers,
+        pin_memory=chosen_setting.pin_memory,
+        persistent_workers=chosen_setting.persistent_workers,
+        prefetch_factor=chosen_setting.prefetch_factor,
+    )
+
+    dataset_eval = A2D2Dataset(root=params.PATH_EVAL)
+    dataloader_eval = DataLoader(
+        dataset_eval,
+        batch_size=chosen_setting.batch_size * 2,
         shuffle=True,
         collate_fn=bev_collate,
         num_workers=chosen_setting.num_workers,
@@ -65,7 +76,15 @@ def main(config_name: str):
     model = SimpleModel().to(device)
     optimizer = optim.Adam(model.parameters(), lr=1e-4)
 
-    train_model(model, dataloader, optimizer, device, num_epochs=chosen_setting.prefetch_factor, ckpt_dir="checkpoints")
+    train_model(
+        model,
+        dataloader_train,
+        dataloader_eval,
+        optimizer,
+        device,
+        num_epochs=chosen_setting.prefetch_factor,
+        ckpt_dir="checkpoints",
+    )
 
 
 if __name__ == "__main__":
