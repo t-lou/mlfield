@@ -82,7 +82,7 @@ def main(config_name: str):
         dataloader_eval,
         optimizer,
         device,
-        num_epochs=chosen_setting.prefetch_factor,
+        num_epochs=chosen_setting.batch_size,
         ckpt_dir="checkpoints",
     )
 
