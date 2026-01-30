@@ -4,7 +4,7 @@ from typing import List
 import torch
 
 import common.params as params
-from common.bev_utils import get_res, xy_to_grid
+from common.bev_utils import get_res, grid_to_xy, xy_to_grid
 
 GAUSSIAN_CACHE = {}
 
@@ -97,8 +97,7 @@ def generate_bev_labels_bbox2d(
             # -------------------------------
             res_x, res_y = get_res()
 
-            cell_x = params.X_RANGE[0] + ix * res_x
-            cell_y = params.Y_RANGE[0] + iy * res_y
+            cell_x, cell_y = grid_to_xy(ix, iy)
 
             dx = (x - cell_x) / res_x
             dy = (y - cell_y) / res_y

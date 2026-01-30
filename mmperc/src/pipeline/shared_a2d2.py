@@ -43,9 +43,6 @@ def run_one_epoch(
         points: torch.Tensor = batch["points"].to(device)
         images: torch.Tensor = batch["camera"].to(device)
 
-        if train:
-            optimizer.zero_grad()
-
         # forward
         pred: Dict[str, torch.Tensor] = model(points, images)
         heatmap_pred = pred["bbox_heatmap"]
@@ -81,6 +78,7 @@ def run_one_epoch(
 
         # backward only in training
         if train:
+            optimizer.zero_grad()
             loss.backward()
             optimizer.step()
 
