@@ -1,5 +1,5 @@
 # Start from NVIDIA's official CUDA base image
-FROM nvidia/cuda:12.9.0-cudnn-runtime-ubuntu24.04
+FROM nvidia/cuda:12.9.0-cudnn-runtime-ubuntu22.04
 
 # Set working directory
 WORKDIR /workspace
@@ -39,6 +39,9 @@ RUN if getent passwd $HOST_UID; then \
         groupadd -g $HOST_GID $USERNAME && \
         useradd -m -u $HOST_UID -g $HOST_GID -s /bin/bash $USERNAME; \
     fi
+
+# For OpenCV and other graphical libraries, we need to install some additional dependencies
+RUN apt-get update && apt-get install libgl1 libglib2.0-0 python3.10-venv -y && rm -rf /var/lib/apt/lists/*
 
 # 3. Set the new user as the default user for the container
 USER $USERNAME

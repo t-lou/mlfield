@@ -59,20 +59,20 @@ else
 fi
 
 # -----------------------------
-# GPU CHECK 1: nvidia-smi in WSL
+# GPU CHECK 1: nvidia-smi in host
 # -----------------------------
-echo "Checking GPU availability in WSL..."
+echo "Checking GPU availability in host..."
 if ! command -v nvidia-smi >/dev/null 2>&1; then
-    echo "❌ nvidia-smi not found in WSL."
+    echo "❌ nvidia-smi not found in host."
     exit 1
 fi
 
 nvidia-smi || {
-    echo "❌ nvidia-smi failed inside WSL."
-    echo "→ GPU is not exposed to WSL. Reboot or reinstall WSL2 NVIDIA driver."
+    echo "❌ nvidia-smi failed inside host."
+    echo "→ GPU is not exposed to host. Reboot or reinstall NVIDIA driver."
     exit 1
 }
-echo "✅ GPU detected in WSL."
+echo "✅ GPU detected in host."
 echo
 
 # -----------------------------
@@ -90,7 +90,7 @@ if ! command -v nvidia-container-runtime >/dev/null 2>&1; then
     sudo nvidia-ctk runtime configure --runtime=docker
 
     echo "✅ NVIDIA container toolkit installed."
-    echo "Please restart Docker Desktop and re-run this script."
+    echo "Please restart host and re-run this script (in WSL explicit reboot is needed)."
     exit 0
 fi
 
