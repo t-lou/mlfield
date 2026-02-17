@@ -1,0 +1,7 @@
+ultralytics
+
+# convert_onnx2tf
+onnx==1.13.1
+onnxruntime
+onnxsim
+onnx2tf

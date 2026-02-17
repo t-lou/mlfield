@@ -1,0 +1,7 @@
+*.onnx
+*.pt
+*.pb
+*.jpg
+*.tflite
+
+variables/
