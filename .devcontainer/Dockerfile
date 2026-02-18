@@ -5,10 +5,11 @@ FROM nvidia/cuda:12.9.0-cudnn-runtime-ubuntu22.04
 WORKDIR /workspace
 
 # Install system dependencies
+ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-        python3 python3-pip python3-dev python-is-python3 \
-        git vim tree wget direnv curl build-essential \
+        python3 python3-pip python3-dev python-is-python3 python3-venv \
+        git vim tree wget direnv curl build-essential tzdata \
     && rm -rf /var/lib/apt/lists/*
 
 # Remove the "externally managed" marker
@@ -24,7 +25,7 @@ RUN pip3 install --no-cache-dir numpy scipy scikit-learn matplotlib jupyterlab n
 # Install new deps
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-        graphviz \
+        python3-tk tk graphviz libgl1 libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
 # 1. Define Build Arguments with defaults (e.g., 1000 is common for non-root users)
@@ -39,9 +40,6 @@ RUN if getent passwd $HOST_UID; then \
         groupadd -g $HOST_GID $USERNAME && \
         useradd -m -u $HOST_UID -g $HOST_GID -s /bin/bash $USERNAME; \
     fi
-
-# For OpenCV and other graphical libraries, we need to install some additional dependencies
-RUN apt-get update && apt-get install libgl1 libglib2.0-0 python3.10-venv -y && rm -rf /var/lib/apt/lists/*
 
 # 3. Set the new user as the default user for the container
 USER $USERNAME
