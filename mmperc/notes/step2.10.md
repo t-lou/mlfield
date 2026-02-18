@@ -324,3 +324,197 @@ This will make your FuTr fusion **fair, comparable, and geometry‑aware**.
 ---
 
 If you want, I can sketch the exact **PyTorch code** for a calibration token module that plugs directly into your FuTrFusionBlock.
+
+
+Great question — and this is exactly the point where many “camera token” fusion architectures fall apart. Calibration is mathematically precise (intrinsics, extrinsics, distortion), but neural networks don’t operate on matrices directly. So the trick is to convert calibration into **learnable geometric embeddings** that the network can actually use.
+
+Let me give you a clear, practical breakdown of how calibration tokens are *usually* used in modern camera→BEV and BEV→camera fusion architectures.
+
+---
+
+# **1. Do networks use raw calibration matrices directly?**
+**No — almost never.**
+
+You don’t feed:
+- the 3×3 intrinsic matrix
+- the 4×4 extrinsic matrix
+- distortion polynomial coefficients
+
+directly into the Transformer.
+
+Why?
+
+Because:
+- Transformers don’t understand matrix algebra
+- Raw calibration parameters have wildly different scales
+- Distortion polynomials are not linear
+- The network needs *geometric meaning*, not raw numbers
+
+Instead, calibration is **encoded** into a form that is easy for attention layers to use.
+
+---
+
+# **2. How calibration is *actually* used in PETR, PETRv2, SparseBEV, BEVFormer**
+All modern architectures follow the same pattern:
+
+### **Step 1 — Use calibration to compute geometric quantities**
+Examples:
+- Ray directions
+- Camera center in ego frame
+- Pixel → 3D ray mapping
+- BEV cell → camera projection
+- Camera frustum boundaries
+
+### **Step 2 — Convert these geometric quantities into embeddings**
+Examples:
+- Positional embeddings
+- Direction embeddings
+- Camera pose embeddings
+- Ray-angle embeddings
+- Depth-aware embeddings
+
+### **Step 3 — Feed *embeddings*, not raw matrices, into the network**
+
+This is the key idea:
+> **Networks consume geometry as embeddings, not as raw calibration parameters.**
+
+---
+
+# **3. What is a “calibration token”?**
+A calibration token is simply a **learnable embedding** that encodes:
+- camera intrinsics
+- camera extrinsics
+- ray directions
+- image size
+- distortion (if used)
+
+It is usually produced by an MLP:
+
+\[
+t_{\text{calib}} = \text{MLP}([K,\ T,\ \text{ray dirs},\ \text{image size}])
+\]
+
+Then you do:
+
+\[
+\text{camera\_tokens} = [t_{\text{calib}},\ t_1,\ t_2,\ \dots]
+\]
+
+This gives the Transformer access to geometry.
+
+---
+
+# **4. What exactly goes into the calibration token?**
+
+Here’s the standard recipe used in PETRv2 and SparseBEV‑style models:
+
+## **A. Camera intrinsics (normalized)**
+- \(f_x / W\)
+- \(f_y / H\)
+- \(c_x / W\)
+- \(c_y / H\)
+
+Why normalized?
+- Makes them resolution‑invariant
+- Keeps values in a stable range
+
+## **B. Camera extrinsics**
+Use:
+- camera position in ego frame (x, y, z)
+- camera orientation (yaw, pitch, roll)
+
+Or flatten the 3×4 matrix and feed it to an MLP.
+
+## **C. Ray direction embeddings**
+For each camera token (if tokens correspond to patches or pooled features), compute the **average ray direction**:
+
+\[
+d = R^{-1} K^{-1} [u, v, 1]^T
+\]
+
+Then normalize and embed.
+
+## **D. Distortion parameters (optional)**
+If you undistort images offline, you can skip this entirely.
+
+If not, you can feed:
+- k1, k2, k3
+- p1, p2
+
+into the calibration token.
+
+---
+
+# **5. Why not feed raw matrices?**
+Because raw matrices:
+- have no inductive bias
+- are not scale‑normalized
+- mix rotation and translation in one tensor
+- are not spatially meaningful
+- confuse attention layers
+
+Embedding them gives the model:
+- smooth gradients
+- stable training
+- geometric meaning
+- camera‑aware attention
+
+---
+
+# **6. How calibration tokens help your FuTr block**
+Your current FuTr block does **global FiLM modulation**.
+Without geometry, camera tokens are “semantic only.”
+
+Adding calibration tokens gives the model:
+- camera orientation
+- field of view
+- ray directions
+- camera height
+- camera position
+
+This allows cross‑attention to become **geometry‑aware**, even if you don’t change the architecture.
+
+This will dramatically improve:
+- semantics
+- depth cues
+- BEV alignment
+- multi‑camera consistency
+
+---
+
+# **7. Minimal practical solution for your FuTr**
+You don’t need PETR or SparseBEV yet.
+You can fix your current model by adding:
+
+### **CalibrationTokenMLP**
+```python
+calib_vec = torch.cat([
+    fx_norm, fy_norm, cx_norm, cy_norm,
+    cam_pos, cam_rot,
+    ray_dir_mean
+], dim=-1)
+
+calib_token = self.calib_mlp(calib_vec)
+camera_tokens = torch.cat([calib_token.unsqueeze(1), camera_tokens], dim=1)
+```
+
+This is enough to make your fusion **geometry‑aware**.
+
+---
+
+# **8. Final answer**
+### **Yes — calibration tokens are used in modern architectures.**
+### **No — you do NOT feed raw matrices.**
+### **Yes — you embed intrinsics/extrinsics into learnable tokens.**
+### **Yes — this will fix your semantics problem.**
+
+Your FuTr block will immediately benefit from:
+- ray‑aware camera tokens
+- camera‑pose‑aware attention
+- geometry‑aware FiLM modulation
+
+This is the cleanest way to make your benchmarking fair and your semantics meaningful.
+
+---
+
+If you want, I can write a **drop‑in PyTorch module** for calibration tokens that plugs directly into your FuTrFusionBlock.
