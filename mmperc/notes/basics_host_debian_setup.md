@@ -26,6 +26,16 @@ A fresh Debian 13 system with:
 
 ---
 
+# 🧩 **Step 0 — Install linux header and dkms if missing**
+
+```bash
+sudo apt install linux-headers-$(uname -r) dkms
+```
+
+This section is manually modified, in the testing environment I have done it together with other steps, then Copilot missed it in summary. Otherwise nvidia driver will not be built and loaded successfully, but without warning or error code.
+
+---
+
 # 🧩 **Step 1 — Disable nouveau (critical on Debian 13)**
 Debian is stricter than Ubuntu: nouveau will load even if blacklisted unless you update initramfs *and* GRUB.
 If nouveau loads, the NVIDIA driver cannot build or load.
