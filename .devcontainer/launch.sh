@@ -21,32 +21,47 @@ echo "User: $USERNAME ($HOST_UID:$HOST_GID)"
 echo
 
 # -----------------------------
-# Substitue the docker-compose
+# Detect OS
 # -----------------------------
-envsubst < .devcontainer/docker-compose.yml.template > .devcontainer/docker-compose.yml
+OS_TYPE=$(uname -s)
+case "$OS_TYPE" in
+  Darwin)
+    OS_NAME="macOS"
+    ;;
+  Linux)
+    OS_NAME="Linux"
+    ;;
+  *)
+    echo "❌ Unsupported OS: $OS_TYPE"
+    exit 1
+    ;;
+esac
 
-# -----------------------------
-# Detect distro (Debian/Ubuntu)
-# -----------------------------
-DISTRO_ID=$(grep '^ID=' /etc/os-release | cut -d= -f2)
-DISTRO_VERSION=$(grep '^VERSION_ID=' /etc/os-release | cut -d= -f2 | tr -d '"')
+echo "Detected OS: $OS_NAME"
+export OS_NAME="$OS_NAME"
 
-echo "Detected distro: $DISTRO_ID $DISTRO_VERSION"
+# Detect Linux distro if applicable
+if [ "$OS_NAME" = "Linux" ]; then
+  DISTRO_ID=$(grep '^ID=' /etc/os-release | cut -d= -f2)
+  DISTRO_VERSION=$(grep '^VERSION_ID=' /etc/os-release | cut -d= -f2 | tr -d '"')
+  echo "Detected distro: $DISTRO_ID $DISTRO_VERSION"
+fi
 echo
 
-# -----------------------------
-# Function: install NVIDIA repo
-# -----------------------------
-install_nvidia_repo() {
-  curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey \
-    | sudo gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+# Set platform-specific docker parameters
+if [ "$OS_NAME" = "macOS" ]; then
+  export DOCKER_RUNTIME=""  # No GPU runtime on macOS
+  export DOCKER_X11_VOLUME=""  # No X11 on macOS
+  export DOCKER_NETWORK_MODE=""  # Use default bridge network
+else
+  export DOCKER_RUNTIME="runtime: nvidia"
+  export DOCKER_X11_VOLUME="- /tmp/.X11-unix:/tmp/.X11-unix"
+  export DOCKER_NETWORK_MODE="network_mode: host"
+fi
 
-  curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list \
-    | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' \
-    | sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list
-
-  sudo apt update
-}
+# Generate the docker-compose.yml based on platform
+# =============================
+bash ./.devcontainer/generate_docker_compose.sh "$OS_NAME" "$WS_DIR" "$HOST_UID" "$HOST_GID" "$USERNAME" "$DISPLAY" "${DATASET_DIR:-}" ".devcontainer/docker-compose.yml"
 
 # Load optional local overrides
 if [ -f ".devcontainer/local.env" ]; then
@@ -57,70 +72,19 @@ if [ -f ".devcontainer/local.env" ]; then
 else
     echo "No local.env found, using defaults"
 fi
-
-# -----------------------------
-# GPU CHECK 1: nvidia-smi in host
-# -----------------------------
-echo "Checking GPU availability in host..."
-if ! command -v nvidia-smi >/dev/null 2>&1; then
-    echo "❌ nvidia-smi not found in host."
-    exit 1
-fi
-
-nvidia-smi || {
-    echo "❌ nvidia-smi failed inside host."
-    echo "→ GPU is not exposed to host. Reboot or reinstall NVIDIA driver."
-    exit 1
-}
-echo "✅ GPU detected in host."
 echo
 
-# -----------------------------
-# GPU CHECK 2: NVIDIA container runtime
-# -----------------------------
-echo "Checking NVIDIA container runtime..."
-if ! command -v nvidia-container-runtime >/dev/null 2>&1; then
-    echo "⚠️ NVIDIA container runtime missing. Installing..."
+# =============================
+# PLATFORM-SPECIFIC SETUP
+# =============================
 
-    install_nvidia_repo
-
-    sudo apt install -y nvidia-container-toolkit
-
-    echo "Configuring Docker runtime..."
-    sudo nvidia-ctk runtime configure --runtime=docker
-
-    echo "✅ NVIDIA container toolkit installed."
-    echo "Please restart host and re-run this script (in WSL explicit reboot is needed)."
-    exit 0
+if [ "$OS_NAME" = "macOS" ]; then
+    echo "📱 Running macOS-specific setup..."
+    bash ./.devcontainer/setup_mac.sh
+elif [ "$OS_NAME" = "Linux" ]; then
+    echo "🐧 Running Linux-specific setup..."
+    bash ./.devcontainer/setup_linux.sh
 fi
-
-echo "✅ NVIDIA container runtime installed."
-echo
-
-# -----------------------------
-# GPU CHECK 3: Docker GPU support
-# -----------------------------
-echo "Checking Docker GPU support..."
-if ! docker info | grep -qi nvidia; then
-    echo "❌ Docker does not list NVIDIA runtime."
-    echo $(pwd)
-    bash ./.devcontainer/install_docker.sh
-    echo "Docker installed, reboot."
-    exit 1
-fi
-echo "✅ Docker recognizes NVIDIA runtime."
-echo
-
-# -----------------------------
-# GPU CHECK 4: Test GPU passthrough
-# -----------------------------
-echo "Testing GPU passthrough with CUDA container..."
-if ! docker run --gpus all --rm nvidia/cuda:12.4.1-base-ubuntu22.04 nvidia-smi >/dev/null 2>&1; then
-    echo "❌ Docker cannot access GPU."
-    echo "→ Likely missing toolkit or Docker misconfiguration."
-    exit 1
-fi
-echo "✅ GPU passthrough works."
 echo
 
 # -----------------------------
@@ -142,10 +106,10 @@ docker compose -f .devcontainer/docker-compose.yml exec mlfield uname -a
 echo "- whoami"
 docker compose -f .devcontainer/docker-compose.yml exec mlfield whoami
 echo "- torch.cuda.is_available()"
-docker compose -f .devcontainer/docker-compose.yml exec mlfield python3 -c "import torch;print(torch.cuda.is_available())"
+docker compose -f .devcontainer/docker-compose.yml exec mlfield python3 -c "import torch;print(torch.cuda.is_available())" || {
+    echo "⚠️ CUDA not available (expected on macOS without GPU)"
+}
 
-# -----------------------------
-# Run container with GPU
-# -----------------------------
-echo "Launching container with GPU..."
+# Run container
+echo "Launching container..."
 docker compose -f .devcontainer/docker-compose.yml exec mlfield bash
