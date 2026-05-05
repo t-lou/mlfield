@@ -1,0 +1,5 @@
+Given a name, the function shall return a greeting with time.
+
+Example, if the given name is "Max", the output shall be like "Hi Max, today is 3rd of May, have a nice day" or "Hello Max, today is 2026-05-03".
+
+Make some variation in greetings each time it is called.
