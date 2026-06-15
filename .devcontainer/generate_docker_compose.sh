@@ -19,9 +19,7 @@ if [ -z "$OS_NAME" ] || [ -z "$WS_DIR" ] || [ -z "$HOST_UID" ] || [ -z "$HOST_GI
 fi
 
 # Detect NVIDIA runtime name
-if docker info --format '{{json .Runtimes}}' | grep -q '"nvidia-container-runtime"'; then
-    RUNTIME="nvidia-container-runtime"
-elif docker info --format '{{json .Runtimes}}' | grep -q '"nvidia"'; then
+if docker info --format '{{json .Runtimes}}' | grep -q '"nvidia"'; then
     RUNTIME="nvidia"
 else
     RUNTIME=""
