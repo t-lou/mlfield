@@ -1,39 +1,46 @@
 # Start from NVIDIA's official CUDA base image
-FROM nvidia/cuda:12.9.0-cudnn-runtime-ubuntu22.04
+FROM nvidia/cuda:12.9.0-cudnn-runtime-ubuntu24.04
 
 # Set working directory
 WORKDIR /workspace
 
-# Install system dependencies
 ENV DEBIAN_FRONTEND=noninteractive
+
+# Install system dependencies (NO python3 from apt)
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-        python3 python3-pip python3-dev python-is-python3 python3-venv \
-        git vim tree wget direnv curl build-essential tzdata \
+        git vim tree wget curl direnv tzdata build-essential \
+        graphviz libgl1 libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
-# Remove the "externally managed" marker
-RUN rm -f /usr/lib/python3.*/EXTERNALLY-MANAGED
+# Install uv
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh \
+    && export PATH="$HOME/.local/bin:$PATH" \
+    && uv --version
+ENV PATH="/root/.local/bin:${PATH}"
 
-# Install PyTorch with CUDA 12.9 support
-# (this pulls the correct wheel from PyTorch's official index)
-RUN pip3 install --no-cache-dir torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu129
+# Create a Python virtual environment using uv
+RUN uv python install 3.12 \
+    && uv venv /workspace/.venv312 --python 3.12
 
-# Optional: common ML packages
-RUN pip3 install --no-cache-dir numpy scipy scikit-learn matplotlib jupyterlab notebook pytest
+# Activate venv for all future shells
+ENV VIRTUAL_ENV=/workspace/.venv312
+ENV PATH="$VIRTUAL_ENV/bin:$PATH"
 
-# Install new deps
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
-        python3-tk tk graphviz libgl1 libglib2.0-0 \
-    && rm -rf /var/lib/apt/lists/*
+# Install PyTorch
+RUN uv pip install --no-cache-dir \
+    torch torchvision torchaudio \
+    --index-url https://download.pytorch.org/whl/cu121
 
-# 1. Define Build Arguments with defaults (e.g., 1000 is common for non-root users)
+# Optional ML packages
+RUN uv pip install --no-cache-dir numpy scipy scikit-learn matplotlib jupyterlab notebook pytest
+
+# Build args for user mapping
 ARG HOST_UID
 ARG HOST_GID
 ARG USERNAME
 
-# Handle user/group creation, checking for existing GID (common on macOS where GID 20=staff exists)
+# Create user with matching UID/GID
 RUN if getent passwd $HOST_UID; then \
         usermod -l $USERNAME -d /home/$USERNAME -m $(getent passwd $HOST_UID | cut -d: -f1); \
     else \
@@ -43,9 +50,9 @@ RUN if getent passwd $HOST_UID; then \
         useradd -m -u $HOST_UID -g $HOST_GID -s /bin/bash $USERNAME; \
     fi
 
-# 3. Set the new user as the default user for the container
 USER $USERNAME
 ENV HOME=/home/$USERNAME
+
 RUN echo 'eval "$(direnv hook bash)"' >> $HOME/.bashrc
 
 CMD ["bash"]

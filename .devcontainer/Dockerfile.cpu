@@ -1,5 +1,5 @@
 # Start from Ubuntu base image (CPU-only, works on macOS)
-FROM ubuntu:22.04
+FROM ubuntu:24.04
 
 # Set working directory
 WORKDIR /workspace
@@ -8,18 +8,28 @@ WORKDIR /workspace
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-        python3 python3-pip python3-dev python-is-python3 python3-venv \
         git vim tree wget direnv curl build-essential tzdata \
     && rm -rf /var/lib/apt/lists/*
 
-# Remove the "externally managed" marker
-RUN rm -f /usr/lib/python3.*/EXTERNALLY-MANAGED
+# Install uv
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh \
+    && export PATH="$HOME/.local/bin:$PATH" \
+    && uv --version
+ENV PATH="/root/.local/bin:${PATH}"
+
+# Create a Python virtual environment using uv
+RUN uv python install 3.12 \
+    && uv venv /workspace/.venv312 --python 3.12
+
+# Activate venv for all future shells
+ENV VIRTUAL_ENV=/workspace/.venv312
+ENV PATH="$VIRTUAL_ENV/bin:$PATH"
 
 # Install PyTorch CPU version (no CUDA required)
-RUN pip3 install --no-cache-dir torch torchvision torchaudio
+RUN uv pip3 install --no-cache-dir torch torchvision torchaudio
 
 # Optional: common ML packages
-RUN pip3 install --no-cache-dir numpy scipy scikit-learn matplotlib jupyterlab notebook pytest
+RUN uv pip3 install --no-cache-dir numpy scipy scikit-learn matplotlib jupyterlab notebook pytest
 
 # Install new deps
 RUN apt-get update \

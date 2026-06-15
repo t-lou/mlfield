@@ -18,7 +18,16 @@ if [ -z "$OS_NAME" ] || [ -z "$WS_DIR" ] || [ -z "$HOST_UID" ] || [ -z "$HOST_GI
     exit 1
 fi
 
-# Select appropriate Dockerfile based on platform
+# Detect NVIDIA runtime name
+if docker info --format '{{json .Runtimes}}' | grep -q '"nvidia-container-runtime"'; then
+    RUNTIME="nvidia-container-runtime"
+elif docker info --format '{{json .Runtimes}}' | grep -q '"nvidia"'; then
+    RUNTIME="nvidia"
+else
+    RUNTIME=""
+fi
+
+# Select Dockerfile
 if [ "$OS_NAME" = "macOS" ]; then
     DOCKERFILE="Dockerfile.cpu"
     RUNTIME_CONFIG=""
@@ -26,7 +35,14 @@ if [ "$OS_NAME" = "macOS" ]; then
     X11_CONFIG=""
 else
     DOCKERFILE="Dockerfile.cuda"
-    RUNTIME_CONFIG="    runtime: nvidia"
+
+    if [ -n "$RUNTIME" ]; then
+        RUNTIME_CONFIG="    runtime: $RUNTIME"
+    else
+        echo "⚠️ No NVIDIA runtime detected — running CPU-only container."
+        RUNTIME_CONFIG=""
+    fi
+
     NETWORK_CONFIG="    network_mode: host"
     X11_CONFIG="      - /tmp/.X11-unix:/tmp/.X11-unix"
 fi
