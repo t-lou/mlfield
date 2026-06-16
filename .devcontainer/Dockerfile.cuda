@@ -35,6 +35,7 @@ ENV HOME=/home/$USERNAME
 # -----------------------------
 # Install uv
 # -----------------------------
+RUN mkdir -p $HOME/.local/bin
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
 ENV PATH="$HOME/.local/bin:$PATH"
 
