@@ -59,7 +59,7 @@ services:
     container_name: mlfield-${USERNAME}
     shm_size: "2gb"
     volumes:
-      - ${WS_DIR}:/workspace
+      - ${WS_DIR}:/workspace/repo
       - mlfield-home-${USERNAME}:/home/${USERNAME}
       - ${DATASET_DIR:-/dev/null}:/mnt/dataset:ro
 $X11_CONFIG
