@@ -74,10 +74,20 @@ echo
 # GPU CHECK 4: Test GPU passthrough
 # =============================
 echo "Testing GPU passthrough with CUDA container..."
-if ! docker run --device nvidia.com/gpu=all --rm nvidia/cuda:12.9.0-base-ubuntu24.04 nvidia-smi >/dev/null 2>&1; then
+testing_image="nvidia/cuda:12.9.0-base-ubuntu24.04"
+test_output_file="$(mktemp)"
+trap 'rm -f "$test_output_file"' EXIT
+
+if docker run --rm --gpus all "${testing_image}" nvidia-smi >"$test_output_file" 2>&1; then
+    echo "✅ GPU passthrough works."
+elif docker run --rm --runtime=nvidia "${testing_image}" nvidia-smi >"$test_output_file" 2>&1; then
+    echo "✅ GPU passthrough works."
+else
     echo "❌ Docker cannot access GPU."
+    echo "→ Tried: --gpus all and --runtime=nvidia"
+    echo "→ Output:"
+    cat "$test_output_file"
+    echo
     echo "→ Likely missing toolkit or Docker misconfiguration."
     exit 1
 fi
-echo "✅ GPU passthrough works."
-echo
