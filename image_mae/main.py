@@ -32,7 +32,7 @@ VARIANT_CONFIG = {
         dataset_size=50_000,
         image_size=32,
         patch_size=4,
-        batch_size=64,
+        batch_size=512,
         encoder_dim=384,
         encoder_depth=8,
         encoder_heads=6,
@@ -271,39 +271,54 @@ def build_2d_sincos_position_embedding(grid_size: int, embed_dim: int, add_cls_t
 
 
 class MAE(nn.Module):
-    def __init__(self, cfg: MAEVariantConfig, in_chans: int = 3):
+    def __init__(self, variant, in_chans: int = 3):
         super().__init__()
-        self.cfg = cfg
+
+        self.cfg = VARIANT_CONFIG[variant]
         self.in_chans = in_chans
 
         self.patch_embed = PatchEmbed(
-            img_size=cfg.image_size,
-            patch_size=cfg.patch_size,
+            img_size=self.cfg.image_size,
+            patch_size=self.cfg.patch_size,
             in_chans=in_chans,
-            embed_dim=cfg.encoder_dim,
+            embed_dim=self.cfg.encoder_dim,
         )
         self.num_patches = self.patch_embed.num_patches
-        self.patch_dim = cfg.patch_size * cfg.patch_size * in_chans
+        self.patch_dim = self.cfg.patch_size * self.cfg.patch_size * in_chans
 
-        self.cls_token = nn.Parameter(torch.zeros(1, 1, cfg.encoder_dim))
-        self.pos_embed_enc = nn.Parameter(torch.zeros(1, self.num_patches + 1, cfg.encoder_dim), requires_grad=False)
+        self.cls_token = nn.Parameter(torch.zeros(1, 1, self.cfg.encoder_dim))
+        self.pos_embed_enc = nn.Parameter(
+            torch.zeros(1, self.num_patches + 1, self.cfg.encoder_dim), requires_grad=False
+        )
 
         self.encoder_blocks = nn.ModuleList(
-            [TransformerBlock(dim=cfg.encoder_dim, num_heads=cfg.encoder_heads) for _ in range(cfg.encoder_depth)]
+            [
+                TransformerBlock(dim=self.cfg.encoder_dim, num_heads=self.cfg.encoder_heads)
+                for _ in range(self.cfg.encoder_depth)
+            ]
         )
-        self.encoder_norm = nn.LayerNorm(cfg.encoder_dim)
+        self.encoder_norm = nn.LayerNorm(self.cfg.encoder_dim)
 
-        self.decoder_embed = nn.Linear(cfg.encoder_dim, cfg.decoder_dim)
-        self.mask_token = nn.Parameter(torch.zeros(1, 1, cfg.decoder_dim))
-        self.pos_embed_dec = nn.Parameter(torch.zeros(1, self.num_patches + 1, cfg.decoder_dim), requires_grad=False)
+        self.decoder_embed = nn.Linear(self.cfg.encoder_dim, self.cfg.decoder_dim)
+        self.mask_token = nn.Parameter(torch.zeros(1, 1, self.cfg.decoder_dim))
+        self.pos_embed_dec = nn.Parameter(
+            torch.zeros(1, self.num_patches + 1, self.cfg.decoder_dim), requires_grad=False
+        )
 
         self.decoder_blocks = nn.ModuleList(
-            [TransformerBlock(dim=cfg.decoder_dim, num_heads=cfg.decoder_heads) for _ in range(cfg.decoder_depth)]
+            [
+                TransformerBlock(dim=self.cfg.decoder_dim, num_heads=self.cfg.decoder_heads)
+                for _ in range(self.cfg.decoder_depth)
+            ]
         )
-        self.decoder_norm = nn.LayerNorm(cfg.decoder_dim)
-        self.decoder_pred = nn.Linear(cfg.decoder_dim, self.patch_dim)
+        self.decoder_norm = nn.LayerNorm(self.cfg.decoder_dim)
+        self.decoder_pred = nn.Linear(self.cfg.decoder_dim, self.patch_dim)
 
-        self._init_weights()
+        self._init_weights()  # auto load?
+
+        self.path_final_ckpt = Path(f"mae_checkpoints/{variant}/final.pth")
+        if not self.path_final_ckpt.parent.exists():
+            self.path_final_ckpt.parent.mkdir(parents=True, exist_ok=True)
 
     def _init_weights(self):
         nn.init.normal_(self.cls_token, std=0.02)
@@ -401,11 +416,13 @@ class MAE(nn.Module):
         loss, target = self.forward_loss(imgs, pred, mask)
         return loss, pred, target, mask
 
-    def save_checkpoint(self, path):
-        torch.save(self.state_dict(), path)
+    def save_checkpoint(self, path=None):
+        path_ckpt = self.path_final_ckpt if path is None else path
+        torch.save(self.state_dict(), path_ckpt)
 
-    def load_checkpoint(self, path, device=None):
-        state_dict = torch.load(path, map_location=device)
+    def load_checkpoint(self, path=None, device=None):
+        path_ckpt = self.path_final_ckpt if path is None else path
+        state_dict = torch.load(path_ckpt, map_location=device)
         self.load_state_dict(state_dict)
 
 
@@ -456,11 +473,10 @@ def mae_visualize(model, imgs, save_path):
 
 
 def build_model_and_loader(variant: str, data_root: str = "./data"):
-    cfg = VARIANT_CONFIG[variant]
-    model = MAE(cfg)
+    model = MAE(variant)
+    model.load_checkpoint()
 
-    if Path(f"mae_checkpoints/{variant}/final.pth").exists():
-        model.load_checkpoint(f"mae_checkpoints/{variant}/final.pth")
+    cfg = VARIANT_CONFIG[variant]
 
     if variant == "cifar10":
         loader = make_cifar10_dataloader(root=data_root, batch_size=cfg.batch_size)
@@ -499,22 +515,25 @@ def train(variant: str = "cifar10", steps: int = -1, data_root: str = "./data", 
             loss.backward()
             optimizer.step()
 
-        masked_pct = float(mask.mean() * 100.0)
-        print(
-            f"variant={variant} step={step} loss={float(loss):.6f} "
-            f"pred_shape={tuple(pred.shape)} target_shape={tuple(target.shape)} masked={masked_pct:.1f}%"
-        )
-
         if steps >= 0 and step >= steps:
             break
+        elif (step + 1) % 10_000 == 0:
+            print(
+                f"variant={variant} step={step} loss={float(loss):.6f} "
+                f"pred_shape={tuple(pred.shape)} target_shape={tuple(target.shape)}"
+            )
+
+            model.save_checkpoint()
+
+    print(
+        f"variant={variant} step={step} loss={float(loss):.6f} "
+        f"pred_shape={tuple(pred.shape)} target_shape={tuple(target.shape)}"
+    )
+    model.save_checkpoint()
 
     path_vis = Path(f"mae_visualizations/{variant}")
     path_vis.mkdir(parents=True, exist_ok=True)
     mae_visualize(model, imgs, save_path=(path_vis / f"step_{epoch}.png"))
-
-    path_ckpt = Path(f"mae_checkpoints/{variant}")
-    path_ckpt.mkdir(parents=True, exist_ok=True)
-    model.save_checkpoint(path_ckpt / "final.pth")
 
 
 def main():
