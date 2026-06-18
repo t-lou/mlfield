@@ -244,6 +244,30 @@ class PatchEmbed(nn.Module):
         return x
 
 
+def build_2d_sincos_position_embedding(grid_size: int, embed_dim: int, add_cls_token: bool = True):
+    if embed_dim % 4 != 0:
+        raise ValueError("embed_dim must be divisible by 4 for 2D sin-cos position embeddings")
+
+    grid_h = torch.arange(grid_size, dtype=torch.float32)
+    grid_w = torch.arange(grid_size, dtype=torch.float32)
+    grid = torch.meshgrid(grid_h, grid_w, indexing="ij")
+    pos_h = grid[0].reshape(-1)
+    pos_w = grid[1].reshape(-1)
+
+    omega = torch.arange(embed_dim // 4, dtype=torch.float32) / (embed_dim // 4)
+    omega = 1.0 / (10000**omega)
+
+    out_h = torch.outer(pos_h, omega)
+    out_w = torch.outer(pos_w, omega)
+    pos_embed = torch.cat([out_h.sin(), out_h.cos(), out_w.sin(), out_w.cos()], dim=1)
+
+    if add_cls_token:
+        cls_pos = torch.zeros(1, embed_dim, dtype=pos_embed.dtype)
+        pos_embed = torch.cat([cls_pos, pos_embed], dim=0)
+
+    return pos_embed.unsqueeze(0)
+
+
 class MAE(nn.Module):
     def __init__(self, cfg: MAEVariantConfig, in_chans: int = 3):
         super().__init__()
@@ -282,6 +306,14 @@ class MAE(nn.Module):
     def _init_weights(self):
         nn.init.normal_(self.cls_token, std=0.02)
         nn.init.normal_(self.mask_token, std=0.02)
+
+        with torch.no_grad():
+            self.pos_embed_enc.copy_(
+                build_2d_sincos_position_embedding(self.patch_embed.grid_size, self.cfg.encoder_dim)
+            )
+            self.pos_embed_dec.copy_(
+                build_2d_sincos_position_embedding(self.patch_embed.grid_size, self.cfg.decoder_dim)
+            )
 
         for m in self.modules():
             if isinstance(m, nn.Linear):
