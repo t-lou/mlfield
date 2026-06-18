@@ -1,7 +1,9 @@
 import argparse
 import os
 from dataclasses import dataclass
+from pathlib import Path
 
+import matplotlib.pyplot as plt
 import torch
 from torch import nn
 from torch.utils.data import DataLoader, Dataset
@@ -331,6 +333,13 @@ class MAE(nn.Module):
         x = torch.einsum("nchpwq->nhwpqc", x)
         return x.reshape(shape=(imgs.shape[0], n * n, p * p * self.in_chans))
 
+    def unpatchify(self, x):
+        p = self.cfg.patch_size
+        n = int(x.shape[1] ** 0.5)
+        x = x.reshape(shape=(x.shape[0], n, n, p, p, self.in_chans))
+        x = torch.einsum("nhwpqc->nchpwq", x)
+        return x.reshape(shape=(x.shape[0], self.in_chans, n * p, n * p))
+
     def random_masking(self, x, mask_ratio: float):
         n, l, d = x.shape  # noqa: E741
         len_keep = int(l * (1 - mask_ratio))
@@ -392,10 +401,66 @@ class MAE(nn.Module):
         loss, target = self.forward_loss(imgs, pred, mask)
         return loss, pred, target, mask
 
+    def save_checkpoint(self, path):
+        torch.save(self.state_dict(), path)
+
+    def load_checkpoint(self, path, device=None):
+        state_dict = torch.load(path, map_location=device)
+        self.load_state_dict(state_dict)
+
+
+def mae_visualize(model, imgs, save_path):
+    model.eval()
+    with torch.no_grad():
+        # ---- 1. Encode ----
+        latent, mask, ids_restore = model.forward_encoder(imgs)
+
+        # ---- 2. Decode ----
+        pred = model.forward_decoder(latent, ids_restore)  # (B, N, patch_dim)
+
+        # ---- 3. Unpatchify ----
+        rec_imgs = model.unpatchify(pred)  # (B, 3, H, W)
+
+        # ---- 4. Build masked image ----
+        B, C, H, W = imgs.shape
+        patch = model.cfg.patch_size
+
+        # mask: (B, N), 1 = masked
+        mask = mask.unsqueeze(-1).repeat(1, 1, patch * patch * C)
+        mask = model.unpatchify(mask)  # (B, 3, H, W)
+        masked_imgs = imgs * (1 - mask)  # zero out masked patches
+
+    # ---- 5. Plot first 6 ----
+    num_show = min(6, imgs.shape[0])
+    fig, axes = plt.subplots(3, num_show, figsize=(3 * num_show, 9))
+
+    for i in range(num_show):
+        # original
+        axes[0, i].imshow(imgs[i].permute(1, 2, 0).cpu().numpy().clip(0, 1))
+        axes[0, i].set_title("Original")
+        axes[0, i].axis("off")
+
+        # masked
+        axes[1, i].imshow(masked_imgs[i].permute(1, 2, 0).cpu().numpy().clip(0, 1))
+        axes[1, i].set_title("Masked")
+        axes[1, i].axis("off")
+
+        # reconstructed
+        axes[2, i].imshow(rec_imgs[i].permute(1, 2, 0).cpu().numpy().clip(0, 1))
+        axes[2, i].set_title("Reconstructed")
+        axes[2, i].axis("off")
+
+    plt.tight_layout()
+    plt.savefig(save_path)
+    plt.close(fig)
+
 
 def build_model_and_loader(variant: str, data_root: str = "./data"):
     cfg = VARIANT_CONFIG[variant]
     model = MAE(cfg)
+
+    if Path(f"mae_checkpoints/{variant}/final.pth").exists():
+        model.load_checkpoint(f"mae_checkpoints/{variant}/final.pth")
 
     if variant == "cifar10":
         loader = make_cifar10_dataloader(root=data_root, batch_size=cfg.batch_size)
@@ -407,7 +472,7 @@ def build_model_and_loader(variant: str, data_root: str = "./data"):
     return cfg, model, loader
 
 
-def train_dummy(variant: str = "cifar10", steps: int = 1, data_root: str = "./data"):
+def train(variant: str = "cifar10", steps: int = -1, data_root: str = "./data", epoch=0):
     cfg, model, loader = build_model_and_loader(variant, data_root=data_root)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = model.to(device)
@@ -440,14 +505,23 @@ def train_dummy(variant: str = "cifar10", steps: int = 1, data_root: str = "./da
             f"pred_shape={tuple(pred.shape)} target_shape={tuple(target.shape)} masked={masked_pct:.1f}%"
         )
 
-        if step >= steps:
+        if steps >= 0 and step >= steps:
             break
+
+    path_vis = Path(f"mae_visualizations/{variant}")
+    path_vis.mkdir(parents=True, exist_ok=True)
+    mae_visualize(model, imgs, save_path=(path_vis / f"step_{epoch}.png"))
+
+    path_ckpt = Path(f"mae_checkpoints/{variant}")
+    path_ckpt.mkdir(parents=True, exist_ok=True)
+    model.save_checkpoint(path_ckpt / "final.pth")
 
 
 def main():
     parser = argparse.ArgumentParser(description="MAE debug trainer with CIFAR-10 and ImageNet presets")
     parser.add_argument("--variant", type=str, default="cifar10", choices=["cifar10", "imagenet", "coco"])
-    parser.add_argument("--steps", type=int, default=1)
+    parser.add_argument("--steps", type=int, default=-1)
+    parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument(
         "--data-root",
         type=str,
@@ -460,7 +534,8 @@ def main():
         supported = ", ".join(sorted(VARIANT_CONFIG))
         raise ValueError(f"Unknown variant '{args.variant}'. Supported: {supported}")
 
-    train_dummy(variant=args.variant, steps=args.steps, data_root=args.data_root)
+    for epoch in range(args.epochs):
+        train(variant=args.variant, steps=args.steps, data_root=args.data_root, epoch=epoch)
 
 
 if __name__ == "__main__":
