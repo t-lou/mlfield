@@ -1,5 +1,5 @@
 ARG BASE_IMAGE
-FROM ${BASE_IMAGE}
+FROM tlou/${BASE_IMAGE}
 
 # -----------------------------
 # Create user matching host
