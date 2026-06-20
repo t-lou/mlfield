@@ -1,0 +1,37 @@
+FROM ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# -----------------------------
+# System dependencies
+# -----------------------------
+RUN apt-get update && apt-get upgrade -y \
+    && apt-get install -y --no-install-recommends \
+    curl git build-essential ca-certificates direnv tree python3 python3-venv \
+    && rm -rf /var/lib/apt/lists/*
+
+# -----------------------------
+# Install uv
+# -----------------------------
+RUN curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR="/usr/local/bin" sh
+
+
+# -----------------------------
+# Create workspace & venv (root)
+# -----------------------------
+WORKDIR /workspace
+RUN uv venv --python 3.12 /workspace/.venv
+ENV VIRTUAL_ENV="/workspace/.venv"
+ENV PATH="$VIRTUAL_ENV/bin:$PATH"
+
+
+# -----------------------------
+# Install Python dependencies
+# -----------------------------
+RUN uv pip install --no-cache-dir \
+    numpy scipy scikit-learn matplotlib jupyterlab notebook pytest
+
+# -----------------------------
+# Install PyTorch (CPU)
+# -----------------------------
+RUN uv pip3 install --no-cache-dir torch torchvision torchaudio

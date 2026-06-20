@@ -27,22 +27,21 @@ fi
 
 # Select Dockerfile
 if [ "$OS_NAME" = "macOS" ]; then
-    DOCKERFILE="Dockerfile.cpu"
     RUNTIME_CONFIG=""
     NETWORK_CONFIG=""
     X11_CONFIG=""
+    BASE_IMAGE="mlfield_cpu_base:latest"
 else
-    DOCKERFILE="Dockerfile.cuda"
-
+    NETWORK_CONFIG="    network_mode: host"
+    X11_CONFIG="      - /tmp/.X11-unix:/tmp/.X11-unix"
+    BASE_IMAGE="mlfield_cuda_base:latest"
     if [ -n "$RUNTIME" ]; then
         RUNTIME_CONFIG="    runtime: $RUNTIME"
     else
         echo "⚠️ No NVIDIA runtime detected — running CPU-only container."
         RUNTIME_CONFIG=""
+        BASE_IMAGE="mlfield_cpu_base:latest"
     fi
-
-    NETWORK_CONFIG="    network_mode: host"
-    X11_CONFIG="      - /tmp/.X11-unix:/tmp/.X11-unix"
 fi
 
 cat > "$DOCKER_COMPOSE_OUTPUT" <<EOF
@@ -50,13 +49,15 @@ name: mlfield
 
 services:
   mlfield:
+    image: mlfield:latest
     build:
       context: .
-      dockerfile: $DOCKERFILE
+      dockerfile: Dockerfile
       network: host
       args:
         HOST_UID: $HOST_UID
         HOST_GID: $HOST_GID
+        BASE_IMAGE: $BASE_IMAGE
     container_name: mlfield-${USERNAME}
     shm_size: "2gb"
     volumes:

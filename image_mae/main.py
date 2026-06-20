@@ -54,8 +54,7 @@ VARIANT_CONFIG = {
         dataset_size=1_281_167,
         image_size=224,
         patch_size=16,
-        batch_size=32,
-        # batch_size=128,
+        batch_size=256,  # for L4 okay
         encoder_dim=768,
         encoder_depth=12,
         encoder_heads=12,
@@ -81,26 +80,6 @@ VARIANT_CONFIG = {
         learning_rate=1.5e-4,
     ),
 }
-
-
-class DummyImageDataset(Dataset):
-    def __init__(self, variant: str = "cifar10"):
-        cfg = VARIANT_CONFIG[variant]
-        self.variant = variant
-        self.size = cfg.dataset_size
-        self.image_size = cfg.image_size
-
-    def __len__(self):
-        return self.size
-
-    def __getitem__(self, idx):
-        # Random image tensor keeps this script self-contained for pipeline checks.
-        return torch.randn(3, self.image_size, self.image_size)
-
-
-def make_dummy_dataloader(batch_size: int, variant: str):
-    ds = DummyImageDataset(variant=variant)
-    return DataLoader(ds, batch_size=batch_size, shuffle=True, drop_last=True)
 
 
 class ImageOnlyDataset(Dataset):

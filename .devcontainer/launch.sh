@@ -53,10 +53,12 @@ if [ "$OS_NAME" = "macOS" ]; then
   export DOCKER_RUNTIME=""  # No GPU runtime on macOS
   export DOCKER_X11_VOLUME=""  # No X11 on macOS
   export DOCKER_NETWORK_MODE=""  # Use default bridge network
+  export BASE_IMAGE="mlfield_cpu_base:latest"
 else
   export DOCKER_RUNTIME="runtime: nvidia"
   export DOCKER_X11_VOLUME="- /tmp/.X11-unix:/tmp/.X11-unix"
   export DOCKER_NETWORK_MODE="network_mode: host"
+  export BASE_IMAGE="mlfield_cuda_base:latest"
 fi
 
 # Generate the docker-compose.yml based on platform
