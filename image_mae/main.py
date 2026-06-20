@@ -492,13 +492,20 @@ class MAE(nn.Module):
 
     def save_checkpoint(self, path=None):
         path_ckpt = self.path_final_ckpt if path is None else path
-        torch.save(self.state_dict(), path_ckpt)
+
+        # Move all tensors to CPU before saving
+        state_dict_cpu = {k: v.cpu() for k, v in self.state_dict().items()}
+
+        torch.save(state_dict_cpu, path_ckpt)
 
     def load_checkpoint(self, path=None, device=None):
         path_ckpt = self.path_final_ckpt if path is None else path
+
         if not path_ckpt.exists():
             print(f"{path_ckpt} not found, cannot load")
             return
+
+        # device can be "cpu", "cuda", "cuda:0", etc.
         state_dict = torch.load(path_ckpt, map_location=device)
         self.load_state_dict(state_dict)
 
