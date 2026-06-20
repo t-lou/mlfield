@@ -1,5 +1,6 @@
 import argparse
 import os
+import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -8,6 +9,12 @@ import torch
 from torch import nn
 from torch.utils.data import DataLoader, Dataset
 from torchvision import datasets, transforms
+
+DEFAULT_KAGGLE_DATASETS = {
+    # This is not the official ILSVRC release. It is a Kaggle-hosted ImageNet-style layout.
+    "imagenet": "ifigotin/imagenetmini-1000",
+    "coco": "awsaf49/coco-2017-dataset",
+}
 
 
 @dataclass(frozen=True)
@@ -192,6 +199,94 @@ def make_coco_dataloader(root: str, batch_size: int, num_workers: int = 8, train
         num_workers=num_workers,
         pin_memory=True,
     )
+
+
+def _find_dataset_root_by_markers(base_dir: Path, required_dirs: tuple[str, ...]) -> Path | None:
+    # Prefer shallow paths first because Kaggle archives often unpack into one top-level directory.
+    candidates = [base_dir]
+    candidates.extend(p for p in base_dir.rglob("*") if p.is_dir())
+
+    for path in candidates:
+        if all((path / marker).exists() for marker in required_dirs):
+            return path
+    return None
+
+
+def _download_kaggle_dataset(dataset_slug: str, dest_dir: Path) -> None:
+    try:
+        from kaggle.api.kaggle_api_extended import KaggleApi
+    except ImportError as exc:
+        raise RuntimeError("Kaggle support requires the 'kaggle' package. Install with: pip install kaggle") from exc
+
+    api = KaggleApi()
+    try:
+        api.authenticate()
+    except Exception as exc:  # pragma: no cover - depends on local auth setup
+        raise RuntimeError(
+            "Kaggle authentication failed. Place credentials at ~/.kaggle/kaggle.json "
+            "or set KAGGLE_USERNAME and KAGGLE_KEY."
+        ) from exc
+
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    api.dataset_download_files(dataset_slug, path=str(dest_dir), unzip=True)
+
+    # Some Kaggle datasets contain zip files inside the first extracted directory.
+    for zip_path in dest_dir.rglob("*.zip"):
+        extract_dir = zip_path.parent
+        with zipfile.ZipFile(zip_path, "r") as zf:
+            zf.extractall(extract_dir)
+
+
+def resolve_variant_data_root(
+    variant: str,
+    data_root: str,
+    use_kaggle: bool,
+    kaggle_imagenet_dataset: str,
+    kaggle_coco_dataset: str,
+) -> str:
+    root = Path(data_root)
+    if variant == "cifar10":
+        return str(root)
+
+    if variant == "imagenet":
+        prepared_root = _find_dataset_root_by_markers(root, ("train", "val"))
+        if prepared_root is not None:
+            return str(prepared_root)
+
+        if not use_kaggle:
+            raise FileNotFoundError(
+                f"Could not find ImageNet layout under {root}. Expected directories: train/ and val/."
+            )
+
+        cache_dir = root / "kaggle" / "imagenet"
+        prepared_root = _find_dataset_root_by_markers(cache_dir, ("train", "val"))
+        if prepared_root is None:
+            _download_kaggle_dataset(kaggle_imagenet_dataset, cache_dir)
+            prepared_root = _find_dataset_root_by_markers(cache_dir, ("train", "val"))
+
+        if prepared_root is None:
+            raise FileNotFoundError("Downloaded ImageNet dataset does not expose train/ and val/ directories.")
+        return str(prepared_root)
+
+    # coco
+    prepared_root = _find_dataset_root_by_markers(root, ("train2017", "val2017", "annotations"))
+    if prepared_root is not None:
+        return str(prepared_root)
+
+    if not use_kaggle:
+        raise FileNotFoundError(
+            f"Could not find COCO layout under {root}. Expected train2017/, val2017/, annotations/."
+        )
+
+    cache_dir = root / "kaggle" / "coco"
+    prepared_root = _find_dataset_root_by_markers(cache_dir, ("train2017", "val2017", "annotations"))
+    if prepared_root is None:
+        _download_kaggle_dataset(kaggle_coco_dataset, cache_dir)
+        prepared_root = _find_dataset_root_by_markers(cache_dir, ("train2017", "val2017", "annotations"))
+
+    if prepared_root is None:
+        raise FileNotFoundError("Downloaded COCO dataset does not expose train2017/, val2017/, annotations/.")
+    return str(prepared_root)
 
 
 class MLP(nn.Module):
@@ -422,6 +517,9 @@ class MAE(nn.Module):
 
     def load_checkpoint(self, path=None, device=None):
         path_ckpt = self.path_final_ckpt if path is None else path
+        if not path_ckpt.exists():
+            print(f"{path_ckpt} not found, cannot load")
+            return
         state_dict = torch.load(path_ckpt, map_location=device)
         self.load_state_dict(state_dict)
 
@@ -472,24 +570,51 @@ def mae_visualize(model, imgs, save_path):
     plt.close(fig)
 
 
-def build_model_and_loader(variant: str, data_root: str = "./data"):
+def build_model_and_loader(
+    variant: str,
+    data_root: str = "./data",
+    use_kaggle: bool = True,
+    kaggle_imagenet_dataset: str = DEFAULT_KAGGLE_DATASETS["imagenet"],
+    kaggle_coco_dataset: str = DEFAULT_KAGGLE_DATASETS["coco"],
+):
     model = MAE(variant)
     model.load_checkpoint()
 
     cfg = VARIANT_CONFIG[variant]
+    resolved_root = resolve_variant_data_root(
+        variant=variant,
+        data_root=data_root,
+        use_kaggle=use_kaggle,
+        kaggle_imagenet_dataset=kaggle_imagenet_dataset,
+        kaggle_coco_dataset=kaggle_coco_dataset,
+    )
 
     if variant == "cifar10":
-        loader = make_cifar10_dataloader(root=data_root, batch_size=cfg.batch_size)
+        loader = make_cifar10_dataloader(root=resolved_root, batch_size=cfg.batch_size)
     elif variant == "imagenet":
-        loader = make_imagenet_dataloader(root=data_root, batch_size=cfg.batch_size)
+        loader = make_imagenet_dataloader(root=resolved_root, batch_size=cfg.batch_size)
     else:
-        loader = make_coco_dataloader(root=data_root, batch_size=cfg.batch_size)
+        loader = make_coco_dataloader(root=resolved_root, batch_size=cfg.batch_size)
 
     return cfg, model, loader
 
 
-def train(variant: str = "cifar10", steps: int = -1, data_root: str = "./data", epoch=0):
-    cfg, model, loader = build_model_and_loader(variant, data_root=data_root)
+def train(
+    variant: str = "cifar10",
+    steps: int = -1,
+    data_root: str = "./data",
+    epoch: int = 0,
+    use_kaggle: bool = True,
+    kaggle_imagenet_dataset: str = DEFAULT_KAGGLE_DATASETS["imagenet"],
+    kaggle_coco_dataset: str = DEFAULT_KAGGLE_DATASETS["coco"],
+):
+    cfg, model, loader = build_model_and_loader(
+        variant,
+        data_root=data_root,
+        use_kaggle=use_kaggle,
+        kaggle_imagenet_dataset=kaggle_imagenet_dataset,
+        kaggle_coco_dataset=kaggle_coco_dataset,
+    )
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = model.to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=cfg.learning_rate, betas=(0.9, 0.95), weight_decay=0.05)
@@ -547,6 +672,23 @@ def main():
         default="./data",
         help="Root directory for CIFAR-10 or ImageNet. CIFAR-10 downloads here. ImageNet must be prepared locally.",
     )
+    parser.add_argument(
+        "--no-kaggle",
+        action="store_true",
+        help="Disable Kaggle auto-download for ImageNet/COCO. Requires datasets to already exist in --data-root.",
+    )
+    parser.add_argument(
+        "--kaggle-imagenet-dataset",
+        type=str,
+        default=DEFAULT_KAGGLE_DATASETS["imagenet"],
+        help="Kaggle dataset slug for ImageNet-style data (owner/dataset).",
+    )
+    parser.add_argument(
+        "--kaggle-coco-dataset",
+        type=str,
+        default=DEFAULT_KAGGLE_DATASETS["coco"],
+        help="Kaggle dataset slug for COCO-style data (owner/dataset).",
+    )
     args = parser.parse_args()
 
     if args.variant not in VARIANT_CONFIG:
@@ -554,7 +696,15 @@ def main():
         raise ValueError(f"Unknown variant '{args.variant}'. Supported: {supported}")
 
     for epoch in range(args.epochs):
-        train(variant=args.variant, steps=args.steps, data_root=args.data_root, epoch=epoch)
+        train(
+            variant=args.variant,
+            steps=args.steps,
+            data_root=args.data_root,
+            epoch=epoch,
+            use_kaggle=not args.no_kaggle,
+            kaggle_imagenet_dataset=args.kaggle_imagenet_dataset,
+            kaggle_coco_dataset=args.kaggle_coco_dataset,
+        )
 
 
 if __name__ == "__main__":
