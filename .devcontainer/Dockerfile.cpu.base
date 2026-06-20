@@ -34,4 +34,4 @@ RUN uv pip install --no-cache-dir \
 # -----------------------------
 # Install PyTorch (CPU)
 # -----------------------------
-RUN uv pip3 install --no-cache-dir torch torchvision torchaudio
+RUN uv pip install --no-cache-dir torch torchvision torchaudio
