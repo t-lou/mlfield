@@ -44,9 +44,13 @@ ENV PATH="$HOME/.local/bin:$PATH"
 # -----------------------------
 WORKDIR /workspace
 RUN uv venv --python 3.12 /workspace/.venv
+ENV UV_CACHE_DIR=/workspace/.uv-cache
+ENV UV_TMP_DIR=/workspace/.uv-tmp
+RUN mkdir -p /workspace/.uv-cache /workspace/.uv-tmp
 
 ENV VIRTUAL_ENV="/workspace/.venv"
 ENV PATH="$VIRTUAL_ENV/bin:$PATH"
+
 
 # -----------------------------
 # Install Python dependencies

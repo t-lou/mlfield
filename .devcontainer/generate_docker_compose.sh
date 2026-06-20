@@ -53,6 +53,7 @@ services:
     build:
       context: .
       dockerfile: $DOCKERFILE
+      network: host
       args:
         HOST_UID: $HOST_UID
         HOST_GID: $HOST_GID
