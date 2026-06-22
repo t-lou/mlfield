@@ -29,7 +29,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from pycocotools.coco import COCO
-from torch.utils.data import Dataset
+from torch.utils.data import DataLoader, Dataset
 from torchvision import transforms
 
 
@@ -492,34 +492,198 @@ class YOLOv8s(nn.Module):
 
         return (p3_pred, p4_pred, p5_pred), distill_loss
 
+    def save_checkpoint(self, path: str | Path) -> None:
+        """
+        Save YOLO model weights safely to disk.
+
+        The model state dict is moved to CPU before saving, which avoids
+        device-specific state issues when switching between CUDA and CPU.
+        """
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        state_dict_cpu = {k: v.cpu() for k, v in self.state_dict().items()}
+        torch.save(state_dict_cpu, str(path))
+
+    def load_checkpoint(self, path: str | Path, device: Optional[str] = None) -> None:
+        """
+        Load YOLO model weights from disk.
+
+        Args:
+            path: Path to a checkpoint file containing a model state dict.
+            device: Device descriptor for loading, e.g. 'cpu', 'cuda', 'cuda:0'.
+                    If None, uses the current device of the model.
+        """
+        path = Path(path)
+        if not path.exists():
+            raise FileNotFoundError(f"Checkpoint path not found: {path}")
+
+        map_location = device if device is not None else next(self.parameters()).device
+        state_dict = torch.load(str(path), map_location=map_location)
+        self.load_state_dict(state_dict)
+
+
+def _reshape_yolo_prediction(prediction, num_classes):
+    """Reshape a detection head output into [B, A, H, W, 5 + num_classes]."""
+    batch_size, channels, height, width = prediction.shape
+    prediction_size = num_classes + 5
+    num_anchors = channels // prediction_size
+    return prediction.view(batch_size, num_anchors, prediction_size, height, width).permute(0, 1, 3, 4, 2).contiguous()
+
+
+def _build_dense_targets(predictions, targets, num_classes, device):
+    """Create dense objectness, box, and class targets for each detection scale."""
+    target_maps = []
+    for scale_index, prediction in enumerate(predictions):
+        prediction = _reshape_yolo_prediction(prediction, num_classes)
+        batch_size, num_anchors, height, width, _ = prediction.shape
+        objectness_target = torch.zeros((batch_size, num_anchors, height, width), device=device)
+        box_target = torch.zeros((batch_size, num_anchors, height, width, 4), device=device)
+        class_target = torch.zeros((batch_size, num_anchors, height, width, num_classes), device=device)
+        positive_mask = torch.zeros((batch_size, num_anchors, height, width), dtype=torch.bool, device=device)
+
+        for batch_index, batch_targets in enumerate(targets):
+            if batch_targets.numel() == 0:
+                continue
+
+            for target in batch_targets.to(device):
+                x_center, y_center, box_width, box_height, class_id = target.tolist()
+                box_area = box_width * box_height
+                if scale_index == 0:
+                    area_range = box_area < 0.02
+                elif scale_index == 1:
+                    area_range = 0.02 <= box_area < 0.08
+                else:
+                    area_range = box_area >= 0.08
+
+                if not area_range:
+                    continue
+
+                grid_x = min(max(int(x_center * width), 0), width - 1)
+                grid_y = min(max(int(y_center * height), 0), height - 1)
+                anchor_index = 0
+
+                objectness_target[batch_index, anchor_index, grid_y, grid_x] = 1.0
+                box_target[batch_index, anchor_index, grid_y, grid_x] = torch.tensor(
+                    [x_center, y_center, box_width, box_height], device=device
+                )
+                class_index = int(class_id)
+                if 0 <= class_index < num_classes:
+                    class_target[batch_index, anchor_index, grid_y, grid_x, class_index] = 1.0
+                positive_mask[batch_index, anchor_index, grid_y, grid_x] = True
+
+        target_maps.append((objectness_target, box_target, class_target, positive_mask))
+
+    return target_maps
+
 
 def compute_yolo_loss(predictions, targets, num_classes=80, device="cuda"):
     """
-    Compute YOLO detection loss (simplified version).
+    Compute a practical YOLO-style detection loss for the simplified head.
 
-    YOLO Loss = Localization Loss + Confidence Loss + Classification Loss
-
-    - Localization: MSE on bbox coords (x, y, w, h)
-    - Confidence: BCE on objectness score
-    - Classification: BCE on class logits
+    The loss combines:
+    - objectness BCE over every cell
+    - box regression on positive assignments
+    - class BCE on positive assignments
     """
-    p3_pred, p4_pred, p5_pred = predictions
+    predicted_maps = [_reshape_yolo_prediction(prediction, num_classes) for prediction in predictions]
+    target_maps = _build_dense_targets(predictions, targets, num_classes, device)
 
-    # For simplicity, we'll use a basic loss
-    # In production, use GIoU loss, focal loss, etc.
-    loss = torch.tensor(0.0, device=device)
+    objectness_loss = torch.tensor(0.0, device=device)
+    box_loss = torch.tensor(0.0, device=device)
+    class_loss = torch.tensor(0.0, device=device)
+    positive_count = 0
 
-    # TODO: Implement proper YOLO loss with:
-    # - GIoU for bbox regression
-    # - Focal loss for class imbalance
-    # - Objectness loss for confidence
+    for prediction, (objectness_target, box_target, class_target, positive_mask) in zip(predicted_maps, target_maps):
+        predicted_objectness = prediction[..., 4]
+        predicted_boxes = torch.sigmoid(prediction[..., :4])
+        predicted_classes = prediction[..., 5:]
 
-    return loss
+        objectness_loss = objectness_loss + F.binary_cross_entropy_with_logits(
+            predicted_objectness, objectness_target, reduction="mean"
+        )
+
+        if positive_mask.any():
+            positive_predictions = predicted_boxes[positive_mask]
+            positive_boxes = box_target[positive_mask]
+            positive_class_predictions = predicted_classes[positive_mask]
+            positive_class_targets = class_target[positive_mask]
+
+            box_loss = box_loss + F.smooth_l1_loss(positive_predictions, positive_boxes, reduction="mean")
+            class_loss = class_loss + F.binary_cross_entropy_with_logits(
+                positive_class_predictions, positive_class_targets, reduction="mean"
+            )
+            positive_count += 1
+
+    if positive_count == 0:
+        return objectness_loss
+
+    return objectness_loss + 5.0 * box_loss / positive_count + class_loss / positive_count
 
 
 # ============================================================================
 # Training Script
 # ============================================================================
+
+
+def _collate_coco_detection(batch):
+    images, targets, image_ids = zip(*batch)
+    return torch.stack(images, dim=0), list(targets), list(image_ids)
+
+
+def _xywh_to_xyxy(boxes):
+    x_center, y_center, box_width, box_height = boxes.unbind(dim=-1)
+    half_width = box_width / 2
+    half_height = box_height / 2
+    return torch.stack(
+        [x_center - half_width, y_center - half_height, x_center + half_width, y_center + half_height], dim=-1
+    )
+
+
+def _box_iou(boxes_a, boxes_b):
+    top_left = torch.maximum(boxes_a[..., :2], boxes_b[..., :2])
+    bottom_right = torch.minimum(boxes_a[..., 2:], boxes_b[..., 2:])
+    intersection = (bottom_right - top_left).clamp(min=0)
+    intersection_area = intersection[..., 0] * intersection[..., 1]
+
+    area_a = (boxes_a[..., 2] - boxes_a[..., 0]).clamp(min=0) * (boxes_a[..., 3] - boxes_a[..., 1]).clamp(min=0)
+    area_b = (boxes_b[..., 2] - boxes_b[..., 0]).clamp(min=0) * (boxes_b[..., 3] - boxes_b[..., 1]).clamp(min=0)
+    union = area_a + area_b - intersection_area
+    return intersection_area / union.clamp(min=1e-6)
+
+
+def _evaluate_validation_proxy(model, data_loader, device, distill_weight):
+    """Return a lightweight validation proxy based on loss and assigned box matches."""
+    model.eval()
+    total_loss = 0.0
+    total_matches = 0
+    total_targets = 0
+
+    with torch.no_grad():
+        for images, targets, _ in data_loader:
+            images = images.to(device)
+            predictions, distill_loss = model(images)
+            detection_loss = compute_yolo_loss(predictions, targets, num_classes=model.num_classes, device=device)
+            total_loss += float((detection_loss + distill_weight * distill_loss).item())
+
+            target_maps = _build_dense_targets(predictions, targets, model.num_classes, device)
+            for prediction, (_, box_target, class_target, positive_mask) in zip(predictions, target_maps):
+                prediction = _reshape_yolo_prediction(prediction, model.num_classes)
+                predicted_boxes = torch.sigmoid(prediction[..., :4])[positive_mask]
+                target_boxes = box_target[positive_mask]
+                predicted_classes = prediction[..., 5:][positive_mask].argmax(dim=-1)
+                target_classes = class_target[positive_mask].argmax(dim=-1)
+
+                total_targets += int(positive_mask.sum().item())
+                if predicted_boxes.numel() == 0:
+                    continue
+
+                iou = _box_iou(_xywh_to_xyxy(predicted_boxes), _xywh_to_xyxy(target_boxes))
+                total_matches += int(((iou > 0.5) & (predicted_classes == target_classes)).sum().item())
+
+    model.train()
+    match_rate = total_matches / max(total_targets, 1)
+    average_loss = total_loss / max(len(data_loader), 1)
+    return average_loss, match_rate
 
 
 def train(
@@ -534,12 +698,10 @@ def train(
     """
     Train YOLOv8-s with optional MAE knowledge distillation.
 
-    IMPORTANT: This is a simplified training loop.
-    For production, use proper:
-    - YOLO loss functions (GIoU, focal loss)
-    - Data augmentation (mosaic, mixup, etc.)
-    - Learning rate scheduling
-    - Validation and mAP computation
+    This implements a simplified but functional training loop that:
+    - loads COCO train/val splits
+    - optimizes detection loss plus optional distillation loss
+    - runs validation and saves checkpoints
 
     Args:
         use_mae_distillation: If True, use MAE teacher for knowledge distillation
@@ -550,26 +712,40 @@ def train(
 
     config = YOLOConfig(batch_size=batch_size, epochs=epochs, learning_rate=learning_rate)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    distill_weight = 0.1
 
-    # Create checkpoint directory
     Path(save_dir).mkdir(parents=True, exist_ok=True)
 
-    # Initialize model
+    train_dataset = COCODetectionDataset(data_root, split="train", image_size=config.image_size)
+    val_dataset = COCODetectionDataset(data_root, split="val", image_size=config.image_size)
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=config.batch_size,
+        shuffle=True,
+        num_workers=2,
+        pin_memory=torch.cuda.is_available(),
+        collate_fn=_collate_coco_detection,
+    )
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=config.batch_size,
+        shuffle=False,
+        num_workers=2,
+        pin_memory=torch.cuda.is_available(),
+        collate_fn=_collate_coco_detection,
+    )
+
     model = YOLOv8s(
         num_classes=config.num_classes,
         use_mae_distillation=use_mae_distillation,
         mae_checkpoint_path=mae_checkpoint_path,
-    )
-    model = model.to(device)
+    ).to(device)
 
-    # Optimizer
     optimizer = torch.optim.SGD(
         model.parameters(), lr=config.learning_rate, momentum=0.937, weight_decay=config.weight_decay
     )
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=config.epochs)
 
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=config.epochs)  # unused?
-
-    # Data loading (placeholder - implement proper COCO loading)
     print(f"Training YOLOv8-s with MAE distillation: {use_mae_distillation}")
     print(f"Device: {device}")
     print(f"Config: batch_size={config.batch_size}, epochs={config.epochs}, lr={config.learning_rate}")
@@ -580,12 +756,65 @@ def train(
         print("✓ MAE teacher loaded - training WITH knowledge distillation")
         print("  Benefit: Faster convergence, better generalization")
 
-    # TODO: Implement full training loop with:
-    # 1. Load COCO data (use COCODetectionDataset class above)
-    # 2. Forward pass through model
-    # 3. Compute loss = detection_loss + lambda_distill * distillation_loss
-    # 4. Backward and optimize
-    # 5. Validate on COCO val set with mAP metric
+    final_dir = Path("yolo_checkpoint")
+    final_dir.mkdir(parents=True, exist_ok=True)
+    final_checkpoint_path = final_dir / "final.pth"
+
+    best_val_loss = float("inf")
+    for epoch in range(config.epochs):
+        model.train()
+        running_loss = 0.0
+
+        for images, targets, _ in train_loader:
+            images = images.to(device)
+            optimizer.zero_grad(set_to_none=True)
+
+            predictions, distill_loss = model(images)
+            detection_loss = compute_yolo_loss(predictions, targets, num_classes=config.num_classes, device=device)
+            loss = detection_loss + distill_weight * distill_loss
+
+            loss.backward()
+            optimizer.step()
+            running_loss += float(loss.item())
+
+        scheduler.step()
+        train_loss = running_loss / max(len(train_loader), 1)
+        val_loss, val_match_rate = _evaluate_validation_proxy(model, val_loader, device, distill_weight)
+
+        print(
+            f"Epoch {epoch + 1}/{config.epochs} | train_loss={train_loss:.4f} | "
+            f"val_loss={val_loss:.4f} | val_match_rate_proxy={val_match_rate:.4f}"
+        )
+
+        checkpoint_path = Path(save_dir) / f"epoch_{epoch + 1:03d}.pth"
+        torch.save(
+            {
+                "epoch": epoch + 1,
+                "model_state_dict": model.state_dict(),
+                "optimizer_state_dict": optimizer.state_dict(),
+                "train_loss": train_loss,
+                "val_loss": val_loss,
+            },
+            checkpoint_path,
+        )
+
+        # Save a CPU-safe final model checkpoint every epoch
+        model.save_checkpoint(final_checkpoint_path)
+
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            torch.save(
+                {
+                    "epoch": epoch + 1,
+                    "model_state_dict": model.state_dict(),
+                    "optimizer_state_dict": optimizer.state_dict(),
+                    "train_loss": train_loss,
+                    "val_loss": val_loss,
+                },
+                Path(save_dir) / "best.pth",
+            )
+
+    print(f"Training complete. Best validation loss: {best_val_loss:.4f}")
 
 
 def main():
