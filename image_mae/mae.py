@@ -1268,7 +1268,7 @@ def train(
             model.save_checkpoint()
 
     logger.info(
-        f"variant={variant} step={step} loss={float(loss):.6f} "
+        f"variant={variant} epoch={epoch} step={step} loss={float(loss):.6f} "
         f"pred_shape={tuple(pred.shape)} target_shape={tuple(target.shape)}"
     )
     model.save_checkpoint()
