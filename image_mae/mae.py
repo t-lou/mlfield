@@ -30,11 +30,10 @@ from typing import Dict, Optional, Tuple
 
 import matplotlib.pyplot as plt
 import torch
+from logger import create_logger
 from torch import nn
 from torch.utils.data import DataLoader, Dataset
 from torchvision import datasets, transforms
-
-from logger import create_logger
 
 logger = create_logger("mae")
 
