@@ -1299,6 +1299,7 @@ def main() -> None:
     parser.add_argument("--variant", type=str, default="cifar10", choices=["cifar10", "imagenet", "coco"])
     parser.add_argument("--steps", type=int, default=-1)
     parser.add_argument("--epochs", type=int, default=10)
+    parser.add_argument("--start-epoch", type=int, default=0)
     parser.add_argument(
         "--data-root",
         type=str,
@@ -1328,7 +1329,8 @@ def main() -> None:
         supported = ", ".join(sorted(VARIANT_CONFIG))
         raise ValueError(f"Unknown variant '{args.variant}'. Supported: {supported}")
 
-    for epoch in range(args.epochs):
+    for epoch_rel in range(args.epochs):
+        epoch = args.start_epoch + epoch_rel
         train(
             variant=args.variant,
             steps=args.steps,
