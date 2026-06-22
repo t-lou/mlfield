@@ -687,7 +687,7 @@ def _evaluate_validation_proxy(model, data_loader, device, distill_weight):
 
 
 def train(
-    data_root: str = "./data",
+    data_root: str = "./data/kaggle/coco/coco2017/",
     use_mae_distillation: bool = True,
     mae_checkpoint_path: Optional[str] = None,
     epochs: int = 100,
@@ -819,7 +819,9 @@ def train(
 
 def main():
     parser = argparse.ArgumentParser(description="YOLOv8-s with Optional MAE Distillation")
-    parser.add_argument("--data-root", type=str, default="./data", help="Root directory for COCO dataset")
+    parser.add_argument(
+        "--data-root", type=str, default="./data/kaggle/coco/coco2017", help="Root directory for COCO dataset"
+    )
     parser.add_argument(
         "--use-mae-distillation",
         action="store_true",
