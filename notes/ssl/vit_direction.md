@@ -1124,3 +1124,168 @@ DINOv3
 - **Which DINO version is best for autonomous driving / BEV / 3D**  
 
 Just choose one.
+
+# iBOT and MSN
+
+Here’s the **clear, modern, research‑level explanation** of **iBOT** and **MSN** — and why they *feel old now*, yet still matter for understanding the evolution toward **DINOv2 → DINOv3**.
+
+I’ll keep it sharp, structured, and focused on what’s still relevant today.
+
+---
+
+# 🧭 Why iBOT and MSN *feel old now*
+They were published in **2021–2022**, which in SSL terms is ancient.  
+But they represent the **bridge era** between:
+
+- **MAE‑style predictive SSL**  
+- **DINO‑style distillation SSL**  
+- **Modern foundation models (DINOv2, DINOv3)**  
+
+They are important because they were the **first attempts to merge MAE + DINO**.
+
+---
+
+# 🟦 1. **iBOT (2021–2022)** — *Masked Image Modeling + DINO*
+
+
+
+
+
+### **Core idea**
+iBOT = **MAE + DINO** in one model.
+
+It introduced **masked token prediction in feature space**, not pixel space.
+
+### **How it works**
+- Mask some patches  
+- Teacher ViT (EMA) produces target features  
+- Student ViT predicts teacher features for masked patches  
+- Multi‑crop augmentation (from DINO)  
+- Patch‑level contrastive loss  
+- Global CLS distillation (DINO‑style)
+
+### **Why it mattered**
+- First method to show **MAE + DINO synergy**  
+- Stronger dense features than DINO  
+- Stronger global features than MAE  
+- Good for segmentation, depth, detection
+
+### **Why it feels old now**
+- DINOv2 and DINOv3 surpass it in both global and dense features  
+- Masked feature prediction is now considered *less stable* than Gram anchoring  
+- Data curation and scaling matter more today than the loss design
+
+---
+
+# 🟩 2. **MSN (Masked Siamese Networks, 2022)** — *Masked Distillation Without Pixel Loss*
+
+
+
+
+
+### **Core idea**
+MSN = **DINO‑style distillation + masked modeling**, but:
+
+- No pixel reconstruction  
+- No discrete tokens  
+- No contrastive loss  
+
+### **How it works**
+- Mask patches  
+- Teacher (EMA) produces features  
+- Student predicts teacher features for masked patches  
+- Multi‑crop training  
+- No negative pairs  
+- No pixel loss (unlike MAE)
+
+### **Why it mattered**
+- Showed that **masked modeling does not require pixel reconstruction**  
+- Produced strong global embeddings  
+- Simpler than iBOT  
+- More stable than BEiT‑style token prediction
+
+### **Why it feels old now**
+- Dense features degrade with long training (fixed by DINOv3)  
+- No register tokens (DINOv2)  
+- No Gram anchoring (DINOv3)  
+- Scaling recipe is outdated  
+- Data quality is now the bottleneck, not the loss
+
+---
+
+# 🧠 3. How iBOT and MSN relate to DINO → DINOv2 → DINOv3
+
+### **iBOT**
+- Closest to **DINOv1**  
+- Adds MAE‑style masking  
+- Good dense features  
+- But unstable at scale
+
+### **MSN**
+- Closer to **DINOv2**  
+- Masked distillation  
+- Good global features  
+- But dense features degrade over long training
+
+### **DINOv3**
+- Solves the dense‑feature degradation problem with **Gram anchoring**  
+- Adds scalable data + model + post‑hoc adaptation  
+- Outperforms both iBOT and MSN by a large margin
+
+---
+
+# 🧩 4. Should you still care about iBOT and MSN?
+
+### **Yes, if you want to build your own hybrid SSL method.**
+
+They contain ideas that are still extremely useful:
+
+- **Masked feature prediction** (iBOT)  
+- **Masked distillation** (MSN)  
+- **Patch‑level teacher–student learning**  
+- **Multi‑crop invariance**  
+- **EMA teacher stability**  
+
+These are still the backbone of:
+- DINOv2  
+- DINOv3  
+- VideoMAE  
+- ImageBind  
+- Many robotics SSL pipelines  
+
+### **No, if you want SOTA performance.**
+
+DINOv3 is strictly better:
+- Better dense features  
+- Better global features  
+- Better scaling  
+- Better stability  
+- Better cross‑domain generalization  
+
+---
+
+# 🧭 5. The evolution in one clean diagram
+
+```
+MAE (pixel reconstruction)
+      ↓
+iBOT (masked feature prediction + DINO)
+      ↓
+MSN (masked distillation)
+      ↓
+DINOv2 (register tokens + curated data)
+      ↓
+DINOv3 (Gram anchoring + long-training stability)
+```
+
+iBOT and MSN are the **missing link** between MAE and DINOv2/3.
+
+---
+
+# 👉 If you want, I can now give you:
+
+- **A table comparing iBOT vs MSN vs DINOv2 vs DINOv3**  
+- **A recipe to build your own MAE→DINO hybrid**  
+- **A PyTorch training loop for masked distillation**  
+
+Which direction do you want to explore next?
