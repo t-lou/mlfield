@@ -34,6 +34,10 @@ from torch import nn
 from torch.utils.data import DataLoader, Dataset
 from torchvision import datasets, transforms
 
+from logger import create_logger
+
+logger = create_logger("mae")
+
 DEFAULT_KAGGLE_DATASETS: Dict[str, str] = {
     # This is not the official ILSVRC release. It is a Kaggle-hosted ImageNet-style layout.
     "imagenet": "ifigotin/imagenetmini-1000",
@@ -1056,7 +1060,7 @@ class MAE(nn.Module):
         path_ckpt = self.path_final_ckpt if path is None else path
 
         if not path_ckpt.exists():
-            print(f"{path_ckpt} not found, cannot load")
+            logger.info(f"{path_ckpt} not found, cannot load")
             return
 
         state_dict = torch.load(path_ckpt, map_location=device)
@@ -1256,14 +1260,14 @@ def train(
         if steps >= 0 and step >= steps:
             break
         elif (step + 1) % 10_000 == 0:
-            print(
-                f"variant={variant} step={step} loss={float(loss):.6f} "
+            logger.info(
+                f"variant={variant} epoch={epoch} step={step} loss={float(loss):.6f} "
                 f"pred_shape={tuple(pred.shape)} target_shape={tuple(target.shape)}"
             )
 
             model.save_checkpoint()
 
-    print(
+    logger.info(
         f"variant={variant} step={step} loss={float(loss):.6f} "
         f"pred_shape={tuple(pred.shape)} target_shape={tuple(target.shape)}"
     )
@@ -1271,7 +1275,7 @@ def train(
 
     path_vis = Path(f"mae_visualizations/{variant}")
     path_vis.mkdir(parents=True, exist_ok=True)
-    mae_visualize(model, imgs, save_path=(path_vis / f"step_{epoch}.png"))
+    mae_visualize(model, imgs, save_path=(path_vis / f"step_{epoch:06}_{step:06}.png"))
 
 
 def main() -> None:

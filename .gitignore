@@ -4,3 +4,4 @@
 **/checkpoints*/*
 # ignore developer-specific overrides, like DATASET_DIR=/mnt/d/data
 .devcontainer/local.env
+logs
