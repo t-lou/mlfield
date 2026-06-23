@@ -28,9 +28,12 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from logger import create_logger
 from pycocotools.coco import COCO
 from torch.utils.data import DataLoader, Dataset
 from torchvision import transforms
+
+logger = create_logger("yolo")
 
 
 @dataclass(frozen=True)
@@ -69,6 +72,9 @@ class COCODetectionDataset(Dataset):
 
         self.coco = COCO(ann_file)
         self.image_ids = list(self.coco.imgs.keys())
+        # COCO category IDs are sparse/non-contiguous, so map them to [0, num_classes-1].
+        self.category_ids = sorted(self.coco.getCatIds())
+        self.category_id_to_index = {category_id: index for index, category_id in enumerate(self.category_ids)}
 
         # Standard COCO normalization
         self.transform = transforms.Compose(
@@ -113,7 +119,9 @@ class COCODetectionDataset(Dataset):
             y_center = (y + h / 2) / orig_h
             w_norm = w / orig_w
             h_norm = h / orig_h
-            class_id = ann["category_id"] - 1  # COCO is 1-indexed
+            class_id = self.category_id_to_index.get(ann["category_id"])
+            if class_id is None:
+                continue
 
             targets.append([x_center, y_center, w_norm, h_norm, class_id])
 
@@ -166,7 +174,7 @@ class C2fBlock(nn.Module):
         hidden_channels = out_channels // 2
         self.cv1 = ConvBlock(in_channels, hidden_channels, kernel_size=1, stride=1, padding=0)
         self.cv2 = ConvBlock(in_channels, hidden_channels, kernel_size=1, stride=1, padding=0)
-        self.cv3 = ConvBlock(hidden_channels * (num_bottlenecks + 2), out_channels, kernel_size=1, stride=1, padding=0)
+        self.cv3 = ConvBlock(hidden_channels * 3, out_channels, kernel_size=1, stride=1, padding=0)
         self.bottlenecks = nn.Sequential(
             *[BottleNeck(hidden_channels, hidden_channels) for _ in range(num_bottlenecks)]
         )
@@ -281,10 +289,10 @@ class YOLONeck(nn.Module):
 
         # Downsample and fuse back
         self.cv3 = ConvBlock(256, 256, kernel_size=3, stride=2, padding=1)
-        self.c2f3 = C2fBlock(512, 512, num_bottlenecks=1)  # 256 (down) + 256
+        self.c2f3 = C2fBlock(768, 512, num_bottlenecks=1)  # 256 (down) + 512 (fp4)
 
         self.cv4 = ConvBlock(512, 512, kernel_size=3, stride=2, padding=1)
-        self.c2f4 = C2fBlock(1024, 1024, num_bottlenecks=1)  # 512 (down) + 512
+        self.c2f4 = C2fBlock(1536, 1024, num_bottlenecks=1)  # 512 (down) + 1024 (p5)
 
     def forward(self, p3, p4, p5):
         """
@@ -406,27 +414,43 @@ class YOLOv8s(nn.Module):
     def _load_mae_teacher(self, checkpoint_path):
         """
         Load pre-trained MAE model as frozen teacher for knowledge distillation.
-        MAE provides high-quality self-supervised features learned on ImageNet.
+        MAE provides high-quality self-supervised features learned from ImageNet.
         """
         try:
             # Import MAE from the same directory
             import sys
 
             sys.path.insert(0, str(Path(__file__).parent))
-            from main import MAE
+            from mae import MAE
 
             mae = MAE("imagenet")
+            local_root = Path(__file__).parent
 
-            if checkpoint_path and Path(checkpoint_path).exists():
-                mae.load_checkpoint(path=checkpoint_path, device="cpu")
-            else:
-                # Try default checkpoint path
-                default_path = Path("mae_checkpoints/imagenet/final.pth")
-                if default_path.exists():
-                    mae.load_checkpoint(path=str(default_path), device="cpu")
+            ckpt_path = None
+            if checkpoint_path:
+                provided_path = Path(checkpoint_path)
+                if provided_path.is_absolute():
+                    if provided_path.exists():
+                        ckpt_path = provided_path
                 else:
-                    print("⚠️  Warning: MAE checkpoint not found. Distillation disabled.")
+                    for candidate in [provided_path, local_root / provided_path]:
+                        if candidate.exists():
+                            ckpt_path = candidate
+                            break
+
+                if ckpt_path is None:
+                    logger.warning(f"⚠️  Warning: Provided MAE checkpoint not found: {checkpoint_path}")
+                    logger.warning("   Distillation disabled.")
                     return None
+            else:
+                default_path = local_root / "mae_checkpoints" / "imagenet" / "final.pth"
+                if default_path.exists():
+                    ckpt_path = default_path
+                else:
+                    logger.warning("⚠️  Warning: MAE checkpoint not found. Distillation disabled.")
+                    return None
+
+            mae.load_checkpoint(path=ckpt_path, device="cpu")
 
             # Freeze MAE completely (no gradients)
             for param in mae.parameters():
@@ -436,8 +460,8 @@ class YOLOv8s(nn.Module):
             return mae
 
         except Exception as e:
-            print(f"⚠️  Warning: Failed to load MAE teacher: {e}")
-            print("   Continuing without knowledge distillation...")
+            logger.warning(f"⚠️  Warning: Failed to load MAE teacher: {e}")
+            logger.warning("   Continuing without knowledge distillation...")
             return None
 
     def forward(self, x):
@@ -460,9 +484,12 @@ class YOLOv8s(nn.Module):
         distill_loss = torch.tensor(0.0, device=x.device)
         if self.use_mae_distillation and self.mae_teacher is not None:
             with torch.no_grad():
-                # MAE processes the SAME input independently
+                teacher_size = int(self.mae_teacher.cfg.image_size)
+                mae_input = F.interpolate(x, size=(teacher_size, teacher_size), mode="bilinear", align_corners=False)
+
+                # MAE processes the same image content independently
                 # Extract only encoder features (skip decoder)
-                mae_latent, _, _ = self.mae_teacher.forward_encoder(x)
+                mae_latent, _, _ = self.mae_teacher.forward_encoder(mae_input)
                 # mae_latent: (B, num_patches+1, 768)
                 mae_features = mae_latent[:, 1:, :]  # Remove CLS token, (B, 196, 768)
 
@@ -608,11 +635,11 @@ def compute_yolo_loss(predictions, targets, num_classes=80, device="cuda"):
             positive_class_predictions = predicted_classes[positive_mask]
             positive_class_targets = class_target[positive_mask]
 
-            box_loss = box_loss + F.smooth_l1_loss(positive_predictions, positive_boxes, reduction="mean")
+            box_loss = box_loss + F.smooth_l1_loss(positive_predictions, positive_boxes, reduction="sum")
             class_loss = class_loss + F.binary_cross_entropy_with_logits(
-                positive_class_predictions, positive_class_targets, reduction="mean"
+                positive_class_predictions, positive_class_targets, reduction="sum"
             )
-            positive_count += 1
+            positive_count += int(positive_mask.sum().item())
 
     if positive_count == 0:
         return objectness_loss
@@ -746,15 +773,15 @@ def train(
     )
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=config.epochs)
 
-    print(f"Training YOLOv8-s with MAE distillation: {use_mae_distillation}")
-    print(f"Device: {device}")
-    print(f"Config: batch_size={config.batch_size}, epochs={config.epochs}, lr={config.learning_rate}")
+    logger.info(f"Training YOLOv8-s with MAE distillation: {use_mae_distillation}")
+    logger.info(f"Device: {device}")
+    logger.info(f"Config: batch_size={config.batch_size}, epochs={config.epochs}, lr={config.learning_rate}")
 
     if use_mae_distillation and model.mae_teacher is None:
-        print("⚠️  MAE teacher not loaded - training WITHOUT distillation")
+        logger.warning("⚠️  MAE teacher not loaded - training WITHOUT distillation")
     elif use_mae_distillation:
-        print("✓ MAE teacher loaded - training WITH knowledge distillation")
-        print("  Benefit: Faster convergence, better generalization")
+        logger.info("✓ MAE teacher loaded - training WITH knowledge distillation")
+        logger.info("  Benefit: Faster convergence, better generalization")
 
     final_dir = Path("yolo_checkpoint")
     final_dir.mkdir(parents=True, exist_ok=True)
@@ -781,7 +808,7 @@ def train(
         train_loss = running_loss / max(len(train_loader), 1)
         val_loss, val_match_rate = _evaluate_validation_proxy(model, val_loader, device, distill_weight)
 
-        print(
+        logger.info(
             f"Epoch {epoch + 1}/{config.epochs} | train_loss={train_loss:.4f} | "
             f"val_loss={val_loss:.4f} | val_match_rate_proxy={val_match_rate:.4f}"
         )
@@ -814,7 +841,7 @@ def train(
                 Path(save_dir) / "best.pth",
             )
 
-    print(f"Training complete. Best validation loss: {best_val_loss:.4f}")
+    logger.info(f"Training complete. Best validation loss: {best_val_loss:.4f}")
 
 
 def main():
