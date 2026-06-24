@@ -535,6 +535,10 @@ class YOLOv8s(nn.Module):
         """
         Load YOLO model weights from disk.
 
+        Handles both formats:
+        - Raw state_dict (from save_checkpoint)
+        - Checkpoint dict with metadata (from training loop, with "model_state_dict" key)
+
         Args:
             path: Path to a checkpoint file containing a model state dict.
             device: Device descriptor for loading, e.g. 'cpu', 'cuda', 'cuda:0'.
@@ -545,7 +549,16 @@ class YOLOv8s(nn.Module):
             raise FileNotFoundError(f"Checkpoint path not found: {path}")
 
         map_location = device if device is not None else next(self.parameters()).device
-        state_dict = torch.load(str(path), map_location=map_location)
+        checkpoint = torch.load(str(path), map_location=map_location)
+
+        # Handle both checkpoint formats
+        if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
+            # Training checkpoint format (with metadata)
+            state_dict = checkpoint["model_state_dict"]
+        else:
+            # Raw state_dict format
+            state_dict = checkpoint
+
         self.load_state_dict(state_dict)
 
 
@@ -718,9 +731,11 @@ def train(
     use_mae_distillation: bool = True,
     mae_checkpoint_path: Optional[str] = None,
     epochs: int = 100,
+    start_epoch: int = 0,
     batch_size: int = 32,
     learning_rate: float = 1e-3,
     save_dir: str = "yolo_checkpoints",
+    distill_weight: float = 0.1,
 ):
     """
     Train YOLOv8-s with optional MAE knowledge distillation.
@@ -731,15 +746,18 @@ def train(
     - runs validation and saves checkpoints
 
     Args:
+        data_root: Root directory for COCO dataset
         use_mae_distillation: If True, use MAE teacher for knowledge distillation
         mae_checkpoint_path: Path to MAE checkpoint (if None, uses default)
         epochs: Number of training epochs
+        start_epoch: Starting epoch for training (useful for resuming)
         batch_size: Batch size (32-64 for 30GB GPU, 4-8 for 4GB testing)
+        learning_rate: Initial learning rate for SGD optimizer
+        save_dir: Directory to save model checkpoints
     """
 
     config = YOLOConfig(batch_size=batch_size, epochs=epochs, learning_rate=learning_rate)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    distill_weight = 0.1
 
     Path(save_dir).mkdir(parents=True, exist_ok=True)
 
@@ -783,12 +801,15 @@ def train(
         logger.info("✓ MAE teacher loaded - training WITH knowledge distillation")
         logger.info("  Benefit: Faster convergence, better generalization")
 
-    final_dir = Path("yolo_checkpoint")
-    final_dir.mkdir(parents=True, exist_ok=True)
-    final_checkpoint_path = final_dir / "final.pth"
+    if start_epoch > 0:
+        checkpoint_path = Path(save_dir) / f"epoch_{start_epoch:03d}.pth"
+        assert checkpoint_path.exists(), f"Checkpoint for start_epoch={start_epoch} not found: {checkpoint_path}"
+        model.load_checkpoint(checkpoint_path, device=device)
+        logger.info(f"Resuming training from epoch {start_epoch} using checkpoint: {checkpoint_path}")
 
-    best_val_loss = float("inf")
-    for epoch in range(config.epochs):
+    for epoch_rel in range(config.epochs):
+        epoch = start_epoch + epoch_rel
+
         model.train()
         running_loss = 0.0
 
@@ -825,24 +846,6 @@ def train(
             checkpoint_path,
         )
 
-        # Save a CPU-safe final model checkpoint every epoch
-        model.save_checkpoint(final_checkpoint_path)
-
-        if val_loss < best_val_loss:
-            best_val_loss = val_loss
-            torch.save(
-                {
-                    "epoch": epoch + 1,
-                    "model_state_dict": model.state_dict(),
-                    "optimizer_state_dict": optimizer.state_dict(),
-                    "train_loss": train_loss,
-                    "val_loss": val_loss,
-                },
-                Path(save_dir) / "best.pth",
-            )
-
-    logger.info(f"Training complete. Best validation loss: {best_val_loss:.4f}")
-
 
 def main():
     parser = argparse.ArgumentParser(description="YOLOv8-s with Optional MAE Distillation")
@@ -859,11 +862,13 @@ def main():
         "--mae-checkpoint", type=str, default=None, help="Path to MAE checkpoint (auto-detect if not specified)"
     )
     parser.add_argument("--epochs", type=int, default=100, help="Number of training epochs")
+    parser.add_argument("--start-epoch", type=int, default=0, help="Starting epoch for training (useful for resuming)")
     parser.add_argument("--batch-size", type=int, default=32, help="Batch size (adjust for GPU memory)")
     parser.add_argument("--learning-rate", type=float, default=1e-3, help="Initial learning rate")
     parser.add_argument(
         "--save-dir", type=str, default="yolo_checkpoints", help="Directory to save checkpoints and logs"
     )
+    parser.add_argument("--distill-weight", type=float, default=0.1, help="Weight for MAE distillation loss")
 
     args = parser.parse_args()
 
@@ -872,9 +877,11 @@ def main():
         use_mae_distillation=args.use_mae_distillation,
         mae_checkpoint_path=args.mae_checkpoint,
         epochs=args.epochs,
+        start_epoch=args.start_epoch,
         batch_size=args.batch_size,
         learning_rate=args.learning_rate,
         save_dir=args.save_dir,
+        distill_weight=args.distill_weight,
     )
 
 
