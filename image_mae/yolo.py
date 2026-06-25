@@ -487,9 +487,10 @@ class YOLOv8s(nn.Module):
                 teacher_size = int(self.mae_teacher.cfg.image_size)
                 mae_input = F.interpolate(x, size=(teacher_size, teacher_size), mode="bilinear", align_corners=False)
 
-                # MAE processes the same image content independently
-                # Extract only encoder features (skip decoder)
-                mae_latent, _, _ = self.mae_teacher.forward_encoder(mae_input)
+                # MAE processes the same image content independently.
+                # Use a deterministic full-token encoder pass to avoid stochastic
+                # teacher targets from random masking.
+                mae_latent = self.mae_teacher.forward_encoder_full(mae_input, mask_ratio=0.0)  # (B, num_patches+1, 768)
                 # mae_latent: (B, num_patches+1, 768)
                 mae_features = mae_latent[:, 1:, :]  # Remove CLS token, (B, 196, 768)
 
@@ -507,15 +508,15 @@ class YOLOv8s(nn.Module):
                 .permute(0, 3, 1, 2)
             )
 
-            # Resize MAE features to match YOLO P4 spatial dimensions
-            yolo_h, yolo_w = fp4.shape[2], fp4.shape[3]
+            # Resize MAE features to match YOLO backbone P4 spatial dimensions
+            yolo_h, yolo_w = p4.shape[2], p4.shape[3]
             mae_features_aligned = F.interpolate(
                 mae_features_aligned, size=(yolo_h, yolo_w), mode="bilinear", align_corners=False
             )
 
             # Distillation loss: MSE between aligned features
-            # This encourages YOLO to learn representations similar to MAE
-            distill_loss = F.mse_loss(mae_features_aligned, fp4)
+            # This encourages YOLO backbone features to align with MAE features.
+            distill_loss = F.mse_loss(mae_features_aligned, p4)
 
         return (p3_pred, p4_pred, p5_pred), distill_loss
 
@@ -695,6 +696,8 @@ def _evaluate_validation_proxy(model, data_loader, device, distill_weight):
     """Return a lightweight validation proxy based on loss and assigned box matches."""
     model.eval()
     total_loss = 0.0
+    total_detection_loss = 0.0
+    total_distill_loss = 0.0
     total_matches = 0
     total_targets = 0
 
@@ -704,6 +707,8 @@ def _evaluate_validation_proxy(model, data_loader, device, distill_weight):
             predictions, distill_loss = model(images)
             detection_loss = compute_yolo_loss(predictions, targets, num_classes=model.num_classes, device=device)
             total_loss += float((detection_loss + distill_weight * distill_loss).item())
+            total_detection_loss += float(detection_loss.item())
+            total_distill_loss += float(distill_loss.item())
 
             target_maps = _build_dense_targets(predictions, targets, model.num_classes, device)
             for prediction, (_, box_target, class_target, positive_mask) in zip(predictions, target_maps):
@@ -723,7 +728,9 @@ def _evaluate_validation_proxy(model, data_loader, device, distill_weight):
     model.train()
     match_rate = total_matches / max(total_targets, 1)
     average_loss = total_loss / max(len(data_loader), 1)
-    return average_loss, match_rate
+    average_detection_loss = total_detection_loss / max(len(data_loader), 1)
+    average_distill_loss = total_distill_loss / max(len(data_loader), 1)
+    return average_loss, match_rate, average_detection_loss, average_distill_loss
 
 
 def train(
@@ -812,6 +819,8 @@ def train(
 
         model.train()
         running_loss = 0.0
+        running_detection_loss = 0.0
+        running_distill_loss = 0.0
 
         for images, targets, _ in train_loader:
             images = images.to(device)
@@ -824,14 +833,22 @@ def train(
             loss.backward()
             optimizer.step()
             running_loss += float(loss.item())
+            running_detection_loss += float(detection_loss.item())
+            running_distill_loss += float(distill_loss.item())
 
         scheduler.step()
         train_loss = running_loss / max(len(train_loader), 1)
-        val_loss, val_match_rate = _evaluate_validation_proxy(model, val_loader, device, distill_weight)
+        train_detection_loss = running_detection_loss / max(len(train_loader), 1)
+        train_distill_loss = running_distill_loss / max(len(train_loader), 1)
+        val_loss, val_match_rate, val_detection_loss, val_distill_loss = _evaluate_validation_proxy(
+            model, val_loader, device, distill_weight
+        )
 
         logger.info(
-            f"Epoch {epoch + 1}/{config.epochs} | train_loss={train_loss:.4f} | "
-            f"val_loss={val_loss:.4f} | val_match_rate_proxy={val_match_rate:.4f}"
+            f"Epoch {epoch + 1}/{config.epochs} | "
+            f"train_loss={train_loss:.4f} (det={train_detection_loss:.4f}, dist={train_distill_loss:.4f}) | "
+            f"val_loss={val_loss:.4f} (det={val_detection_loss:.4f}, dist={val_distill_loss:.4f}) | "
+            f"val_match_rate_proxy={val_match_rate:.4f}"
         )
 
         checkpoint_path = Path(save_dir) / f"epoch_{epoch + 1:03d}.pth"

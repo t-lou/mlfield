@@ -903,7 +903,7 @@ class MAE(nn.Module):
 
         return x_masked, mask, ids_restore
 
-    def forward_encoder(self, imgs: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def forward_encoder(self, imgs: torch.Tensor, mask_ratio: float) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Encode visible patches through transformer encoder.
 
@@ -917,6 +917,7 @@ class MAE(nn.Module):
 
         Args:
             imgs: Input images (batch, 3, H, W)
+            mask_ratio: Fraction of patches to mask
 
         Returns:
             Tuple of:
@@ -926,7 +927,7 @@ class MAE(nn.Module):
         """
         x = self.patch_embed(imgs)
         x = x + self.pos_embed_enc[:, 1:, :]
-        x, mask, ids_restore = self.random_masking(x, self.cfg.mask_ratio)
+        x, mask, ids_restore = self.random_masking(x, mask_ratio)
 
         cls_token = self.cls_token + self.pos_embed_enc[:, :1, :]
         cls_tokens = cls_token.expand(x.shape[0], -1, -1)
@@ -1023,7 +1024,7 @@ class MAE(nn.Module):
             - target: Target patches (batch, num_patches, patch_dim)
             - mask: Binary mask (batch, num_patches)
         """
-        latent, mask, ids_restore = self.forward_encoder(imgs)
+        latent, mask, ids_restore = self.forward_encoder(imgs, self.cfg.mask_ratio)
         pred = self.forward_decoder(latent, ids_restore)
         loss, target = self.forward_loss(imgs, pred, mask)
         return loss, pred, target, mask
@@ -1096,7 +1097,7 @@ def mae_visualize(model: MAE, imgs: torch.Tensor, save_path: Path) -> None:
     """
     model.eval()
     with torch.no_grad():
-        latent, mask, ids_restore = model.forward_encoder(imgs)
+        latent, mask, ids_restore = model.forward_encoder(imgs, model.cfg.mask_ratio)
         pred = model.forward_decoder(latent, ids_restore)
         rec_imgs = model.unpatchify(pred)
 

@@ -1,6 +1,5 @@
 import glob
 import subprocess
-import tempfile
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -8,8 +7,10 @@ from typing import Optional
 
 import requests
 from llama_cpp import Llama
+
 # pip install llama-cpp-python
 # pip install llama-cpp-python --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu
+
 
 @dataclass
 class TestRefinementResult:
@@ -62,7 +63,7 @@ class LLMProgrammer(ABC):
         subprocess.run(["git", "-C", str(self.workspace), *args], check=True)
 
     def commit(self, message: str):
-        return # need to solve the gitignore conflict first
+        return  # need to solve the gitignore conflict first
         self._git("add", ".")
         self._git("commit", "-m", message)
 
@@ -149,8 +150,8 @@ class Phi3MiniBackend:
         self._llm = Llama(
             model_path=str(self.model_path),  # path to GGUF file
             n_ctx=4096,  # The max sequence length to use - note that longer sequence lengths require much more resources
-            n_threads=8, # The number of CPU threads to use, tailor to your system and the resulting performance
-            n_gpu_layers=0, # The number of layers to offload to GPU, if you have GPU acceleration available. Set to 0 if no GPU acceleration is available on your system.
+            n_threads=8,  # The number of CPU threads to use, tailor to your system and the resulting performance
+            n_gpu_layers=0,  # The number of layers to offload to GPU, if you have GPU acceleration available. Set to 0 if no GPU acceleration is available on your system.
         )
 
     # ---------------------------------------------------------
@@ -211,11 +212,11 @@ class Phi3MiniBackend:
         output = self._llm(
             f"<|user|>\n{prompt}<|end|>\n<|assistant|>",
             max_tokens=256,  # Generate up to 256 tokens
-            stop=["<|end|>"], 
+            stop=["<|end|>"],
             echo=True,  # Whether to echo the prompt
         )
 
-        first_answer = output['choices'][0]['text']
+        first_answer = output["choices"][0]["text"]
         print(f"[Phi3MiniBackend] Generated output: {first_answer}")
         return first_answer
 
@@ -335,8 +336,9 @@ if __name__ == "__main__":
     assert path_init_req.exists(), f"Initial requirements file not found: {path_init_req}"
     init_req = path_init_req.read_text()
 
-
-    model_config = ModelConfig(model_name="Phi-3-mini-4k-instruct-q4", quantization="4bit", temperature=0.7, max_tokens=2048)
+    model_config = ModelConfig(
+        model_name="Phi-3-mini-4k-instruct-q4", quantization="4bit", temperature=0.7, max_tokens=2048
+    )
     backend = Phi3MiniBackend(model_config)
     programmer = Phi3MiniProgrammer(workspace, backend, init_req)
 
