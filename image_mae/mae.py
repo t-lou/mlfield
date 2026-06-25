@@ -797,7 +797,7 @@ class MAE(nn.Module):
 
         self._init_weights()
 
-        self.path_final_ckpt = Path(f"mae_checkpoints/{variant}/final.pth")
+        self.path_final_ckpt = Path(__file__).resolve().parent / "mae_checkpoints" / variant / "final.pth"
         if not self.path_final_ckpt.parent.exists():
             self.path_final_ckpt.parent.mkdir(parents=True, exist_ok=True)
 
@@ -920,6 +920,28 @@ class MAE(nn.Module):
         mask = torch.gather(mask, dim=1, index=ids_restore)
 
         return x_masked, mask, ids_restore
+
+    def forward_encoder_full(self, imgs: torch.Tensor, mask_ratio: float = 0.0) -> torch.Tensor:
+        """
+        Encode all patches through the transformer encoder without masking.
+
+        This helper is used by the YOLO distillation path to obtain deterministic
+        teacher features from the MAE encoder. It mirrors the visible-patch encoder
+        logic but skips masking unless a positive mask ratio is requested.
+        """
+        x = self.patch_embed(imgs)
+        x = x + self.pos_embed_enc[:, 1:, :]
+
+        if mask_ratio > 0.0:
+            x, _, _ = self.random_masking(x, mask_ratio)
+
+        cls_token = self.cls_token + self.pos_embed_enc[:, :1, :]
+        cls_tokens = cls_token.expand(x.shape[0], -1, -1)
+        x = torch.cat((cls_tokens, x), dim=1)
+
+        for blk in self.encoder_blocks:
+            x = blk(x)
+        return self.encoder_norm(x)
 
     def forward_encoder(self, imgs: torch.Tensor, mask_ratio: float) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """

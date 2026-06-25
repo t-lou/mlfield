@@ -16,8 +16,6 @@ import numpy as np
 import torch
 from logger import create_logger
 from PIL import Image
-
-# Import YOLO model
 from yolo import YOLOv8s
 
 logger = create_logger("yolo_inference", level="INFO")

@@ -103,22 +103,34 @@ class COCODetectionDataset(Dataset):
         ann_ids = self.coco.getAnnIds(imgIds=img_id)
         anns = self.coco.loadAnns(ann_ids)
 
-        # Resize image to target size
+        # Resize image to the target square size used by the model.
         orig_w, orig_h = img.size
         img = img.resize((self.image_size, self.image_size), Image.BILINEAR)
 
         # Convert annotations to model format: [x_center, y_center, w, h, class_id]
+        # The targets are normalized to the resized image size so they stay aligned
+        # with the tensor fed to the detector.
         targets = []
         for ann in anns:
             if ann["area"] < 1:  # Skip very small objects
                 continue
 
             x, y, w, h = ann["bbox"]
-            # Normalize to [0, 1] and convert to center format
             x_center = (x + w / 2) / orig_w
             y_center = (y + h / 2) / orig_h
             w_norm = w / orig_w
             h_norm = h / orig_h
+
+            # Scale coordinates to the resized square image used for training.
+            # The image is resized to (image_size, image_size), so boxes are first
+            # mapped into that resized coordinate system and then normalized by it.
+            scale_x = self.image_size / max(orig_w, 1)
+            scale_y = self.image_size / max(orig_h, 1)
+            x_center = ((x + w / 2) * scale_x) / self.image_size
+            y_center = ((y + h / 2) * scale_y) / self.image_size
+            w_norm = (w * scale_x) / self.image_size
+            h_norm = (h * scale_y) / self.image_size
+
             class_id = self.category_id_to_index.get(ann["category_id"])
             if class_id is None:
                 continue
