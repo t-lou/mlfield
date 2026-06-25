@@ -38,8 +38,11 @@ from torchvision import datasets, transforms
 logger = create_logger("mae")
 
 DEFAULT_KAGGLE_DATASETS: Dict[str, str] = {
-    # This is not the official ILSVRC release. It is a Kaggle-hosted ImageNet-style layout.
-    "imagenet": "ifigotin/imagenetmini-1000",
+    # Default full ImageNet dataset for MAE pre-training.
+    "imagenet": "dimensi0n/imagenet-256",
+    # Smaller ImageNet-style subset kept available as an explicit alias.
+    "imagenet_mini": "ifigotin/imagenetmini-1000",
+    # COCO 2017 dataset for MAE pre-training (large, ~20GB compressed).
     "coco": "awsaf49/coco-2017-dataset",
 }
 
@@ -100,6 +103,21 @@ VARIANT_CONFIG = {
         image_size=224,
         patch_size=16,
         batch_size=256,  # for L4 okay
+        encoder_dim=768,
+        encoder_depth=12,
+        encoder_heads=12,
+        decoder_dim=512,
+        decoder_depth=8,
+        decoder_heads=16,
+        mask_ratio=0.75,
+        learning_rate=1.5e-4,
+    ),
+    # Same MAE scale as ImageNet but intended for smaller ImageNet-style subsets.
+    "imagenet_mini": MAEVariantConfig(
+        dataset_size=100_000,
+        image_size=224,
+        patch_size=16,
+        batch_size=128,
         encoder_dim=768,
         encoder_depth=12,
         encoder_heads=12,
@@ -437,7 +455,7 @@ def resolve_variant_data_root(
     if variant == "cifar10":
         return str(root)
 
-    if variant == "imagenet":
+    if variant in {"imagenet", "imagenet_mini"}:
         prepared_root = _find_dataset_root_by_markers(root, ("train", "val"))
         if prepared_root is not None:
             return str(prepared_root)
@@ -1159,6 +1177,9 @@ def build_model_and_loader(
         >>> for imgs in loader:
         ...     loss, pred, target, mask = model(imgs)
     """
+    if variant == "imagenet_mini" and kaggle_imagenet_dataset == DEFAULT_KAGGLE_DATASETS["imagenet"]:
+        kaggle_imagenet_dataset = DEFAULT_KAGGLE_DATASETS["imagenet_mini"]
+
     model = MAE(variant)
     model.load_checkpoint()
 
@@ -1173,7 +1194,7 @@ def build_model_and_loader(
 
     if variant == "cifar10":
         loader = make_cifar10_dataloader(root=resolved_root, batch_size=cfg.batch_size)
-    elif variant == "imagenet":
+    elif variant in {"imagenet", "imagenet_mini"}:
         loader = make_imagenet_dataloader(root=resolved_root, batch_size=cfg.batch_size)
     else:
         loader = make_coco_dataloader(root=resolved_root, batch_size=cfg.batch_size)
@@ -1296,7 +1317,9 @@ def main() -> None:
         python main.py --variant coco --no-kaggle --data-root /path/to/coco
     """
     parser = argparse.ArgumentParser(description="MAE debug trainer with CIFAR-10 and ImageNet presets")
-    parser.add_argument("--variant", type=str, default="cifar10", choices=["cifar10", "imagenet", "coco"])
+    parser.add_argument(
+        "--variant", type=str, default="cifar10", choices=["cifar10", "imagenet", "imagenet_mini", "coco"]
+    )
     parser.add_argument("--steps", type=int, default=-1)
     parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument("--start-epoch", type=int, default=0)
