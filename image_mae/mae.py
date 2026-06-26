@@ -100,7 +100,7 @@ VARIANT_CONFIG = {
     # MAE-Base style scale for larger GPUs (32-40GB+ suggested).
     "imagenet": MAEVariantConfig(
         dataset_size=1_281_167,
-        image_size=224,
+        image_size=256,
         patch_size=16,
         batch_size=256,  # for L4 okay
         encoder_dim=768,
@@ -129,10 +129,9 @@ VARIANT_CONFIG = {
     ),
     "coco": MAEVariantConfig(
         dataset_size=1_281_167,
-        image_size=224,
+        image_size=256,
         patch_size=16,
         batch_size=32,
-        # batch_size=128,
         encoder_dim=768,
         encoder_depth=12,
         encoder_heads=12,
@@ -443,7 +442,8 @@ def resolve_variant_data_root(
 
     Note:
         - CIFAR-10 downloads automatically via torchvision
-        - ImageNet requires manual download or Kaggle credentials
+        - ImageNet and ImageNet-Mini requires manual download or Kaggle credentials
+        - ImageNet is ImageNet-256 variant (1.2M images, 256x256), needs preprocessing
         - COCO download is large (~20GB compressed)
 
     Improvement: Consider adding:
@@ -929,19 +929,8 @@ class MAE(nn.Module):
         teacher features from the MAE encoder. It mirrors the visible-patch encoder
         logic but skips masking unless a positive mask ratio is requested.
         """
-        x = self.patch_embed(imgs)
-        x = x + self.pos_embed_enc[:, 1:, :]
-
-        if mask_ratio > 0.0:
-            x, _, _ = self.random_masking(x, mask_ratio)
-
-        cls_token = self.cls_token + self.pos_embed_enc[:, :1, :]
-        cls_tokens = cls_token.expand(x.shape[0], -1, -1)
-        x = torch.cat((cls_tokens, x), dim=1)
-
-        for blk in self.encoder_blocks:
-            x = blk(x)
-        return self.encoder_norm(x)
+        x, _, _ = self.forward_encoder(imgs, mask_ratio)
+        return x
 
     def forward_encoder(self, imgs: torch.Tensor, mask_ratio: float) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
@@ -965,16 +954,29 @@ class MAE(nn.Module):
             - mask: Binary mask showing which patches were masked
             - ids_restore: Indices to restore original patch order
         """
+        # 1. Patch embedding
         x = self.patch_embed(imgs)
+        # 2. Positional embedding
         x = x + self.pos_embed_enc[:, 1:, :]
-        x, mask, ids_restore = self.random_masking(x, mask_ratio)
 
+        # 3. Optional masking
+        if mask_ratio > 0.0:
+            x, mask, ids_restore = self.random_masking(x, mask_ratio)
+        else:
+            # For full encoder: no masking
+            mask = None
+            ids_restore = None
+
+        # 4. CLS token
         cls_token = self.cls_token + self.pos_embed_enc[:, :1, :]
         cls_tokens = cls_token.expand(x.shape[0], -1, -1)
         x = torch.cat((cls_tokens, x), dim=1)
 
+        # 5. Transformer blocks
         for blk in self.encoder_blocks:
             x = blk(x)
+
+        # 6. Final norm
         x = self.encoder_norm(x)
 
         return x, mask, ids_restore
