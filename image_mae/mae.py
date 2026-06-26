@@ -87,7 +87,7 @@ VARIANT_CONFIG = {
         dataset_size=50_000,
         image_size=32,
         patch_size=4,
-        batch_size=512,
+        batch_size=32 * 1,
         encoder_dim=384,
         encoder_depth=8,
         encoder_heads=6,
@@ -100,24 +100,33 @@ VARIANT_CONFIG = {
     # MAE-Base style scale for larger GPUs (32-40GB+ suggested).
     "imagenet": MAEVariantConfig(
         dataset_size=1_281_167,
-        image_size=256,
+        image_size=256,  # ↑ use full 256 for better spatial detail
         patch_size=16,
-        batch_size=256,  # for L4 okay
+        batch_size=16 * 1,
+        # ---------------- Encoder ----------------
         encoder_dim=768,
         encoder_depth=12,
         encoder_heads=12,
-        decoder_dim=512,
-        decoder_depth=8,
-        decoder_heads=16,
-        mask_ratio=0.75,
-        learning_rate=1.5e-4,
+        # ---------------- Decoder ----------------
+        decoder_dim=768,  # ↑ stronger decoder for sharper teacher features
+        decoder_depth=8,  # keep 8 (good balance)
+        decoder_heads=12,  # ↓ from 16 → 12 (matches encoder, more stable)
+        # ---------------- Masking ----------------
+        mask_ratio=0.6,  # ↓ from 0.75 → 0.6 (better for dense tasks)
+        # ---------------- Optimization ----------------
+        learning_rate=1.5e-4,  # unchanged; still optimal for MAE-B
+        # missing fields you should add:
+        # use_sin_pos_embed=True,   # recommended: 2D sin-cos positional embeddings
+        # drop_path_rate=0.1,       # stable for ViT-B encoder
+        # decoder_drop_path_rate=0.0,
+        # loss_type="mse",          # better for YOLO distillation
     ),
     # Same MAE scale as ImageNet but intended for smaller ImageNet-style subsets.
     "imagenet_mini": MAEVariantConfig(
         dataset_size=100_000,
         image_size=224,
         patch_size=16,
-        batch_size=128,
+        batch_size=32 * 1,
         encoder_dim=768,
         encoder_depth=12,
         encoder_heads=12,
@@ -131,7 +140,7 @@ VARIANT_CONFIG = {
         dataset_size=1_281_167,
         image_size=256,
         patch_size=16,
-        batch_size=32,
+        batch_size=32 * 1,
         encoder_dim=768,
         encoder_depth=12,
         encoder_heads=12,
@@ -221,21 +230,28 @@ def make_cifar10_dataloader(root: str, batch_size: int, num_workers: int = 4) ->
     )
 
 
-def make_imagenet_dataloader(root: str, batch_size: int, num_workers: int = 8, train: bool = True) -> DataLoader:
+def make_imagenet_dataloader(
+    root: str,
+    batch_size: int,
+    image_size: int = 224,
+    num_workers: int = 8,
+    train: bool = True,
+) -> DataLoader:
     """
     Create ImageNet dataloader for MAE pre-training or fine-tuning.
 
     ImageNet-1K has 1.2M training samples at variable resolutions.
-    Images are resized to 224x224 for ViT compatibility.
+    Images are resized to `image_size` for ViT compatibility.
 
     Args:
         root: Root directory containing train/ and val/ subdirectories
         batch_size: Number of samples per batch
+        image_size: Size to resize and crop images to
         num_workers: Number of parallel data loading workers
         train: If True, load training split; else load validation split
 
     Returns:
-        DataLoader yielding batches of (224, 224, 3) images
+        DataLoader yielding batches of (image_size, image_size, 3) images
 
     Raises:
         FileNotFoundError: If expected directory structure is not found
@@ -253,8 +269,8 @@ def make_imagenet_dataloader(root: str, batch_size: int, num_workers: int = 8, t
     """
     transform = transforms.Compose(
         [
-            transforms.Resize(256),
-            transforms.CenterCrop(224),
+            transforms.Resize(image_size),
+            transforms.CenterCrop(image_size),
             transforms.ToTensor(),
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
         ]
@@ -276,21 +292,28 @@ def make_imagenet_dataloader(root: str, batch_size: int, num_workers: int = 8, t
     )
 
 
-def make_coco_dataloader(root: str, batch_size: int, num_workers: int = 8, train: bool = True) -> DataLoader:
+def make_coco_dataloader(
+    root: str,
+    batch_size: int,
+    image_size: int = 224,
+    num_workers: int = 8,
+    train: bool = True,
+) -> DataLoader:
     """
     Create COCO 2017 dataloader for MAE pre-training.
 
     COCO has 118K training images with diverse objects, scenes, and textures.
-    Images are diverse in aspect ratio and scale (handled by RandomResizedCrop).
+    Images are resized and randomly cropped to `image_size` for consistency.
 
     Args:
         root: Root directory containing train2017, val2017, and annotations/
         batch_size: Number of samples per batch
+        image_size: Size to resize and crop images to
         num_workers: Number of parallel data loading workers
         train: If True, load training split; else load validation split
 
     Returns:
-        DataLoader yielding batches of (224, 224, 3) images
+        DataLoader yielding batches of (image_size, image_size, 3) images
 
     Note:
         - Uses RandomResizedCrop for scale and aspect ratio augmentation
@@ -305,7 +328,7 @@ def make_coco_dataloader(root: str, batch_size: int, num_workers: int = 8, train
     """
     transform = transforms.Compose(
         [
-            transforms.RandomResizedCrop(224, scale=(0.2, 1.0)),
+            transforms.RandomResizedCrop(image_size, scale=(0.2, 1.0)),
             transforms.RandomHorizontalFlip(),
             transforms.ToTensor(),
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
@@ -416,21 +439,24 @@ def resolve_variant_data_root(
     data_root: str,
     use_kaggle: bool,
     kaggle_imagenet_dataset: str,
+    kaggle_imagenet_mini_dataset: str,
     kaggle_coco_dataset: str,
 ) -> str:
     """
     Resolve dataset root path for a given MAE variant with auto-download support.
 
-    Handles three different dataset types with fallback logic:
+    Handles four different dataset types with fallback logic:
     - cifar10: Auto-downloads if not present
     - imagenet: Looks for existing structure, optionally downloads from Kaggle
+    - imagenet_mini: Looks for existing structure, optionally downloads from Kaggle
     - coco: Looks for existing structure, optionally downloads from Kaggle
 
     Args:
-        variant: Dataset variant ('cifar10', 'imagenet', or 'coco')
+        variant: Dataset variant ('cifar10', 'imagenet', 'imagenet_mini', or 'coco')
         data_root: Base directory to search for or download datasets
         use_kaggle: Enable Kaggle auto-download if dataset not found
-        kaggle_imagenet_dataset: Kaggle slug for ImageNet alternative
+        kaggle_imagenet_dataset: Kaggle slug for ImageNet (256x256) alternative
+        kaggle_imagenet_mini_dataset: Kaggle slug for ImageNet-mini alternative
         kaggle_coco_dataset: Kaggle slug for COCO alternative
 
     Returns:
@@ -465,10 +491,17 @@ def resolve_variant_data_root(
                 f"Could not find ImageNet layout under {root}. Expected directories: train/ and val/."
             )
 
-        cache_dir = root / "kaggle" / "imagenet"
+        cache_dir = root / "kaggle" / variant
         prepared_root = _find_dataset_root_by_markers(cache_dir, ("train", "val"))
         if prepared_root is None:
-            _download_kaggle_dataset(kaggle_imagenet_dataset, cache_dir)
+            # imagenet_mini is already split into train/val; imagenet-256 is not, so we place its download under train/.
+            if variant == "imagenet_mini":
+                _download_kaggle_dataset(kaggle_imagenet_mini_dataset, cache_dir)
+            else:
+                dir_train = cache_dir / "train"
+                _download_kaggle_dataset(kaggle_imagenet_dataset, dir_train)
+                dir_val = cache_dir / "val"
+                dir_val.mkdir(parents=True, exist_ok=True)
             prepared_root = _find_dataset_root_by_markers(cache_dir, ("train", "val"))
 
         if prepared_root is None:
@@ -1176,6 +1209,7 @@ def build_model_and_loader(
     data_root: str = "./data",
     use_kaggle: bool = True,
     kaggle_imagenet_dataset: str = DEFAULT_KAGGLE_DATASETS["imagenet"],
+    kaggle_imagenet_mini_dataset: str = DEFAULT_KAGGLE_DATASETS["imagenet_mini"],
     kaggle_coco_dataset: str = DEFAULT_KAGGLE_DATASETS["coco"],
 ) -> Tuple[MAEVariantConfig, MAE, DataLoader]:
     """
@@ -1201,9 +1235,6 @@ def build_model_and_loader(
         >>> for imgs in loader:
         ...     loss, pred, target, mask = model(imgs)
     """
-    if variant == "imagenet_mini" and kaggle_imagenet_dataset == DEFAULT_KAGGLE_DATASETS["imagenet"]:
-        kaggle_imagenet_dataset = DEFAULT_KAGGLE_DATASETS["imagenet_mini"]
-
     model = MAE(variant)
     model.load_checkpoint()
 
@@ -1213,15 +1244,24 @@ def build_model_and_loader(
         data_root=data_root,
         use_kaggle=use_kaggle,
         kaggle_imagenet_dataset=kaggle_imagenet_dataset,
+        kaggle_imagenet_mini_dataset=kaggle_imagenet_mini_dataset,
         kaggle_coco_dataset=kaggle_coco_dataset,
     )
 
     if variant == "cifar10":
         loader = make_cifar10_dataloader(root=resolved_root, batch_size=cfg.batch_size)
     elif variant in {"imagenet", "imagenet_mini"}:
-        loader = make_imagenet_dataloader(root=resolved_root, batch_size=cfg.batch_size)
+        loader = make_imagenet_dataloader(
+            root=resolved_root,
+            batch_size=cfg.batch_size,
+            image_size=cfg.image_size,
+        )
     else:
-        loader = make_coco_dataloader(root=resolved_root, batch_size=cfg.batch_size)
+        loader = make_coco_dataloader(
+            root=resolved_root,
+            batch_size=cfg.batch_size,
+            image_size=cfg.image_size,
+        )
 
     return cfg, model, loader
 
@@ -1233,6 +1273,7 @@ def train(
     epoch: int = 0,
     use_kaggle: bool = True,
     kaggle_imagenet_dataset: str = DEFAULT_KAGGLE_DATASETS["imagenet"],
+    kaggle_imagenet_mini_dataset: str = DEFAULT_KAGGLE_DATASETS["imagenet_mini"],
     kaggle_coco_dataset: str = DEFAULT_KAGGLE_DATASETS["coco"],
 ) -> None:
     """
@@ -1275,6 +1316,7 @@ def train(
         data_root=data_root,
         use_kaggle=use_kaggle,
         kaggle_imagenet_dataset=kaggle_imagenet_dataset,
+        kaggle_imagenet_mini_dataset=kaggle_imagenet_mini_dataset,
         kaggle_coco_dataset=kaggle_coco_dataset,
     )
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -1362,7 +1404,13 @@ def main() -> None:
         "--kaggle-imagenet-dataset",
         type=str,
         default=DEFAULT_KAGGLE_DATASETS["imagenet"],
-        help="Kaggle dataset slug for ImageNet-style data (owner/dataset).",
+        help="Kaggle dataset slug for ImageNet-256 data (owner/dataset).",
+    )
+    parser.add_argument(
+        "--kaggle-imagenet-mini-dataset",
+        type=str,
+        default=DEFAULT_KAGGLE_DATASETS["imagenet_mini"],
+        help="Kaggle dataset slug for ImageNet-mini data (owner/dataset).",
     )
     parser.add_argument(
         "--kaggle-coco-dataset",
@@ -1385,6 +1433,7 @@ def main() -> None:
             epoch=epoch,
             use_kaggle=not args.no_kaggle,
             kaggle_imagenet_dataset=args.kaggle_imagenet_dataset,
+            kaggle_imagenet_mini_dataset=args.kaggle_imagenet_mini_dataset,
             kaggle_coco_dataset=args.kaggle_coco_dataset,
         )
 
