@@ -615,9 +615,13 @@ class TransformerBlock(nn.Module):
         Returns:
             Output tensor of same shape
         """
+        # Pre-normalization for stability
         attn_in = self.norm1(x)
+        # Self-attention
         attn_out, _ = self.attn(attn_in, attn_in, attn_in, need_weights=False)
+        # Residual connection, in order to preserve information and improve gradient flow
         x = x + attn_out
+        # Pre-normalization for MLP, again for stability
         x = x + self.mlp(self.norm2(x))
         return x
 
@@ -673,8 +677,10 @@ class PatchEmbed(nn.Module):
         Returns:
             Patch embeddings of shape (batch, num_patches, embed_dim)
         """
+        # Use convolution to extract patches and project to embedding dimension
         x = self.proj(x)  # (batch, embed_dim, grid_size, grid_size)
-        x = x.flatten(2).transpose(1, 2)  # (batch, num_patches, embed_dim)
+        # Flatten spatial dimensions and transpose to (batch, num_patches, embed_dim)
+        x = x.flatten(2).transpose(1, 2)
         return x
 
 
@@ -721,14 +727,16 @@ def build_2d_sincos_position_embedding(grid_size: int, embed_dim: int, add_cls_t
     pos_h = grid[0].reshape(-1)
     pos_w = grid[1].reshape(-1)
 
+    # Compute frequency weights for sinusoidal embeddings, following the transformer convention
     omega = torch.arange(embed_dim // 4, dtype=torch.float32) / (embed_dim // 4)
-    omega = 1.0 / (10000**omega)
+    omega = 1.0 / (10000**omega)  # Frequency scaling for sinusoidal embeddings
 
     out_h = torch.outer(pos_h, omega)
     out_w = torch.outer(pos_w, omega)
     pos_embed = torch.cat([out_h.sin(), out_h.cos(), out_w.sin(), out_w.cos()], dim=1)
 
     if add_cls_token:
+        # Prepend a zero vector for the CLS token position embedding
         cls_pos = torch.zeros(1, embed_dim, dtype=pos_embed.dtype)
         pos_embed = torch.cat([cls_pos, pos_embed], dim=0)
 
@@ -789,6 +797,7 @@ class MAE(nn.Module):
         self.cfg = VARIANT_CONFIG[variant]
         self.in_chans = in_chans
 
+        # Patch embedding layer: converts images to patch embeddings
         self.patch_embed = PatchEmbed(
             img_size=self.cfg.image_size,
             patch_size=self.cfg.patch_size,
@@ -798,25 +807,30 @@ class MAE(nn.Module):
         self.num_patches = self.patch_embed.num_patches
         self.patch_dim = self.cfg.patch_size * self.cfg.patch_size * in_chans
 
+        # Initialize learnable tokens and position embeddings
         self.cls_token = nn.Parameter(torch.zeros(1, 1, self.cfg.encoder_dim))
         self.pos_embed_enc = nn.Parameter(
             torch.zeros(1, self.num_patches + 1, self.cfg.encoder_dim), requires_grad=False
         )
 
+        # Build encoder blocks: a stack of transformer blocks for encoding visible patches
         self.encoder_blocks = nn.ModuleList(
             [
                 TransformerBlock(dim=self.cfg.encoder_dim, num_heads=self.cfg.encoder_heads)
                 for _ in range(self.cfg.encoder_depth)
             ]
         )
+        # Layer normalization after encoder blocks for stability
         self.encoder_norm = nn.LayerNorm(self.cfg.encoder_dim)
 
+        # Build decoder components: embedding, mask token, position embeddings, and transformer blocks
         self.decoder_embed = nn.Linear(self.cfg.encoder_dim, self.cfg.decoder_dim)
         self.mask_token = nn.Parameter(torch.zeros(1, 1, self.cfg.decoder_dim))
         self.pos_embed_dec = nn.Parameter(
             torch.zeros(1, self.num_patches + 1, self.cfg.decoder_dim), requires_grad=False
         )
 
+        # Build decoder blocks: a stack of transformer blocks for reconstructing masked patches
         self.decoder_blocks = nn.ModuleList(
             [
                 TransformerBlock(dim=self.cfg.decoder_dim, num_heads=self.cfg.decoder_heads)
@@ -884,7 +898,7 @@ class MAE(nn.Module):
         p = self.cfg.patch_size
         n = imgs.shape[2] // p
         x = imgs.reshape(shape=(imgs.shape[0], self.in_chans, n, p, n, p))
-        x = torch.einsum("nchpwq->nhwpqc", x)
+        x = torch.einsum("nchpwq->nhwpqc", x)  # Rearrange to (batch, n, n, p, p, channels)
         return x.reshape(shape=(imgs.shape[0], n * n, p * p * self.in_chans))
 
     def unpatchify(self, x: torch.Tensor) -> torch.Tensor:
@@ -905,7 +919,7 @@ class MAE(nn.Module):
         p = self.cfg.patch_size
         n = int(x.shape[1] ** 0.5)
         x = x.reshape(shape=(x.shape[0], n, n, p, p, self.in_chans))
-        x = torch.einsum("nhwpqc->nchpwq", x)
+        x = torch.einsum("nhwpqc->nchpwq", x)  # Rearrange to (batch, channels, n, p, n, p)
         return x.reshape(shape=(x.shape[0], self.in_chans, n * p, n * p))
 
     def random_masking(self, x: torch.Tensor, mask_ratio: float) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
