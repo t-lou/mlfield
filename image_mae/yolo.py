@@ -409,10 +409,11 @@ class YOLOv8s(nn.Module):
     - Accuracy: 2-3% higher mAP for same epochs
     """
 
-    def __init__(self, num_classes=80, use_mae_distillation=True, mae_checkpoint_path=None):
+    def __init__(self, num_classes=80, use_mae_distillation=True, mae_checkpoint_path=None, mae_variant="imagenet"):
         super().__init__()
         self.num_classes = num_classes
         self.use_mae_distillation = use_mae_distillation
+        self.mae_variant = mae_variant
 
         self.backbone = YOLOBackbone(use_mae_distillation=use_mae_distillation)
         self.neck = YOLONeck()
@@ -435,7 +436,7 @@ class YOLOv8s(nn.Module):
             sys.path.insert(0, str(Path(__file__).parent))
             from mae import MAE
 
-            mae = MAE("imagenet")
+            mae = MAE(self.mae_variant)
             local_root = Path(__file__).parent
 
             ckpt_path = None
@@ -455,7 +456,7 @@ class YOLOv8s(nn.Module):
                     logger.warning("   Distillation disabled.")
                     return None
             else:
-                default_path = local_root / "mae_checkpoints" / "imagenet" / "final.pth"
+                default_path = local_root / "mae_checkpoints" / self.mae_variant / "final.pth"
                 if default_path.exists():
                     ckpt_path = default_path
                 else:
@@ -755,6 +756,7 @@ def train(
     learning_rate: float = 1e-3,
     save_dir: str = "yolo_checkpoints",
     distill_weight: float = 0.1,
+    mae_variant: str = "imagenet",
 ):
     """
     Train YOLOv8-s with optional MAE knowledge distillation.
@@ -773,6 +775,8 @@ def train(
         batch_size: Batch size (32-64 for 30GB GPU, 4-8 for 4GB testing)
         learning_rate: Initial learning rate for SGD optimizer
         save_dir: Directory to save model checkpoints
+        distill_weight: Weight for the distillation loss term
+        mae_variant: Variant of MAE to use (default: "imagenet")
     """
 
     config = YOLOConfig(batch_size=batch_size, epochs=epochs, learning_rate=learning_rate)
@@ -803,6 +807,7 @@ def train(
         num_classes=config.num_classes,
         use_mae_distillation=use_mae_distillation,
         mae_checkpoint_path=mae_checkpoint_path,
+        mae_variant=mae_variant,
     ).to(device)
 
     optimizer = torch.optim.SGD(
@@ -898,6 +903,7 @@ def main():
         "--save-dir", type=str, default="yolo_checkpoints", help="Directory to save checkpoints and logs"
     )
     parser.add_argument("--distill-weight", type=float, default=0.1, help="Weight for MAE distillation loss")
+    parser.add_argument("--mae-variant", type=str, default="imagenet", help="MAE variant to use (default: imagenet)")
 
     args = parser.parse_args()
 
@@ -911,6 +917,7 @@ def main():
         learning_rate=args.learning_rate,
         save_dir=args.save_dir,
         distill_weight=args.distill_weight,
+        mae_variant=args.mae_variant,
     )
 
 
