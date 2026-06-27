@@ -152,7 +152,11 @@ class ConvBlock(nn.Module):
     def __init__(self, in_channels, out_channels, kernel_size=3, stride=1, padding=1):
         super().__init__()
         self.conv = nn.Conv2d(in_channels, out_channels, kernel_size, stride, padding, bias=False)
+        # BatchNorm stabilizes training by normalizing feature maps, reducing internal covariate shift, and allowing
+        # higher learning rates. It also acts as a regularizer, improving generalization.
         self.bn = nn.BatchNorm2d(out_channels)
+        # SiLU (Sigmoid Linear Unit) is a smooth, non-linear activation that helps the model learn complex patterns.
+        # It has been shown to outperform ReLU in some vision tasks.
         self.act = nn.SiLU(inplace=True)
 
     def forward(self, x):
@@ -165,13 +169,21 @@ class BottleNeck(nn.Module):
     def __init__(self, in_channels, out_channels, shortcut=True):
         super().__init__()
         hidden_channels = out_channels // 2
+        # The first convolution reduces the number of channels to a smaller hidden dimension, allowing the model to
+        # learn a compact representation before expanding back to the output channels. This bottleneck design reduces
+        # computation while maintaining representational power.
         self.cv1 = ConvBlock(in_channels, hidden_channels, kernel_size=1, stride=1, padding=0)
+        # The second convolution restores the number of channels to the desired output dimension. The combination of
+        # these two convolutions allows the block to learn complex transformations while keeping the number of
+        # parameters manageable.
         self.cv2 = ConvBlock(hidden_channels, out_channels, kernel_size=3, stride=1, padding=1)
         self.shortcut = shortcut and (in_channels == out_channels)
 
     def forward(self, x):
-        out = self.cv2(self.cv1(x))
+        out = self.cv1(x)
+        out = self.cv2(out)
         if self.shortcut:
+            # Add the input to the output (residual connection) to help gradients flow and improve training stability.
             out = out + x
         return out
 
@@ -190,11 +202,25 @@ class C2fBlock(nn.Module):
         )
 
     def forward(self, x):
+        # Split input into two paths: one for direct processing and one for bottleneck transformations. The first
+        # path (cv1) reduces the input channels to a smaller hidden dimension, while the second path (cv2) also reduces
+        # the channels but is processed through a series of bottleneck blocks. The outputs of both paths are
+        # concatenated and passed through a final convolution (cv3) to produce the output with the desired number
+        # of channels.
         y1 = self.cv1(x)
+        # The second path processes the input through a series of bottleneck blocks, which are designed to learn
+        # complex feature representations while maintaining computational efficiency. The output of this path is then
+        # concatenated with the output from the first path and the original input (if applicable) to create a rich
+        # feature representation that captures both low-level and high-level information.
         y2 = self.cv2(x)
+        # The bottleneck blocks in the second path allow the model to learn hierarchical features, capturing patterns
+        # at different levels of abstraction. By concatenating the outputs of both paths, the C2f block effectively
+        # combines diverse feature representations, enhancing the model's ability to detect objects of varying sizes
+        # and complexities in the input image.
         y = self.bottlenecks(y1)
         # Concatenate input with processed features
-        return self.cv3(torch.cat([y2, y, y1], 1))
+        out = self.cv3(torch.cat([y2, y, y1], 1))
+        return out
 
 
 class YOLOBackbone(nn.Module):
@@ -213,10 +239,13 @@ class YOLOBackbone(nn.Module):
         super().__init__()
         self.use_mae_distillation = use_mae_distillation
 
-        # Channel depths for YOLOv8-s: [64, 128, 256, 512, 1024]
+        # Stem: Initial convolution to reduce spatial size and increase channels, preparing for deeper feature
+        # extraction.
         self.stem = ConvBlock(3, 64, kernel_size=3, stride=2, padding=1)
 
-        # Downsampling blocks
+        # Darknet-like stages (dark2, dark3, dark4, dark5) progressively downsample the feature maps while increasing
+        # channel depth. Each stage consists of a ConvBlock followed by a C2fBlock to extract rich features at multiple
+        # scales.
         self.dark2 = nn.Sequential(
             ConvBlock(64, 128, kernel_size=3, stride=2, padding=1),
             C2fBlock(128, 128, num_bottlenecks=1),
@@ -245,7 +274,7 @@ class YOLOBackbone(nn.Module):
             self.mae_adapter = nn.Sequential(
                 nn.Linear(768, 512),  # Project MAE features to YOLO feature dim
                 nn.ReLU(inplace=True),
-                nn.Linear(512, 512),
+                nn.Linear(512, 512),  # Refine features to match YOLO's P4 representation
             )
 
     def forward(self, x, mae_features=None):
@@ -311,7 +340,7 @@ class YOLONeck(nn.Module):
         Returns:
             fp3, fp4, fp5: Fused features ready for detection heads
         """
-        # Top-down fusion
+        # Top-down fusion, upsample and combine features, then refine with C2f blocks
         x = self.cv1(p5)
         x = self.upsample1(x)
         x = torch.cat([x, p4], dim=1)
@@ -322,7 +351,7 @@ class YOLONeck(nn.Module):
         x = torch.cat([x, p3], dim=1)
         fp3 = self.c2f2(x)
 
-        # Bottom-up fusion
+        # Bottom-up fusion, downsample and combine features, then refine with C2f blocks
         x = self.cv3(fp3)
         x = torch.cat([x, fp4], dim=1)
         fp4_refined = self.c2f3(x)
@@ -486,9 +515,11 @@ class YOLOv8s(nn.Module):
             predictions: Detection predictions at 3 scales
             distill_loss: Distillation loss (0 if MAE not available)
         """
-        # YOLO forward pass
+        # YOLO forward pass, extract multi-scale features
         p3, p4, p5 = self.backbone(x)
+        # Feature pyramid network to combine multi-scale features
         fp3, fp4, fp5 = self.neck(p3, p4, p5)
+        # Detection head predicts bounding boxes and class probabilities
         p3_pred, p4_pred, p5_pred = self.head(fp3, fp4, fp5)
 
         # Optional MAE distillation
@@ -683,6 +714,7 @@ def _collate_coco_detection(batch):
 
 
 def _xywh_to_xyxy(boxes):
+    """Convert boxes from [x_center, y_center, width, height] to [x1, y1, x2, y2]."""
     x_center, y_center, box_width, box_height = boxes.unbind(dim=-1)
     half_width = box_width / 2
     half_height = box_height / 2
