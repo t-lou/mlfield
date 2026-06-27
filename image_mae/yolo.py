@@ -28,12 +28,10 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from logger import create_logger
+from logger import configure_logger, logger
 from pycocotools.coco import COCO
 from torch.utils.data import DataLoader, Dataset
 from torchvision import transforms
-
-logger = create_logger("yolo")
 
 
 @dataclass(frozen=True)
@@ -694,6 +692,14 @@ def _xywh_to_xyxy(boxes):
 
 
 def _box_iou(boxes_a, boxes_b):
+    """
+    Compute the Intersection over Union (IoU) between two sets of boxes.
+    Args:
+        boxes_a: Tensor of shape (N, 4) in [x1, y1, x2, y2] format
+        boxes_b: Tensor of shape (M, 4) in [x1, y1, x2, y2] format
+    Returns:
+        iou: Tensor of shape (N, M) containing IoU values
+    """
     top_left = torch.maximum(boxes_a[..., :2], boxes_b[..., :2])
     bottom_right = torch.minimum(boxes_a[..., 2:], boxes_b[..., 2:])
     intersection = (bottom_right - top_left).clamp(min=0)
@@ -922,4 +928,5 @@ def main():
 
 
 if __name__ == "__main__":
+    configure_logger("yolo")
     main()
