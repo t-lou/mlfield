@@ -57,11 +57,12 @@ services:
       args:
         HOST_UID: $HOST_UID
         HOST_GID: $HOST_GID
+        USERNAME: $USERNAME
         BASE_IMAGE: $BASE_IMAGE
     container_name: mlfield-${USERNAME}
     shm_size: "2gb"
     volumes:
-      - ${WS_DIR}:/workspace/repo
+      - ${WS_DIR}:/workspace
       - mlfield-home-${USERNAME}:/home/${USERNAME}
       - ${DATASET_DIR:-/dev/null}:/mnt/dataset:ro
 $X11_CONFIG

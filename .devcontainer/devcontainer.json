@@ -1,24 +1,32 @@
 {
   "name": "mlfield",
-  "dockerComposeFile": [
-    // Created with ../.devcontainer/launch.sh
-    "../.devcontainer/docker-compose.yml"
-  ],
+  "dockerComposeFile": "../.devcontainer/docker-compose.yml",
   "service": "mlfield",
   "workspaceFolder": "/workspace",
 
-  // VS Code should use the same user as inside the container
   "remoteUser": "${localEnv:USERNAME}",
 
-  // Optional but recommended: VS Code extensions inside the container
+  "initializeCommand": ".devcontainer/detect-platform.sh",
+
+  "build": {
+    "args": {
+      "HOST_UID": "${localEnv:UID}",
+      "HOST_GID": "${localEnv:GID}",
+      "USERNAME": "${localEnv:USERNAME}",
+      "BASE_IMAGE": "${localEnv:BASE_IMAGE:-mlfield_cuda_base:latest}"
+    }
+  },
+
   "customizations": {
     "vscode": {
       "extensions": [
-        "ms-python.python",
-        // "ms-toolsai.jupyter",
-        // "ms-azuretools.vscode-docker",
-        // "github.copilot"
+        "ms-python.python"
       ]
     }
+  },
+
+  "remoteEnv": {
+    "PYTHONUNBUFFERED": "1",
+    "PIP_DISABLE_PIP_VERSION_CHECK": "1"
   }
 }
