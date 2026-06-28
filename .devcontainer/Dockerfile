@@ -20,9 +20,11 @@ RUN if getent passwd "$HOST_UID" >/dev/null; then \
         useradd -m -u "$HOST_UID" -g "$HOST_GID" -s /bin/bash "$USERNAME"; \
     fi
 
-RUN chown -R "$USERNAME:$USERNAME" /workspace/.venv
+RUN chown -R "$USERNAME:$USERNAME" /venv
 
 USER "$USERNAME"
 ENV HOME=/home/$USERNAME
+
+WORKDIR /repo
 
 CMD ["bash"]

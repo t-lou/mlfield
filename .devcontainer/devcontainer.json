@@ -2,7 +2,7 @@
   "name": "mlfield",
   "dockerComposeFile": "../.devcontainer/docker-compose.yml",
   "service": "mlfield",
-  "workspaceFolder": "/workspace",
+  "workspaceFolder": "/repo",
 
   "remoteUser": "${localEnv:USERNAME}",
 

@@ -15,15 +15,12 @@ RUN apt-get update && apt-get upgrade -y \
 # -----------------------------
 RUN curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR="/usr/local/bin" sh
 
-
 # -----------------------------
-# Create workspace & venv (root)
+# Create venv (root)
 # -----------------------------
-WORKDIR /workspace
-RUN uv venv --python 3.12 /workspace/.venv
-ENV VIRTUAL_ENV="/workspace/.venv"
+RUN uv venv --python 3.12 /venv
+ENV VIRTUAL_ENV="/venv"
 ENV PATH="$VIRTUAL_ENV/bin:$PATH"
-
 
 # -----------------------------
 # Install Python dependencies
