@@ -142,13 +142,31 @@ class YOLOInference:
         ]
 
     def _load_checkpoint(self, checkpoint_path: str):
-        """Load model weights from checkpoint"""
+        """Load model weights from checkpoint, skipping unexpected keys."""
         ckpt_path = Path(checkpoint_path)
         if not ckpt_path.exists():
             raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
 
         logger.info(f"Loading checkpoint: {checkpoint_path}")
-        self.model.load_checkpoint(ckpt_path, device=self.device)
+        checkpoint = torch.load(str(ckpt_path), map_location=self.device)
+
+        # Support both raw state_dict and checkpoint dicts with metadata.
+        if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
+            state_dict = checkpoint["model_state_dict"]
+        else:
+            state_dict = checkpoint
+
+        result = self.model.load_state_dict(state_dict, strict=False)
+        if result.missing_keys:
+            logger.warning(
+                "Missing keys when loading checkpoint: %s",
+                ", ".join(result.missing_keys),
+            )
+        if result.unexpected_keys:
+            logger.warning(
+                "Unexpected keys in checkpoint skipped: %s",
+                ", ".join(result.unexpected_keys),
+            )
 
     def preprocess(self, image_path: str, image_size: int = 640) -> Tuple[torch.Tensor, Tuple[int, int]]:
         """
