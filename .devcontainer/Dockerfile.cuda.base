@@ -36,3 +36,9 @@ RUN uv pip install --no-cache-dir --pre \
     torch torchvision torchaudio \
     --index-url https://download.pytorch.org/whl/cu128
 
+# -----------------------------
+# Add missing editors
+# -----------------------------
+RUN apt-get update && apt-get upgrade -y \
+    && apt-get install -y --no-install-recommends vim nano \
+    && rm -rf /var/lib/apt/lists/*
