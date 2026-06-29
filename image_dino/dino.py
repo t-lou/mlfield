@@ -47,6 +47,20 @@ def multicrop_augment(img):
     return crops  # list of 10 tensors
 
 
+def dino_collate_fn(batch):
+    """Collate a batch of multi-crop samples into a list of crop tensors."""
+    if not batch:
+        return []
+    num_crops = len(batch[0])
+    if any(len(sample) != num_crops for sample in batch):
+        raise ValueError("Inconsistent number of crops in batch")
+    return [torch.stack([sample[i] for sample in batch], dim=0) for i in range(num_crops)]
+
+
+def get_device():
+    return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+
 class Imagenet256Dataset(torch.utils.data.Dataset):
     """Dataset for ImageNet 256x256 images with multi-crop augmentation."""
 
@@ -62,11 +76,10 @@ class Imagenet256Dataset(torch.utils.data.Dataset):
     def __getitem__(self, idx):
         """Get an item from the dataset at the specified index."""
         img_path = self.image_paths[idx]
-        image = Image.open(img_path).convert("RGB")
-
-        # Apply multi-crop augmentation to the image, returning a list of crops
-        crops = self.transform(image)  # list of tensors
-        return torch.stack(crops)  # shape [Nc, C, H, W]
+        with Image.open(img_path) as image:
+            image = image.convert("RGB")
+            crops = self.transform(image)
+        return crops
 
 
 class ViTBackbone(nn.Module):
@@ -181,17 +194,24 @@ class DINOLoss(nn.Module):
 
 class DINOSession(nn.Module):
     def __init__(
-        self, vit_name=DEFAULT_VIT_NAME, out_dim=65536, teacher_temp=0.04, student_temp=0.1, center_momentum=0.9
+        self,
+        vit_name=DEFAULT_VIT_NAME,
+        out_dim=65536,
+        teacher_temp=0.04,
+        student_temp=0.1,
+        center_momentum=0.9,
+        device=None,
     ):
         """Initialize a DINO training session with student and teacher models, loss function, and parameters."""
         super().__init__()
+        self.device = device if device is not None else get_device()
         self.loss_fn = DINOLoss(
             out_dim=out_dim, teacher_temp=teacher_temp, student_temp=student_temp, center_momentum=center_momentum
-        )
+        ).to(self.device)
 
         # Create student and teacher models
-        self.student = DINOModel(vit_name=vit_name, out_dim=out_dim).cuda()
-        self.teacher = DINOModel(vit_name=vit_name, out_dim=out_dim).cuda()
+        self.student = DINOModel(vit_name=vit_name, out_dim=out_dim).to(self.device)
+        self.teacher = DINOModel(vit_name=vit_name, out_dim=out_dim).to(self.device)
 
         # Initialize teacher with student weights and freeze teacher parameters
         self.teacher.load_state_dict(self.student.state_dict())
@@ -214,45 +234,33 @@ class DINOSession(nn.Module):
                 pt.mul_(momentum).add_(ps, alpha=1 - momentum)
 
 
-def train(num_epochs=100, bs=64, vit_name=DEFAULT_VIT_NAME):
+def train(num_epochs=100, bs=64, vit_name=DEFAULT_VIT_NAME, data_root="../data/kaggle/imagenet"):
     """Train the DINO model on ImageNet 256x256 dataset with multi-crop augmentation."""
-    dataset = Imagenet256Dataset(root_dir="../data/kaggle/imagenet", transform=multicrop_augment)
-    loader = DataLoader(dataset, batch_size=bs, shuffle=True, num_workers=4)
+    device = get_device()
+    dataset = Imagenet256Dataset(root_dir=data_root, transform=multicrop_augment)
+    loader = DataLoader(
+        dataset,
+        batch_size=bs,
+        shuffle=True,
+        num_workers=4,
+        collate_fn=dino_collate_fn,
+        pin_memory=(device.type == "cuda"),
+    )
 
-    dino_session = DINOSession(vit_name=vit_name)
+    dino_session = DINOSession(vit_name=vit_name, device=device)
     student = dino_session.student
     teacher = dino_session.teacher
-    criterion = dino_session.loss_fn.cuda()
+    criterion = dino_session.loss_fn
     optimizer = torch.optim.AdamW(student.parameters(), lr=1e-4, weight_decay=0.04)
 
     for _ in range(num_epochs):
         for imgs in loader:
-            # imgs: list of crops per sample → we need to stack per crop
-            # Suppose dataset returns list-of-crops already:
-            # imgs is [B, 10, C, H, W]
-            B, Nc, C, H, W = imgs.shape
-            imgs = imgs.cuda()
+            imgs = [img.to(device, non_blocking=True) for img in imgs]
 
-            # split crops
-            crops = [imgs[:, i] for i in range(Nc)]  # list of [B, C, H, W]
-            global_crops = crops[:2]
-            local_crops = crops[2:]
-            _ = local_crops  # not used in loss, already used implicitly
-
-            # concatenate all crops for a single student forward
-            all_crops = torch.cat(crops, dim=0)  # [B*Nc, C, H, W]
-            all_student_out = student(all_crops)  # [B*Nc, D]
-
-            # split back into per‑crop tensors
-            student_outputs = all_student_out.view(Nc, B, -1)  # [Nc, B, D]
-            student_outputs = [student_outputs[i] for i in range(Nc)]  # list of Nc tensors [B, D]
-
-            # teacher on global crops only
+            # Student sees all crops, teacher only sees global crops.
+            student_outputs = [student(crop) for crop in imgs]
             with torch.no_grad():
-                all_global = torch.cat(global_crops, dim=0)  # [B*2, C, H, W]
-                all_teacher_out = teacher(all_global)  # [B*2, D]
-                teacher_outputs = all_teacher_out.view(2, B, -1)
-                teacher_outputs = [teacher_outputs[i] for i in range(2)]
+                teacher_outputs = [teacher(imgs[i]) for i in range(2)]
 
             loss = criterion(student_outputs, teacher_outputs, global_crop_indices=[0, 1])
 
