@@ -147,3 +147,138 @@ If you want, I can explain:
 - how CLS evolves during training
 
 Pick one and I’ll go deeper.
+
+
+The CLS token becomes a “global feature” because of **how self‑attention mixes information** inside a ViT.  
+Here’s the clean, intuitive explanation of the three steps you asked about — *CLS attends to patches*, *patches attend to CLS*, and *CLS becomes the global representation* — without drowning you in math.
+
+---
+
+## 🧠 What the CLS token actually is  
+It’s a **learnable vector** added at the beginning of the patch sequence:
+
+```
+[CLS, patch1, patch2, patch3, ..., patchN]
+```
+
+It starts as random noise.  
+The transformer layers *teach* it to become a summary of the whole image.
+
+---
+
+## 🧩 Step 1 — “CLS attends to all patches”  
+Self‑attention computes weights telling each token how much to look at every other token.
+
+For CLS, the attention weights look like:
+
+```
+CLS → patch1
+CLS → patch2
+CLS → patch3
+...
+CLS → patchN
+```
+
+Meaning:
+
+- CLS looks at every patch  
+- CLS pulls information from all patches  
+- CLS becomes a weighted combination of all patch features  
+
+This is the **global aggregation** step.
+
+---
+
+## 🧩 Step 2 — “patches attend to CLS”  
+Attention is symmetric: patches also look at CLS.
+
+```
+patch1 → CLS
+patch2 → CLS
+...
+patchN → CLS
+```
+
+This means:
+
+- patches push information *into* CLS  
+- CLS pushes information *back* into patches  
+- CLS becomes the “hub” of the whole image  
+
+This two‑way flow is what makes CLS special.
+
+---
+
+## 🧩 Step 3 — “CLS becomes a global representation of the entire image”  
+After several transformer layers, CLS has:
+
+- seen every patch  
+- received information from every patch  
+- redistributed information back to patches  
+- refined itself through multiple rounds of attention  
+
+By the end, CLS is:
+
+- **a single vector summarizing the entire image**  
+- **the global feature used for classification or DINO’s self‑distillation**  
+- **the representation that encodes object identity, shape, color, semantics**  
+
+This is why DINO uses CLS as the input to the projection head.
+
+---
+
+## 🎯 Why CLS works better than pooling for DINO  
+Pooling (mean of patch tokens) is simple, but:
+
+- it treats all patches equally  
+- it cannot learn to focus on important regions  
+- it cannot learn semantic weighting  
+- it cannot learn invariances across crops
+
+CLS learns **where to look**.
+
+During training, CLS learns:
+
+- “focus on the object, not the background”  
+- “ignore color changes”  
+- “ignore small crops”  
+- “capture global shape”  
+
+This is exactly what DINO needs.
+
+---
+
+## 🔥 Why CLS is essential for DINO v1  
+DINO compares **global features** between teacher and student:
+
+- teacher sees only global crops  
+- student sees global + local crops  
+- both produce **one vector per crop**  
+- these vectors are compared via cross‑entropy
+
+CLS is the perfect global vector.
+
+Patch tokens would produce **hundreds of vectors**, making the loss unstable.
+
+---
+
+## 🧪 Visual intuition  
+Think of CLS as:
+
+- a “collector” that gathers information from all patches  
+- a “brain” that learns what matters  
+- a “summary sentence” describing the image  
+- a “global anchor” for self‑supervised learning
+
+CLS is not magic — it’s just a learnable vector that the transformer trains to become the global representation.
+
+---
+
+If you want, I can show:
+
+- how CLS attention maps look
+- how CLS evolves during training
+- why DINO uses CLS instead of pooling
+- how patch tokens behave in DINO
+
+Just pick one.
