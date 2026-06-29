@@ -5,6 +5,7 @@ import timm
 import torch
 import torch.nn as nn
 from PIL import Image
+from torch.nn import functional as F
 from torch.utils.data import DataLoader
 from torchvision import transforms
 
@@ -111,30 +112,28 @@ class DINOLoss(nn.Module):
         self.center_momentum = center_momentum
         self.register_buffer("center", torch.zeros(1, out_dim))
 
-    def forward(self, student_outputs, teacher_outputs):
-        """
-        student_outputs: list of [B, K] for all crops
-        teacher_outputs: list of [B, K] for global crops
-        """
+    def forward(self, student_outputs, teacher_outputs, global_crop_indices=[0, 1]):
         student_out = [s / self.student_temp for s in student_outputs]
         teacher_out = [(t - self.center) / self.teacher_temp for t in teacher_outputs]
 
-        student_probs = [nn.functional.log_softmax(s, dim=-1) for s in student_out]
-        teacher_probs = [nn.functional.softmax(t, dim=-1) for t in teacher_out]
+        student_probs = [F.log_softmax(s, dim=-1) for s in student_out]
+        teacher_probs = [F.softmax(t, dim=-1) for t in teacher_out]
 
-        total_loss = 0.0
-        n_loss_terms = 0
+        total_loss = 0
+        n_terms = 0
+
         for t_idx, t_prob in enumerate(teacher_probs):
+            t_view = global_crop_indices[t_idx]
+
             for s_idx, s_prob in enumerate(student_probs):
-                if s_idx == t_idx:  # skip same view
+                if s_idx == t_view:
                     continue
-                loss = torch.sum(-t_prob * s_prob, dim=-1).mean()
-                total_loss += loss
-                n_loss_terms += 1
 
-        total_loss /= n_loss_terms
+                total_loss += torch.sum(-t_prob * s_prob, dim=-1).mean()
+                n_terms += 1
 
-        # update center
+        total_loss /= n_terms
+
         batch_center = torch.cat(teacher_outputs).mean(dim=0, keepdim=True)
         self.center = self.center * self.center_momentum + batch_center * (1 - self.center_momentum)
 
@@ -160,8 +159,8 @@ class DINOSession(nn.Module):
             p.requires_grad = False
 
     def forward(self, student_inputs, teacher_inputs):
-        student_outputs = [self.model(x) for x in student_inputs]
-        teacher_outputs = [self.model(x) for x in teacher_inputs]
+        student_outputs = [self.student(x) for x in student_inputs]
+        teacher_outputs = [self.teacher(x) for x in teacher_inputs]
         loss = self.loss_fn(student_outputs, teacher_outputs)
         return loss
 
@@ -178,7 +177,7 @@ def train(num_epochs=100, bs=64, vit_name=DEFAULT_VIT_NAME):
     dino_session = DINOSession(vit_name=vit_name)
     student = dino_session.student
     teacher = dino_session.teacher
-    criterion = DINOLoss().cuda()
+    criterion = dino_session.loss_fn.cuda()
     optimizer = torch.optim.AdamW(student.parameters(), lr=1e-4, weight_decay=0.04)
 
     for _ in range(num_epochs):
@@ -193,8 +192,8 @@ def train(num_epochs=100, bs=64, vit_name=DEFAULT_VIT_NAME):
             crops = [imgs[:, i] for i in range(Nc)]
             global_crops = crops[:2]
             local_crops = crops[2:]
-            # local_crops not used, as DINO loss is computed between student and teacher outputs for all crops, but
-            # teacher only sees global crops
+            # local_crops used implicitly, as DINO loss is computed between student and teacher outputs for all crops,
+            # but teacher only sees global crops
             _ = local_crops
 
             # student on all crops
@@ -208,7 +207,7 @@ def train(num_epochs=100, bs=64, vit_name=DEFAULT_VIT_NAME):
                 for crop in global_crops:
                     teacher_outputs.append(teacher(crop))
 
-            loss = criterion(student_outputs, teacher_outputs)
+            loss = criterion(student_outputs, teacher_outputs, global_crop_indices=[0, 1])
 
             optimizer.zero_grad()
             loss.backward()
