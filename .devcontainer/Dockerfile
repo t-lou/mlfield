@@ -20,7 +20,16 @@ RUN if getent passwd "$HOST_UID" >/dev/null; then \
         useradd -m -u "$HOST_UID" -g "$HOST_GID" -s /bin/bash "$USERNAME"; \
     fi
 
-RUN chown -R "$USERNAME:$USERNAME" /venv
+# Check ownership of the virtual environment and fix it if necessary
+RUN owner_uid=$(stat -c "%u" /venv/bin/activate) && \
+    owner_gid=$(stat -c "%g" /venv/bin/activate) && \
+    if [ "$owner_uid" != "$HOST_UID" ] || [ "$owner_gid" != "$HOST_GID" ]; then \
+        echo "Fixing venv ownership..."; \
+        chown -R "$HOST_UID:$HOST_GID" /venv; \
+    else \
+        echo "Venv ownership already correct, skipping chown."; \
+    fi
+
 
 USER "$USERNAME"
 ENV HOME=/home/$USERNAME
