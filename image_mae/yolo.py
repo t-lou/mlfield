@@ -795,6 +795,7 @@ def train(
     save_dir: str = "yolo_checkpoints",
     distill_weight: float = 0.1,
     mae_variant: str = "imagenet",
+    max_steps: int = -1,
 ):
     """
     Train YOLOv8-s with optional MAE knowledge distillation.
@@ -815,6 +816,7 @@ def train(
         save_dir: Directory to save model checkpoints
         distill_weight: Weight for the distillation loss term
         mae_variant: Variant of MAE to use (default: "imagenet")
+        max_steps: Maximum number of training steps (default: -1, meaning no limit)
     """
 
     config = YOLOConfig(batch_size=batch_size, epochs=epochs, learning_rate=learning_rate)
@@ -877,6 +879,7 @@ def train(
         running_detection_loss = 0.0
         running_distill_loss = 0.0
 
+        i_step = 0
         for images, targets, _ in train_loader:
             images = images.to(device)
             optimizer.zero_grad(set_to_none=True)
@@ -890,6 +893,11 @@ def train(
             running_loss += float(loss.item())
             running_detection_loss += float(detection_loss.item())
             running_distill_loss += float(distill_loss.item())
+
+            i_step += 1
+            if max_steps > 0 and i_step >= max_steps:
+                logger.info(f"Reached max_steps={max_steps} for epoch {epoch + 1}, stopping early.")
+                break
 
         scheduler.step()
         train_loss = running_loss / max(len(train_loader), 1)
@@ -942,6 +950,12 @@ def main():
     )
     parser.add_argument("--distill-weight", type=float, default=0.1, help="Weight for MAE distillation loss")
     parser.add_argument("--mae-variant", type=str, default="imagenet", help="MAE variant to use (default: imagenet)")
+    parser.add_argument(
+        "--max-steps",
+        type=int,
+        default=-1,
+        help="Maximum number of training steps per epoch (default: -1 for no limit)",
+    )
 
     args = parser.parse_args()
 
@@ -956,6 +970,7 @@ def main():
         save_dir=args.save_dir,
         distill_weight=args.distill_weight,
         mae_variant=args.mae_variant,
+        max_steps=args.max_steps,
     )
 
 
