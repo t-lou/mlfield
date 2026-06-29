@@ -84,26 +84,23 @@ class ViTBackbone(nn.Module):
 
 
 class DINOHead(nn.Module):
-    """MLP head for DINO, projecting features to the output dimension."""
-
     def __init__(self, in_dim, out_dim=65536, hidden_dim=2048, nlayers=3):
         super().__init__()
         layers = []
         dim = in_dim
-        # Create a multi-layer perceptron (MLP) with GELU activations
-        for i in range(nlayers - 1):
+        for _ in range(nlayers - 1):
             layers += [nn.Linear(dim, hidden_dim), nn.GELU()]
             dim = hidden_dim
         self.mlp = nn.Sequential(*layers)
-        # Final layer with weight normalization and fixed norm
         self.last_layer = nn.utils.weight_norm(nn.Linear(dim, out_dim, bias=False))
         self.last_layer.weight_g.data.fill_(1.0)
-        self.last_layer.weight_g.requires_grad = False  # fixed norm
+        self.last_layer.weight_g.requires_grad = False
 
     def forward(self, x):
-        x = self.mlp(x)
-        x = nn.functional.normalize(x, dim=-1)  # normalize features before the last layer
-        x = self.last_layer(x)
+        """Forward pass through the DINO head, returning normalized logits."""
+        x = self.mlp(x)  # features
+        x = self.last_layer(x)  # logits
+        x = nn.functional.normalize(x, dim=-1)  # L2‑normalize final output
         return x
 
 
@@ -188,14 +185,13 @@ class DINOSession(nn.Module):
     ):
         """Initialize a DINO training session with student and teacher models, loss function, and parameters."""
         super().__init__()
-        self.model = DINOModel(vit_name=vit_name, out_dim=out_dim)
         self.loss_fn = DINOLoss(
             out_dim=out_dim, teacher_temp=teacher_temp, student_temp=student_temp, center_momentum=center_momentum
         )
 
         # Create student and teacher models
-        self.student = DINOModel()
-        self.teacher = DINOModel()
+        self.student = DINOModel(vit_name=vit_name, out_dim=out_dim).cuda()
+        self.teacher = DINOModel(vit_name=vit_name, out_dim=out_dim).cuda()
 
         # Initialize teacher with student weights and freeze teacher parameters
         self.teacher.load_state_dict(self.student.state_dict())
@@ -215,7 +211,7 @@ class DINOSession(nn.Module):
         with torch.no_grad():
             for ps, pt in zip(self.student.parameters(), self.teacher.parameters()):
                 # Update teacher parameters with momentum, using the student parameters
-                pt.data = momentum * pt.data + (1 - momentum) * ps.data
+                pt.mul_(momentum).add_(ps, alpha=1 - momentum)
 
 
 def train(num_epochs=100, bs=64, vit_name=DEFAULT_VIT_NAME):
@@ -238,23 +234,25 @@ def train(num_epochs=100, bs=64, vit_name=DEFAULT_VIT_NAME):
             imgs = imgs.cuda()
 
             # split crops
-            crops = [imgs[:, i] for i in range(Nc)]
+            crops = [imgs[:, i] for i in range(Nc)]  # list of [B, C, H, W]
             global_crops = crops[:2]
             local_crops = crops[2:]
-            # local_crops used implicitly, as DINO loss is computed between student and teacher outputs for all crops,
-            # but teacher only sees global crops
-            _ = local_crops
+            _ = local_crops  # not used in loss, already used implicitly
 
-            # student on all crops
-            student_outputs = []
-            for crop in crops:
-                student_outputs.append(student(crop))
+            # concatenate all crops for a single student forward
+            all_crops = torch.cat(crops, dim=0)  # [B*Nc, C, H, W]
+            all_student_out = student(all_crops)  # [B*Nc, D]
+
+            # split back into per‑crop tensors
+            student_outputs = all_student_out.view(Nc, B, -1)  # [Nc, B, D]
+            student_outputs = [student_outputs[i] for i in range(Nc)]  # list of Nc tensors [B, D]
 
             # teacher on global crops only
             with torch.no_grad():
-                teacher_outputs = []
-                for crop in global_crops:
-                    teacher_outputs.append(teacher(crop))
+                all_global = torch.cat(global_crops, dim=0)  # [B*2, C, H, W]
+                all_teacher_out = teacher(all_global)  # [B*2, D]
+                teacher_outputs = all_teacher_out.view(2, B, -1)
+                teacher_outputs = [teacher_outputs[i] for i in range(2)]
 
             loss = criterion(student_outputs, teacher_outputs, global_crop_indices=[0, 1])
 
