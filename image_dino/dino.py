@@ -9,9 +9,12 @@ from torch.nn import functional as F
 from torch.utils.data import DataLoader
 from torchvision import transforms
 
+# ViT model name to use for DINO, can be changed to other ViT variants supported by timm.
+# Supported names include "vit_tiny_patch16_224", "vit_small_patch16_224", "vit_base_patch16_224", etc.
 DEFAULT_VIT_NAME = "vit_small_patch16_224"
 
 
+# Global and local crop transformations for DINO
 global_transform = transforms.Compose(
     [
         transforms.RandomResizedCrop(224, scale=(0.4, 1.0)),
@@ -34,7 +37,9 @@ local_transform = transforms.Compose(
 
 
 def multicrop_augment(img):
+    """Generate multiple crops of the input image for DINO training."""
     crops = []
+    # Generate 2 global crops and 8 local crops
     for _ in range(2):
         crops.append(global_transform(img))
     for _ in range(8):
@@ -43,7 +48,10 @@ def multicrop_augment(img):
 
 
 class Imagenet256Dataset(torch.utils.data.Dataset):
-    def __init__(self, root_dir: str, transform=None):
+    """Dataset for ImageNet 256x256 images with multi-crop augmentation."""
+
+    def __init__(self, root_dir: str, transform: callable):
+        """Initialize the dataset with the root directory and transformation."""
         self.root_dir = root_dir
         self.transform = transform
         self.image_paths = list(Path(root_dir).rglob("*.jpg")) + list(Path(root_dir).rglob("*.png"))
@@ -52,17 +60,21 @@ class Imagenet256Dataset(torch.utils.data.Dataset):
         return len(self.image_paths)
 
     def __getitem__(self, idx):
+        """Get an item from the dataset at the specified index."""
         img_path = self.image_paths[idx]
         image = Image.open(img_path).convert("RGB")
 
-        # transform must return a LIST of crops
+        # Apply multi-crop augmentation to the image, returning a list of crops
         crops = self.transform(image)  # list of tensors
         return torch.stack(crops)  # shape [Nc, C, H, W]
 
 
 class ViTBackbone(nn.Module):
+    """Vision Transformer backbone for DINO, returning the CLS token embedding."""
+
     def __init__(self, model_name=DEFAULT_VIT_NAME):
         super().__init__()
+        # Create a ViT model using timm, without pretrained weights
         self.vit = timm.create_model(model_name, pretrained=False)
         # assume vit.forward_features(x) returns CLS + patch tokens
 
@@ -72,26 +84,32 @@ class ViTBackbone(nn.Module):
 
 
 class DINOHead(nn.Module):
+    """MLP head for DINO, projecting features to the output dimension."""
+
     def __init__(self, in_dim, out_dim=65536, hidden_dim=2048, nlayers=3):
         super().__init__()
         layers = []
         dim = in_dim
+        # Create a multi-layer perceptron (MLP) with GELU activations
         for i in range(nlayers - 1):
             layers += [nn.Linear(dim, hidden_dim), nn.GELU()]
             dim = hidden_dim
         self.mlp = nn.Sequential(*layers)
+        # Final layer with weight normalization and fixed norm
         self.last_layer = nn.utils.weight_norm(nn.Linear(dim, out_dim, bias=False))
         self.last_layer.weight_g.data.fill_(1.0)
         self.last_layer.weight_g.requires_grad = False  # fixed norm
 
     def forward(self, x):
         x = self.mlp(x)
-        x = nn.functional.normalize(x, dim=-1)
+        x = nn.functional.normalize(x, dim=-1)  # normalize features before the last layer
         x = self.last_layer(x)
         return x
 
 
 class DINOModel(nn.Module):
+    """DINO model combining the ViT backbone and the DINO head, returning the projected features."""
+
     def __init__(self, vit_name=DEFAULT_VIT_NAME, out_dim=65536):
         super().__init__()
         self.backbone = ViTBackbone(vit_name)
@@ -105,7 +123,17 @@ class DINOModel(nn.Module):
 
 
 class DINOLoss(nn.Module):
+    """DINO loss function for self-supervised learning, comparing student and teacher outputs across multiple crops."""
+
     def __init__(self, out_dim=65536, teacher_temp=0.04, student_temp=0.1, center_momentum=0.9):
+        """Initialize the DINO loss with temperature parameters and center momentum.
+
+        Args:
+            out_dim: Output dimension of the DINO head.
+            teacher_temp: Temperature for the teacher outputs.
+            student_temp: Temperature for the student outputs.
+            center_momentum: Momentum for updating the center of teacher outputs.
+        """
         super().__init__()
         self.teacher_temp = teacher_temp
         self.student_temp = student_temp
@@ -113,6 +141,13 @@ class DINOLoss(nn.Module):
         self.register_buffer("center", torch.zeros(1, out_dim))
 
     def forward(self, student_outputs, teacher_outputs, global_crop_indices=[0, 1]):
+        """Compute the DINO loss between student and teacher outputs.
+
+        Args:
+            student_outputs: List of tensors from the student model for each crop.
+            teacher_outputs: List of tensors from the teacher model for each global crop.
+            global_crop_indices: Indices of the global crops in the student outputs.
+        """
         student_out = [s / self.student_temp for s in student_outputs]
         teacher_out = [(t - self.center) / self.teacher_temp for t in teacher_outputs]
 
@@ -123,18 +158,25 @@ class DINOLoss(nn.Module):
         n_terms = 0
 
         for t_idx, t_prob in enumerate(teacher_probs):
+            # Get the corresponding global crop index for the teacher output
             t_view = global_crop_indices[t_idx]
 
+            # Compute the cross-entropy loss between the teacher and student outputs for all crops except the
+            # corresponding global crop
             for s_idx, s_prob in enumerate(student_probs):
                 if s_idx == t_view:
+                    # Skip the student output corresponding to the same global crop as the teacher output
                     continue
 
+                # Compute the cross-entropy loss between the teacher and student outputs
                 total_loss += torch.sum(-t_prob * s_prob, dim=-1).mean()
                 n_terms += 1
 
         total_loss /= n_terms
 
+        # Update the center of the teacher outputs using momentum
         batch_center = torch.cat(teacher_outputs).mean(dim=0, keepdim=True)
+        # Update the center with momentum to stabilize training
         self.center = self.center * self.center_momentum + batch_center * (1 - self.center_momentum)
 
         return total_loss
@@ -144,33 +186,40 @@ class DINOSession(nn.Module):
     def __init__(
         self, vit_name=DEFAULT_VIT_NAME, out_dim=65536, teacher_temp=0.04, student_temp=0.1, center_momentum=0.9
     ):
+        """Initialize a DINO training session with student and teacher models, loss function, and parameters."""
         super().__init__()
         self.model = DINOModel(vit_name=vit_name, out_dim=out_dim)
         self.loss_fn = DINOLoss(
             out_dim=out_dim, teacher_temp=teacher_temp, student_temp=student_temp, center_momentum=center_momentum
         )
 
+        # Create student and teacher models
         self.student = DINOModel()
         self.teacher = DINOModel()
 
-        # teacher starts as copy of student, no grad
+        # Initialize teacher with student weights and freeze teacher parameters
         self.teacher.load_state_dict(self.student.state_dict())
         for p in self.teacher.parameters():
             p.requires_grad = False
 
     def forward(self, student_inputs, teacher_inputs):
+        """Compute the DINO loss for a batch of student and teacher inputs."""
+        # Compute student and teacher outputs
         student_outputs = [self.student(x) for x in student_inputs]
         teacher_outputs = [self.teacher(x) for x in teacher_inputs]
+        # Compute the DINO loss
         loss = self.loss_fn(student_outputs, teacher_outputs)
         return loss
 
     def update_teacher(self, momentum=0.996):
         with torch.no_grad():
             for ps, pt in zip(self.student.parameters(), self.teacher.parameters()):
+                # Update teacher parameters with momentum, using the student parameters
                 pt.data = momentum * pt.data + (1 - momentum) * ps.data
 
 
 def train(num_epochs=100, bs=64, vit_name=DEFAULT_VIT_NAME):
+    """Train the DINO model on ImageNet 256x256 dataset with multi-crop augmentation."""
     dataset = Imagenet256Dataset(root_dir="../data/kaggle/imagenet", transform=multicrop_augment)
     loader = DataLoader(dataset, batch_size=bs, shuffle=True, num_workers=4)
 
