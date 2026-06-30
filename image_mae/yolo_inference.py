@@ -402,7 +402,55 @@ class YOLOInference:
         logger.info(f"✓ Output saved to: {output_path}")
 
 
-def main():
+def inference_and_draw(
+    checkpoint_path: str,
+    image_path: str,
+    output_path: str,
+    conf_threshold: float = 0.5,
+    iou_threshold: float = 0.45,
+    image_size: int = 640,
+    device: str = None,
+):
+    """
+    Run inference on an image and draw detections.
+
+    Args:
+        checkpoint_path: Path to model checkpoint
+        image_path: Input image path
+        output_path: Output image path
+        conf_threshold: Confidence threshold for detections
+        iou_threshold: IoU threshold for NMS
+        image_size: Model input size
+        device: Device to use ('cuda' or 'cpu')
+    """
+    # Initialize inference engine
+    logger.info("Initializing YOLO inference engine...")
+    inferencer = YOLOInference(
+        checkpoint_path=checkpoint_path,
+        device=device,
+        conf_threshold=conf_threshold,
+        iou_threshold=iou_threshold,
+    )
+
+    # Run inference and draw detections
+    logger.info(f"Running inference on: {image_path}")
+    draw_detections(inferencer, image_path, output_path)
+
+
+def draw_detections(inference: YOLOInference, image_path: str, output_path: str):
+    """
+    Draw detections on image and save.
+
+    Args:
+        inference: YOLOInference instance
+        image_path: Input image path
+        output_path: Output image path
+    """
+    detections = inference.infer(image_path)
+    YOLOInference.draw_detections(image_path, detections, output_path)
+
+
+def parse_args():
     parser = argparse.ArgumentParser(description="YOLOv8-s Inference")
     parser.add_argument("-i", "--input", required=True, type=str, help="Input image path")
     parser.add_argument("-o", "--output", required=True, type=str, help="Output image path")
@@ -416,32 +464,23 @@ def main():
     parser.add_argument("--iou-threshold", type=float, default=0.45, help="IoU threshold for NMS")
     parser.add_argument("--image-size", type=int, default=640, help="Model input size")
     parser.add_argument("--device", type=str, default=None, help="Device (cuda/cpu)")
+    return parser.parse_args()
 
-    args = parser.parse_args()
+
+def main():
+    args = parse_args()
 
     assert args.checkpoint is not None
-    checkpoint_path = args.checkpoint
 
-    # Initialize inference engine
-    logger.info("Initializing YOLO inference engine...")
-    inferencer = YOLOInference(
-        checkpoint_path=checkpoint_path,
-        device=args.device,
+    inference_and_draw(
+        checkpoint_path=args.checkpoint,
+        image_path=args.input,
+        output_path=args.output,
         conf_threshold=args.conf_threshold,
         iou_threshold=args.iou_threshold,
+        image_size=args.image_size,
+        device=args.device,
     )
-
-    # Run inference
-    logger.info(f"Running inference on: {args.input}")
-    detections = inferencer.infer(args.input, image_size=args.image_size)
-
-    logger.info(f"Detected {len(detections)} objects:")
-    for det in detections:
-        logger.info(f"  - {det['class_name']}: {det['confidence']:.2%} bbox={det['bbox']}")
-
-    # Draw and save results
-    logger.info(f"Drawing detections and saving to: {args.output}")
-    YOLOInference.draw_detections(args.input, detections, args.output)
 
 
 if __name__ == "__main__":
