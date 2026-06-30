@@ -14,11 +14,9 @@ from typing import List, Tuple
 import cv2
 import numpy as np
 import torch
-from logger import create_logger
+from logger import configure_logger, logger
 from PIL import Image
 from yolo import YOLOv8s
-
-logger = create_logger("yolo_inference", level="INFO")
 
 
 class YOLOInference:
@@ -447,4 +445,5 @@ def main():
 
 
 if __name__ == "__main__":
+    configure_logger("yolo_inference", level="INFO")
     main()
