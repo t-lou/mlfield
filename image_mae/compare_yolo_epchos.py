@@ -9,6 +9,7 @@ we need to compare the results of different epochs, so we can check the results 
 import argparse
 import os
 
+from matplotlib import pyplot as plt
 from yolo_inference import inference_and_draw
 
 base_ckpt_paths = [
@@ -43,3 +44,22 @@ if __name__ == "__main__":
                 conf_threshold=0.4,
                 iou_threshold=0.5,
             )
+
+    for base_ckpt_path in base_ckpt_paths:
+        for epoch in epoches:
+            output_path = f"{args.output_dir}/output_{base_ckpt_path.split('/')[-2]}_epoch_{epoch}.png"
+            if not os.path.exists(output_path):
+                print(f"Output {output_path} does not exist. Skipping.")
+                continue
+
+            plt.subplot(
+                len(base_ckpt_paths),
+                len(epoches),
+                epoches.index(epoch) + 1 + len(epoches) * base_ckpt_paths.index(base_ckpt_path),
+            )
+            plt.imshow(plt.imread(output_path))
+            plt.title(f"{base_ckpt_path.split('/')[-2]} Epoch {epoch}")
+            plt.tight_layout()
+
+    plt.savefig(f"{args.output_dir}/comparison.png")
+    plt.close()
