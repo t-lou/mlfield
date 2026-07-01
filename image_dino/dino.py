@@ -13,6 +13,9 @@ from torchvision import transforms
 # Supported names include "vit_tiny_patch16_224", "vit_small_patch16_224", "vit_base_patch16_224", etc.
 DEFAULT_VIT_NAME = "vit_small_patch16_224"
 
+# Try to reuse the MAE dataset.
+DEFAULG_DATA_ROOT_DIR = "../image_mae/data/kaggle/imagenet/"
+
 
 # Global and local crop transformations for DINO
 global_transform = transforms.Compose(
@@ -69,6 +72,7 @@ class Imagenet256Dataset(torch.utils.data.Dataset):
         self.root_dir = root_dir
         self.transform = transform
         self.image_paths = list(Path(root_dir).rglob("*.jpg")) + list(Path(root_dir).rglob("*.png"))
+        print(len(self.image_paths), root_dir)
 
     def __len__(self):
         return len(self.image_paths)
@@ -234,8 +238,11 @@ class DINOSession(nn.Module):
                 pt.mul_(momentum).add_(ps, alpha=1 - momentum)
 
 
-def train(num_epochs=100, bs=64, vit_name=DEFAULT_VIT_NAME, data_root="../data/kaggle/imagenet"):
+def train(num_epochs=100, bs=64, vit_name=DEFAULT_VIT_NAME, data_root=DEFAULG_DATA_ROOT_DIR):
     """Train the DINO model on ImageNet 256x256 dataset with multi-crop augmentation."""
+    if not Path(data_root).exists():
+        raise ValueError(f"Data root directory {data_root} does not exist.")
+
     device = get_device()
     dataset = Imagenet256Dataset(root_dir=data_root, transform=multicrop_augment)
     loader = DataLoader(
