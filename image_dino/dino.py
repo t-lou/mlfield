@@ -18,22 +18,24 @@ DEFAULG_DATA_ROOT_DIR = "../image_mae/data/kaggle/imagenet/"
 
 
 # Global and local crop transformations for DINO
-global_transform = transforms.Compose(
+GLOBAL_TRANSFORM = transforms.Compose(
     [
         transforms.RandomResizedCrop(224, scale=(0.4, 1.0)),
         transforms.RandomHorizontalFlip(),
         transforms.ColorJitter(0.4, 0.4, 0.4, 0.1),
         transforms.RandomGrayscale(p=0.2),
+        transforms.Resize(224),
         transforms.ToTensor(),
     ]
 )
 
-local_transform = transforms.Compose(
+LOCAL_TRANSFORM = transforms.Compose(
     [
         transforms.RandomResizedCrop(96, scale=(0.05, 0.4)),
         transforms.RandomHorizontalFlip(),
         transforms.ColorJitter(0.4, 0.4, 0.4, 0.1),
         transforms.RandomGrayscale(p=0.2),
+        transforms.Resize(224),  # workaround to use TIMM ViT
         transforms.ToTensor(),
     ]
 )
@@ -44,9 +46,9 @@ def multicrop_augment(img):
     crops = []
     # Generate 2 global crops and 8 local crops
     for _ in range(2):
-        crops.append(global_transform(img))
+        crops.append(GLOBAL_TRANSFORM(img))
     for _ in range(8):
-        crops.append(local_transform(img))
+        crops.append(LOCAL_TRANSFORM(img))
     return crops  # list of 10 tensors
 
 
@@ -72,7 +74,7 @@ class Imagenet256Dataset(torch.utils.data.Dataset):
         self.root_dir = root_dir
         self.transform = transform
         self.image_paths = list(Path(root_dir).rglob("*.jpg")) + list(Path(root_dir).rglob("*.png"))
-        print(len(self.image_paths), root_dir)
+        print(f"Found {len(self.image_paths)} images in {root_dir}")
 
     def __len__(self):
         return len(self.image_paths)
