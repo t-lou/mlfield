@@ -1,0 +1,4 @@
+kaggle
+pillow
+pycocotools
+opencv-python
