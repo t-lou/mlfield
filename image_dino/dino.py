@@ -239,11 +239,32 @@ class DINOSession(nn.Module):
                 # Update teacher parameters with momentum, using the student parameters
                 pt.mul_(momentum).add_(ps, alpha=1 - momentum)
 
+    def save(self, path_ckpt: Path):
+        torch.save(
+            {
+                "student": {k: v.cpu() for k, v in self.student.state_dict().items()},
+                "teacher": {k: v.cpu() for k, v in self.teacher.state_dict().items()},
+                "loss_fn": {k: v.cpu() for k, v in self.loss_fn.state_dict().items()},
+            },
+            str(path_ckpt),
+        )
 
-def train(num_epochs=100, bs=64, vit_name=DEFAULT_VIT_NAME, data_root=DEFAULG_DATA_ROOT_DIR):
+    def load(self, path_ckpt: Path):
+        ckpt = torch.load(str(path_ckpt), map_location=self.device)
+
+        self.student.load_state_dict(ckpt["student"])
+        self.teacher.load_state_dict(ckpt["teacher"])
+        self.loss_fn.load_state_dict(ckpt["loss_fn"])
+
+
+def train(num_epochs=100, bs=8, vit_name=DEFAULT_VIT_NAME, data_root=DEFAULG_DATA_ROOT_DIR, start_epoch=-1):
     """Train the DINO model on ImageNet 256x256 dataset with multi-crop augmentation."""
     if not Path(data_root).exists():
         raise ValueError(f"Data root directory {data_root} does not exist.")
+
+    dir_ckpt = Path("./dino_checkpoints")
+    if not dir_ckpt.exists():
+        dir_ckpt.mkdir(parents=True, exist_ok=True)
 
     device = get_device()
     dataset = Imagenet256Dataset(root_dir=data_root, transform=multicrop_augment)
@@ -257,12 +278,20 @@ def train(num_epochs=100, bs=64, vit_name=DEFAULT_VIT_NAME, data_root=DEFAULG_DA
     )
 
     dino_session = DINOSession(vit_name=vit_name, device=device)
+
+    if start_epoch > 0 and (dir_ckpt / f"epoch_{start_epoch:03d}.pth").exists():
+        dino_session.load(dir_ckpt / f"epoch_{start_epoch:03d}.pth")
+        print(f"Resuming training from epoch {start_epoch}")
+    else:
+        print(f"Starting training from scratch at epoch {start_epoch}")
+        start_epoch = 0
+
     student = dino_session.student
     teacher = dino_session.teacher
     criterion = dino_session.loss_fn
     optimizer = torch.optim.AdamW(student.parameters(), lr=1e-4, weight_decay=0.04)
 
-    for _ in range(num_epochs):
+    for epoch in range(start_epoch, num_epochs):
         for imgs in loader:
             imgs = [img.to(device, non_blocking=True) for img in imgs]
 
@@ -279,6 +308,8 @@ def train(num_epochs=100, bs=64, vit_name=DEFAULT_VIT_NAME, data_root=DEFAULG_DA
 
             dino_session.update_teacher(momentum=0.996)
 
+        dino_session.save(dir_ckpt / f"epoch_{epoch:03d}.pth")
+
 
 if __name__ == "__main__":
     argument_parser = argparse.ArgumentParser(description="DINO Training")
@@ -287,5 +318,6 @@ if __name__ == "__main__":
     argument_parser.add_argument(
         "--vit-name", type=str, default=DEFAULT_VIT_NAME, help="ViT model name for the backbone"
     )
+    argument_parser.add_argument("--start-epoch", type=int, default=-1, help="Starting epoch for training")
     args = argument_parser.parse_args()
-    train(args.num_epochs, args.batch_size, args.vit_name)
+    train(args.num_epochs, args.batch_size, args.vit_name, start_epoch=args.start_epoch)
