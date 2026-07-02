@@ -113,5 +113,6 @@ docker compose -f .devcontainer/docker-compose.yml exec mlfield python3 -c "impo
 }
 
 # Run container
-echo "Launching container..."
-docker compose -f .devcontainer/docker-compose.yml exec mlfield bash
+echo "Launching container, don't forget to run the following command or add to .bashrc outside the container..."
+echo 'eval "$(direnv hook bash)"'
+docker compose -f .devcontainer/docker-compose.yml exec mlfield bash -l

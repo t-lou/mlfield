@@ -30,10 +30,11 @@ from typing import Dict, Optional, Tuple
 
 import matplotlib.pyplot as plt
 import torch
-from logger import configure_logger, logger
 from torch import nn
 from torch.utils.data import DataLoader, Dataset
 from torchvision import datasets, transforms
+
+from components.utils.logger import configure_logger, logger
 
 DEFAULT_KAGGLE_DATASETS: Dict[str, str] = {
     # Default full ImageNet dataset for MAE pre-training.

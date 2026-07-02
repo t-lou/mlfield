@@ -30,10 +30,6 @@ RUN owner_uid=$(stat -c "%u" /venv/bin/activate) && \
         echo "Venv ownership already correct, skipping chown."; \
     fi
 
-
-USER "$USERNAME"
-ENV HOME=/home/$USERNAME
-
 WORKDIR /repo
 
-CMD ["bash"]
+SHELL ["/bin/bash", "-lc"]

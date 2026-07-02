@@ -1,3 +1,5 @@
+"""Convert a checkpoint saved on GPU to CPU."""
+
 import argparse
 
 import torch

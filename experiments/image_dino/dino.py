@@ -9,12 +9,14 @@ from torch.nn import functional as F
 from torch.utils.data import DataLoader
 from torchvision import transforms
 
+from components.utils.logger import configure_logger, logger
+
 # ViT model name to use for DINO, can be changed to other ViT variants supported by timm.
 # Supported names include "vit_tiny_patch16_224", "vit_small_patch16_224", "vit_base_patch16_224", etc.
 DEFAULT_VIT_NAME = "vit_small_patch16_224"
 
 # Try to reuse the MAE dataset.
-DEFAULG_DATA_ROOT_DIR = "../image_mae/data/kaggle/imagenet/"
+DEFAULG_DATA_ROOT_DIR = "./data/kaggle/imagenet/"
 
 
 # Global and local crop transformations for DINO
@@ -74,7 +76,7 @@ class Imagenet256Dataset(torch.utils.data.Dataset):
         self.root_dir = root_dir
         self.transform = transform
         self.image_paths = list(Path(root_dir).rglob("*.jpg")) + list(Path(root_dir).rglob("*.png"))
-        print(f"Found {len(self.image_paths)} images in {root_dir}")
+        logger.info(f"Found {len(self.image_paths)} images in {root_dir}")
 
     def __len__(self):
         return len(self.image_paths)
@@ -281,9 +283,9 @@ def train(num_epochs=100, bs=8, vit_name=DEFAULT_VIT_NAME, data_root=DEFAULG_DAT
 
     if start_epoch > 0 and (dir_ckpt / f"epoch_{start_epoch:03d}.pth").exists():
         dino_session.load(dir_ckpt / f"epoch_{start_epoch:03d}.pth")
-        print(f"Resuming training from epoch {start_epoch}")
+        logger.info(f"Resuming training from epoch {start_epoch}")
     else:
-        print(f"Starting training from scratch at epoch {start_epoch}")
+        logger.info(f"Starting training from scratch at epoch {start_epoch}")
         start_epoch = 0
 
     student = dino_session.student
@@ -312,6 +314,8 @@ def train(num_epochs=100, bs=8, vit_name=DEFAULT_VIT_NAME, data_root=DEFAULG_DAT
 
 
 if __name__ == "__main__":
+    configure_logger("dino")
+
     argument_parser = argparse.ArgumentParser(description="DINO Training")
     argument_parser.add_argument("--num-epochs", type=int, default=100, help="Number of training epochs")
     argument_parser.add_argument("--batch-size", type=int, default=64, help="Batch size for training")
