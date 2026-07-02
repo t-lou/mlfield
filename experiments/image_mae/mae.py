@@ -584,13 +584,15 @@ class MAE(nn.Module):
         self.in_chans = in_chans
 
         # Patch embedding layer: converts images to patch embeddings
+        if (self.cfg.image_size % self.cfg.patch_size) != 0:
+            raise ValueError(f"img_size {self.cfg.image_size} must be divisible by patch_size {self.cfg.patch_size}")
         self.patch_embed = PatchEmbed(
-            img_size=self.cfg.image_size,
             patch_size=self.cfg.patch_size,
             in_chans=in_chans,
             embed_dim=self.cfg.encoder_dim,
         )
-        self.num_patches = self.patch_embed.num_patches
+        self.grid_size = self.cfg.image_size // self.cfg.patch_size
+        self.num_patches = self.grid_size * self.grid_size
         self.patch_dim = self.cfg.patch_size * self.cfg.patch_size * in_chans
 
         # Initialize learnable tokens and position embeddings
@@ -648,12 +650,8 @@ class MAE(nn.Module):
         nn.init.normal_(self.mask_token, std=0.02)
 
         with torch.no_grad():
-            self.pos_embed_enc.copy_(
-                build_2d_sincos_position_embedding(self.patch_embed.grid_size, self.cfg.encoder_dim)
-            )
-            self.pos_embed_dec.copy_(
-                build_2d_sincos_position_embedding(self.patch_embed.grid_size, self.cfg.decoder_dim)
-            )
+            self.pos_embed_enc.copy_(build_2d_sincos_position_embedding(self.grid_size, self.cfg.encoder_dim))
+            self.pos_embed_dec.copy_(build_2d_sincos_position_embedding(self.grid_size, self.cfg.decoder_dim))
 
         for m in self.modules():
             if isinstance(m, nn.Linear):
