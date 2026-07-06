@@ -1,7 +1,6 @@
 import argparse
 from pathlib import Path
 
-import timm
 import torch
 import torch.nn as nn
 from PIL import Image
@@ -10,10 +9,7 @@ from torch.utils.data import DataLoader
 from torchvision import transforms
 
 from components.utils.logger import configure_logger, logger
-
-# ViT model name to use for DINO, can be changed to other ViT variants supported by timm.
-# Supported names include "vit_tiny_patch16_224", "vit_small_patch16_224", "vit_base_patch16_224", etc.
-DEFAULT_VIT_NAME = "vit_small_patch16_224"
+from components.vit import VitEncoder
 
 # Try to reuse the MAE dataset.
 DEFAULG_DATA_ROOT_DIR = "./data/kaggle/imagenet/"
@@ -37,7 +33,7 @@ LOCAL_TRANSFORM = transforms.Compose(
         transforms.RandomHorizontalFlip(),
         transforms.ColorJitter(0.4, 0.4, 0.4, 0.1),
         transforms.RandomGrayscale(p=0.2),
-        transforms.Resize(224),  # workaround to use TIMM ViT
+        transforms.Resize(96),
         transforms.ToTensor(),
     ]
 )
@@ -93,14 +89,22 @@ class Imagenet256Dataset(torch.utils.data.Dataset):
 class ViTBackbone(nn.Module):
     """Vision Transformer backbone for DINO, returning the CLS token embedding."""
 
-    def __init__(self, model_name=DEFAULT_VIT_NAME):
+    def __init__(self):
         super().__init__()
-        # Create a ViT model using timm, without pretrained weights
-        self.vit = timm.create_model(model_name, pretrained=False)
-        # assume vit.forward_features(x) returns CLS + patch tokens
+        # Create a ViT Encoder
+        self.vit = VitEncoder(
+            patch_size=16,
+            embed_dim=384,
+            depth=12,
+            num_heads=6,
+            mlp_ratio=4.0,
+            drop_path_rate=0.1,
+            qkv_bias=True,
+        )
+        # assume vit.forward(x) returns CLS + patch tokens
 
     def forward(self, x):
-        feats = self.vit.forward_features(x)  # [B, D]
+        feats = self.vit.forward(x)  # [B, D]
         return feats  # CLS token embedding
 
 
@@ -128,10 +132,10 @@ class DINOHead(nn.Module):
 class DINOModel(nn.Module):
     """DINO model combining the ViT backbone and the DINO head, returning the projected features."""
 
-    def __init__(self, vit_name=DEFAULT_VIT_NAME, out_dim=65536):
+    def __init__(self, out_dim=65536):
         super().__init__()
-        self.backbone = ViTBackbone(vit_name)
-        dim = self.backbone.vit.num_features
+        self.backbone = ViTBackbone()
+        dim = dim = self.backbone.vit.embed_dim
         self.head = DINOHead(dim, out_dim=out_dim)
 
     def forward(self, x):
@@ -203,7 +207,6 @@ class DINOLoss(nn.Module):
 class DINOSession(nn.Module):
     def __init__(
         self,
-        vit_name=DEFAULT_VIT_NAME,
         out_dim=65536,
         teacher_temp=0.04,
         student_temp=0.1,
@@ -218,8 +221,8 @@ class DINOSession(nn.Module):
         ).to(self.device)
 
         # Create student and teacher models
-        self.student = DINOModel(vit_name=vit_name, out_dim=out_dim).to(self.device)
-        self.teacher = DINOModel(vit_name=vit_name, out_dim=out_dim).to(self.device)
+        self.student = DINOModel(out_dim=out_dim).to(self.device)
+        self.teacher = DINOModel(out_dim=out_dim).to(self.device)
 
         # Initialize teacher with student weights and freeze teacher parameters
         self.teacher.load_state_dict(self.student.state_dict())
@@ -259,7 +262,7 @@ class DINOSession(nn.Module):
         self.loss_fn.load_state_dict(ckpt["loss_fn"])
 
 
-def train(num_epochs=100, bs=8, vit_name=DEFAULT_VIT_NAME, data_root=DEFAULG_DATA_ROOT_DIR, start_epoch=-1):
+def train(num_epochs=100, bs=8, data_root=DEFAULG_DATA_ROOT_DIR, start_epoch=-1):
     """Train the DINO model on ImageNet 256x256 dataset with multi-crop augmentation."""
     if not Path(data_root).exists():
         raise ValueError(f"Data root directory {data_root} does not exist.")
@@ -279,7 +282,7 @@ def train(num_epochs=100, bs=8, vit_name=DEFAULT_VIT_NAME, data_root=DEFAULG_DAT
         pin_memory=(device.type == "cuda"),
     )
 
-    dino_session = DINOSession(vit_name=vit_name, device=device)
+    dino_session = DINOSession(device=device)
 
     if start_epoch > 0 and (dir_ckpt / f"epoch_{start_epoch:03d}.pth").exists():
         dino_session.load(dir_ckpt / f"epoch_{start_epoch:03d}.pth")
@@ -319,9 +322,6 @@ if __name__ == "__main__":
     argument_parser = argparse.ArgumentParser(description="DINO Training")
     argument_parser.add_argument("--num-epochs", type=int, default=100, help="Number of training epochs")
     argument_parser.add_argument("--batch-size", type=int, default=64, help="Batch size for training")
-    argument_parser.add_argument(
-        "--vit-name", type=str, default=DEFAULT_VIT_NAME, help="ViT model name for the backbone"
-    )
     argument_parser.add_argument("--start-epoch", type=int, default=-1, help="Starting epoch for training")
     args = argument_parser.parse_args()
-    train(args.num_epochs, args.batch_size, args.vit_name, start_epoch=args.start_epoch)
+    train(args.num_epochs, args.batch_size, start_epoch=args.start_epoch)

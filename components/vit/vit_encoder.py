@@ -24,9 +24,11 @@ class VitEncoder(nn.Module):
     ):
         super().__init__()
 
+        self.embed_dim = embed_dim
+        self._patch_size = patch_size
+
         # Patch embedding (your updated flexible version)
         self.patch_embed = PatchEmbed(patch_size=patch_size, in_chans=3, embed_dim=embed_dim)
-        self._patch_size = patch_size
 
         # CLS token
         self.cls_token = nn.Parameter(torch.zeros(1, 1, embed_dim))
