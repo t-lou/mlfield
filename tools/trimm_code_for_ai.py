@@ -31,13 +31,14 @@ def trim_code(raw: str) -> str:
         # Remove inline Python comments
         content = re.sub(r"#.*", "", content).rstrip()
 
-        # Remove C/JS style comments
-        if content.strip().startswith("//"):
-            continue
-        content = re.sub(r"//.*", "", content).rstrip()
+        # NOTE: Commented-out as I only need this script for python for now.
+        # # Remove C/JS style comments
+        # if content.strip().startswith("//"):
+        #     continue
+        # content = re.sub(r"//.*", "", content).rstrip()
 
-        # Remove block comments /* ... */
-        content = re.sub(r"/\*.*?\*/", "", content).rstrip()
+        # # Remove block comments /* ... */
+        # content = re.sub(r"/\*.*?\*/", "", content).rstrip()
 
         # Skip if empty after cleaning
         if content.strip() == "":
