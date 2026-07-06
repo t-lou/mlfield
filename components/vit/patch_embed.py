@@ -51,3 +51,25 @@ class PatchEmbed(nn.Module):
         # Flatten spatial dimensions and transpose to (batch, num_patches, embed_dim)
         x = x.flatten(2).transpose(1, 2)
         return x
+
+
+def _smoke_test():
+    """Smoke test for the PatchEmbed module."""
+    batch_size = 2
+    in_chans = 3
+    img_size = 224
+    patch_size = 16
+    embed_dim = 768
+
+    # Create a random input tensor simulating images
+    x = torch.randn(batch_size, in_chans, img_size, img_size)
+
+    # Initialize PatchEmbed
+    patch_embed = PatchEmbed(patch_size=patch_size, in_chans=in_chans, embed_dim=embed_dim)
+
+    # Forward pass
+    _ = patch_embed(x)
+
+
+if __name__ == "__main__":
+    _smoke_test()

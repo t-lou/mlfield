@@ -150,7 +150,6 @@ def _smoke_test():
     assert out.shape == (batch_size, num_patches, embed_dim), (
         f"Expected shape {(batch_size, num_patches, embed_dim)}, but got {out.shape}"
     )
-    print("VitBlock smoke test passed!")
 
 
 if __name__ == "__main__":

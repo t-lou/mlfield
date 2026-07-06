@@ -58,3 +58,15 @@ def build_2d_sincos_position_embedding(grid_size: int, embed_dim: int, add_cls_t
         pos_embed = torch.cat([cls_pos, pos_embed], dim=0)
 
     return pos_embed.unsqueeze(0)
+
+
+def _smoke_test():
+    """Smoke test for the build_2d_sincos_position_embedding function."""
+    grid_size = 14
+    embed_dim = 768
+    pos_emb = build_2d_sincos_position_embedding(grid_size, embed_dim)
+    assert pos_emb.shape == (1, grid_size * grid_size + 1, embed_dim), "Position embedding shape mismatch"
+
+
+if __name__ == "__main__":
+    _smoke_test()

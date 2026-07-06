@@ -103,8 +103,7 @@ class VitEncoder(nn.Module):
 def _smoke_test():
     model = VitEncoder()
     imgs = torch.randn(2, 3, 224, 224)
-    out = model(imgs)
-    print(out.shape)  # should be (2, embed_dim)
+    _ = model(imgs)
 
 
 if __name__ == "__main__":

@@ -48,3 +48,22 @@ class MLP(nn.Module):
         x = self.fc2(x)
         x = self.drop(x)
         return x
+
+
+def _smoke_test():
+    """Smoke test for the MLP module."""
+    batch_size = 2
+    seq_len = 4
+    dim = 8
+    mlp_ratio = 2.0
+    dropout = 0.1
+
+    mlp = MLP(dim=dim, mlp_ratio=mlp_ratio, dropout=dropout)
+    input_tensor = torch.randn(batch_size, seq_len, dim)
+    output_tensor = mlp(input_tensor)
+
+    assert output_tensor.shape == input_tensor.shape, "Output shape mismatch"
+
+
+if __name__ == "__main__":
+    _smoke_test()

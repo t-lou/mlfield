@@ -53,3 +53,29 @@ class TransformerBlock(nn.Module):
         # Pre-normalization for MLP, again for stability
         x = x + self.mlp(self.norm2(x))
         return x
+
+
+def _smoke_test():
+    """Smoke test for the TransformerBlock module."""
+    batch_size = 2
+    seq_len = 4
+    dim = 8
+    num_heads = 2
+    mlp_ratio = 2.0
+    dropout = 0.1
+
+    # Create a random input tensor simulating a batch of sequences
+    x = torch.randn(batch_size, seq_len, dim)
+
+    # Initialize TransformerBlock
+    transformer_block = TransformerBlock(dim=dim, num_heads=num_heads, mlp_ratio=mlp_ratio, dropout=dropout)
+
+    # Forward pass
+    output = transformer_block(x)
+
+    # Check output shape
+    assert output.shape == (batch_size, seq_len, dim), "Output shape mismatch"
+
+
+if __name__ == "__main__":
+    _smoke_test()
