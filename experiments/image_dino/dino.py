@@ -1,4 +1,5 @@
 import argparse
+from contextlib import nullcontext
 from pathlib import Path
 
 import torch
@@ -44,15 +45,14 @@ LOCAL_TRANSFORM = transforms.Compose(
 )
 
 
-def multicrop_augment(img):
+def multicrop_augment(img, num_global_crops=2, num_local_crops=8):
     """Generate multiple crops of the input image for DINO training."""
     crops = []
-    # Generate 2 global crops and 8 local crops
-    for _ in range(2):
+    for _ in range(num_global_crops):
         crops.append(GLOBAL_TRANSFORM(img))
-    for _ in range(8):
+    for _ in range(num_local_crops):
         crops.append(LOCAL_TRANSFORM(img))
-    return crops  # list of 10 tensors
+    return crops
 
 
 def dino_collate_fn(batch):
@@ -68,10 +68,12 @@ def dino_collate_fn(batch):
 class Imagenet256Dataset(torch.utils.data.Dataset):
     """Dataset for ImageNet 256x256 images with multi-crop augmentation."""
 
-    def __init__(self, root_dir: str, transform: callable):
+    def __init__(self, root_dir: str, transform: callable, num_global_crops=2, num_local_crops=8):
         """Initialize the dataset with the root directory and transformation."""
         self.root_dir = root_dir
         self.transform = transform
+        self.num_global_crops = num_global_crops
+        self.num_local_crops = num_local_crops
         self.image_paths = list(Path(root_dir).rglob("*.jpg")) + list(Path(root_dir).rglob("*.png"))
         logger.info(f"Found {len(self.image_paths)} images in {root_dir}")
 
@@ -83,7 +85,7 @@ class Imagenet256Dataset(torch.utils.data.Dataset):
         img_path = self.image_paths[idx]
         with Image.open(img_path) as image:
             image = image.convert("RGB")
-            crops = self.transform(image)
+            crops = self.transform(image, self.num_global_crops, self.num_local_crops)
         return crops
 
 
@@ -268,7 +270,16 @@ class DINOSession(nn.Module):
         self.loss_fn.load_state_dict(ckpt["loss_fn"])
 
 
-def train(num_epochs=100, bs=8, data_root=DEFAULG_DATA_ROOT_DIR, start_epoch=-1):
+def train(
+    num_epochs=100,
+    bs=8,
+    data_root=DEFAULG_DATA_ROOT_DIR,
+    start_epoch=-1,
+    num_global_crops=2,
+    num_local_crops=8,
+    use_amp=True,
+    num_workers=2,
+):
     """Train the DINO model on ImageNet 256x256 dataset with multi-crop augmentation."""
     if not Path(data_root).exists():
         raise ValueError(f"Data root directory {data_root} does not exist.")
@@ -278,12 +289,17 @@ def train(num_epochs=100, bs=8, data_root=DEFAULG_DATA_ROOT_DIR, start_epoch=-1)
         dir_ckpt.mkdir(parents=True, exist_ok=True)
 
     device = get_device()
-    dataset = Imagenet256Dataset(root_dir=data_root, transform=multicrop_augment)
+    dataset = Imagenet256Dataset(
+        root_dir=data_root,
+        transform=multicrop_augment,
+        num_global_crops=num_global_crops,
+        num_local_crops=num_local_crops,
+    )
     loader = DataLoader(
         dataset,
         batch_size=bs,
         shuffle=True,
-        num_workers=4,
+        num_workers=num_workers,
         collate_fn=dino_collate_fn,
         pin_memory=(device.type == "cuda"),
     )
@@ -302,20 +318,39 @@ def train(num_epochs=100, bs=8, data_root=DEFAULG_DATA_ROOT_DIR, start_epoch=-1)
     criterion = dino_session.loss_fn
     optimizer = torch.optim.AdamW(student.parameters(), lr=1e-4, weight_decay=0.04)
 
+    if device.type == "cuda" and use_amp:
+        amp_context = torch.autocast(device_type="cuda", dtype=torch.float16)
+        scaler = torch.cuda.amp.GradScaler(enabled=True)
+    else:
+        amp_context = nullcontext()
+        scaler = None
+
+    logger.info(
+        f"Training with {num_global_crops} global crops, {num_local_crops} local crops, "
+        f"amp={'enabled' if scaler is not None else 'disabled'}"
+    )
+
     for epoch in range(start_epoch, num_epochs):
         for imgs in loader:
             imgs = [img.to(device, non_blocking=True) for img in imgs]
 
-            # Student sees all crops, teacher only sees global crops.
-            student_outputs = [student(crop) for crop in imgs]
-            with torch.no_grad():
-                teacher_outputs = [teacher(imgs[i]) for i in range(2)]
+            with amp_context:
+                # Student sees all crops, teacher only sees global crops.
+                student_outputs = [student(crop) for crop in imgs]
 
-            loss = criterion(student_outputs, teacher_outputs, global_crop_indices=[0, 1])
+                with torch.inference_mode():
+                    teacher_outputs = [teacher(imgs[i]) for i in range(num_global_crops)]
 
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
+                loss = criterion(student_outputs, teacher_outputs, global_crop_indices=list(range(num_global_crops)))
+
+            optimizer.zero_grad(set_to_none=True)
+            if scaler is not None:
+                scaler.scale(loss).backward()
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                loss.backward()
+                optimizer.step()
 
             dino_session.update_teacher(momentum=0.996)
 
@@ -327,7 +362,29 @@ if __name__ == "__main__":
 
     argument_parser = argparse.ArgumentParser(description="DINO Training")
     argument_parser.add_argument("--num-epochs", type=int, default=100, help="Number of training epochs")
-    argument_parser.add_argument("--batch-size", type=int, default=64, help="Batch size for training")
+    argument_parser.add_argument("--batch-size", type=int, default=32, help="Batch size for training")
     argument_parser.add_argument("--start-epoch", type=int, default=-1, help="Starting epoch for training")
+    argument_parser.add_argument(
+        "--num-global-crops",
+        type=int,
+        default=2,
+        help="Number of global crops to generate per image",
+    )
+    argument_parser.add_argument(
+        "--num-local-crops",
+        type=int,
+        default=8,
+        help="Number of local crops to generate per image",
+    )
+    argument_parser.add_argument("--disable-amp", action="store_true", help="Disable mixed precision training")
+    argument_parser.add_argument("--num-workers", type=int, default=2, help="Number of DataLoader workers")
     args = argument_parser.parse_args()
-    train(args.num_epochs, args.batch_size, start_epoch=args.start_epoch)
+    train(
+        args.num_epochs,
+        args.batch_size,
+        start_epoch=args.start_epoch,
+        num_global_crops=args.num_global_crops,
+        num_local_crops=args.num_local_crops,
+        use_amp=not args.disable_amp,
+        num_workers=args.num_workers,
+    )
