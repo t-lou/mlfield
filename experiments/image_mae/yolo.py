@@ -458,10 +458,8 @@ class YOLOv8s(nn.Module):
         """
         try:
             # Import MAE from the same directory
-            import sys
 
-            sys.path.insert(0, str(Path(__file__).parent))
-            from mae import MAE
+            from components.vit.mae import MAE
 
             mae = MAE(self.mae_variant)
             local_root = Path(__file__).parent
