@@ -1,7 +1,7 @@
 import torch
 from torch import nn
 
-from .mlp import MLP
+from components.vit.mlp import MLP
 
 
 class TransformerBlock(nn.Module):

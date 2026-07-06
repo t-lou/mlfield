@@ -4,9 +4,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .patch_embed import PatchEmbed
-from .position_embedding import build_2d_sincos_position_embedding
-from .vit_block import VitBlock
+from components.vit.patch_embed import PatchEmbed
+from components.vit.position_embedding import build_2d_sincos_position_embedding
+from components.vit.vit_block import VitBlock
 
 
 class VitEncoder(nn.Module):
