@@ -46,7 +46,7 @@ def build_2d_sincos_position_embedding(grid_size: int, embed_dim: int, add_cls_t
 
     # Compute frequency weights for sinusoidal embeddings, following the transformer convention
     omega = torch.arange(embed_dim // 4, dtype=torch.float32) / (embed_dim // 4)
-    omega = 1.0 / (10000**omega)  # Frequency scaling for sinusoidal embeddings
+    omega = 1.0 / (10000**omega)  # Frequency scaling for sinusoidal embeddings # TODO different?
 
     out_h = torch.outer(pos_h, omega)
     out_w = torch.outer(pos_w, omega)

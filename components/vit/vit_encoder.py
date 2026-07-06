@@ -6,35 +6,53 @@ import torch.nn.functional as F
 
 from .patch_embed import PatchEmbed
 from .position_embedding import build_2d_sincos_position_embedding
+from .vit_block import VitBlock
 
 
 class VitEncoder(nn.Module):
-    def __init__(self, patch_size=16, embed_dim=384, depth=12, num_heads=6):
+    def __init__(
+        self,
+        patch_size=16,
+        embed_dim=384,
+        depth=12,
+        num_heads=6,
+        mlp_ratio=4.0,
+        attn_drop=0.0,
+        proj_drop=0.0,
+        drop_path_rate=0.1,
+        qkv_bias=False,
+    ):
         super().__init__()
 
         # Patch embedding (your updated flexible version)
         self.patch_embed = PatchEmbed(patch_size=patch_size, in_chans=3, embed_dim=embed_dim)
+        self._patch_size = patch_size
 
         # CLS token
         self.cls_token = nn.Parameter(torch.zeros(1, 1, embed_dim))
 
-        # Positional embedding (base resolution = 224)
-        base_grid = 224 // patch_size
-        self.pos_embed = build_2d_sincos_position_embedding(
-            grid_size=base_grid, embed_dim=embed_dim, add_cls_token=True
+        # Positional embedding
+        base_res = 224
+        base_grid = base_res // patch_size
+        self.register_buffer(
+            "pos_embed",
+            build_2d_sincos_position_embedding(grid_size=base_grid, embed_dim=embed_dim, add_cls_token=True),
         )
 
         # Transformer blocks
+        dpr = [drop_path_rate * i / (depth - 1) for i in range(depth)]
         self.blocks = nn.ModuleList(
             [
-                nn.TransformerEncoderLayer(
-                    d_model=embed_dim,
-                    nhead=num_heads,
-                    dim_feedforward=embed_dim * 4,
-                    activation="gelu",
-                    batch_first=True,
+                VitBlock(
+                    dim=embed_dim,
+                    num_heads=num_heads,
+                    mlp_ratio=mlp_ratio,
+                    attn_drop=attn_drop,
+                    proj_drop=proj_drop,
+                    drop_path=dpr[i],
+                    qkv_bias=qkv_bias,
                 )
-                for _ in range(depth)
+                for i in range(depth)
             ]
         )
 
@@ -61,16 +79,16 @@ class VitEncoder(nn.Module):
         # Patch embedding
         x = self.patch_embed(imgs)  # (B, HW, C)
 
-        # Compute new grid size
-        H = imgs.shape[2] // self.patch_embed.proj.kernel_size[0]
-        W = imgs.shape[3] // self.patch_embed.proj.kernel_size[0]
-
-        # Add CLS token
-        cls = self.cls_token.expand(B, -1, -1)
+        # Add CLS token, note that it should be dropped in v2
+        cls = self.cls_token.repeat(B, 1, 1)  # faster that expand
         x = torch.cat((cls, x), dim=1)
 
+        # Compute new grid size
+        H_patch = imgs.shape[2] // self._patch_size
+        W_patch = imgs.shape[3] // self._patch_size
+
         # Add positional embeddings
-        pos = self.interpolate_pos_encoding(H, W)
+        pos = self.interpolate_pos_encoding(H_patch, W_patch)
         x = x + pos
 
         # Transformer blocks
@@ -80,3 +98,14 @@ class VitEncoder(nn.Module):
         x = self.norm(x)
 
         return x[:, 0]  # CLS token output
+
+
+def _smoke_test():
+    model = VitEncoder()
+    imgs = torch.randn(2, 3, 224, 224)
+    out = model(imgs)
+    print(out.shape)  # should be (2, embed_dim)
+
+
+if __name__ == "__main__":
+    _smoke_test()
