@@ -32,6 +32,7 @@ import torch
 from torch.utils.data import DataLoader, Dataset
 from torchvision import datasets, transforms
 
+from components.utils.device import get_device
 from components.utils.logger import configure_logger, logger
 from components.vit.mae import MAE, VARIANT_CONFIG, MAEVariantConfig
 
@@ -598,7 +599,7 @@ def train(
         kaggle_imagenet_mini_dataset=kaggle_imagenet_mini_dataset,
         kaggle_coco_dataset=kaggle_coco_dataset,
     )
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = get_device()
     model = model.to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=cfg.learning_rate, betas=(0.9, 0.95), weight_decay=0.05)
 

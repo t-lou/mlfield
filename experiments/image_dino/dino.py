@@ -8,6 +8,7 @@ from torch.nn import functional as F
 from torch.utils.data import DataLoader
 from torchvision import transforms
 
+from components.utils.device import get_device
 from components.utils.logger import configure_logger, logger
 from components.vit import VitEncoder
 
@@ -58,10 +59,6 @@ def dino_collate_fn(batch):
     if any(len(sample) != num_crops for sample in batch):
         raise ValueError("Inconsistent number of crops in batch")
     return [torch.stack([sample[i] for sample in batch], dim=0) for i in range(num_crops)]
-
-
-def get_device():
-    return torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
 class Imagenet256Dataset(torch.utils.data.Dataset):
