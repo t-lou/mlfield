@@ -1,5 +1,6 @@
 """Run smoke tests from explicit Python files or directories."""
 
+import os
 import subprocess
 from pathlib import Path
 
@@ -10,7 +11,8 @@ def run_smoke_tests(paths: list[Path]) -> None:
     """Run smoke tests for the given list of paths."""
     for raw_path in paths:
         module_name = str(raw_path).replace("/", ".").replace(".py", "")
-        subprocess.run(["python3", "-m", module_name], check=True)
+        wrapper = f"from {module_name} import _smoke_test\n_smoke_test()\n"
+        subprocess.run(["python3", "-c", wrapper], check=True, env={**os.environ, "PYTHONPATH": "/repo"})
         print(f"PASSED smoketest {module_name}")
 
 
