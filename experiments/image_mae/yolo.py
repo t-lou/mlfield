@@ -28,10 +28,12 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from logger import configure_logger, logger
 from pycocotools.coco import COCO
 from torch.utils.data import DataLoader, Dataset
 from torchvision import transforms
+
+from components.utils.device import get_device
+from components.utils.logger import configure_logger, logger
 
 
 @dataclass(frozen=True)
@@ -818,7 +820,7 @@ def train(
     """
 
     config = YOLOConfig(batch_size=batch_size, epochs=epochs, learning_rate=learning_rate)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = get_device()
 
     Path(save_dir).mkdir(parents=True, exist_ok=True)
 
