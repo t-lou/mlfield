@@ -12,6 +12,7 @@ from components.vit.vit_block import VitBlock
 class VitEncoder(nn.Module):
     def __init__(
         self,
+        base_res=224,
         patch_size=16,
         embed_dim=384,
         depth=12,
@@ -34,7 +35,6 @@ class VitEncoder(nn.Module):
         self.cls_token = nn.Parameter(torch.zeros(1, 1, embed_dim))
 
         # Positional embedding
-        base_res = 224
         base_grid = base_res // patch_size
         self.register_buffer(
             "pos_embed",

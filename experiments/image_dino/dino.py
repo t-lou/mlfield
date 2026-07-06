@@ -15,26 +15,30 @@ from components.vit import VitEncoder
 # Try to reuse the MAE dataset.
 DEFAULG_DATA_ROOT_DIR = "./data/kaggle/imagenet/"
 
+TEACHER_BASE_RES = 224
+STUDENT_BASE_RES = 96
+MODEL_BASE_RES = TEACHER_BASE_RES
+
 
 # Global and local crop transformations for DINO
 GLOBAL_TRANSFORM = transforms.Compose(
     [
-        transforms.RandomResizedCrop(224, scale=(0.4, 1.0)),
+        transforms.RandomResizedCrop(TEACHER_BASE_RES, scale=(0.4, 1.0)),
         transforms.RandomHorizontalFlip(),
         transforms.ColorJitter(0.4, 0.4, 0.4, 0.1),
         transforms.RandomGrayscale(p=0.2),
-        transforms.Resize(224),
+        transforms.Resize(TEACHER_BASE_RES),
         transforms.ToTensor(),
     ]
 )
 
 LOCAL_TRANSFORM = transforms.Compose(
     [
-        transforms.RandomResizedCrop(96, scale=(0.05, 0.4)),
+        transforms.RandomResizedCrop(STUDENT_BASE_RES, scale=(0.05, 0.4)),
         transforms.RandomHorizontalFlip(),
         transforms.ColorJitter(0.4, 0.4, 0.4, 0.1),
         transforms.RandomGrayscale(p=0.2),
-        transforms.Resize(96),
+        transforms.Resize(STUDENT_BASE_RES),
         transforms.ToTensor(),
     ]
 )
@@ -86,10 +90,11 @@ class Imagenet256Dataset(torch.utils.data.Dataset):
 class ViTBackbone(nn.Module):
     """Vision Transformer backbone for DINO, returning the CLS token embedding."""
 
-    def __init__(self):
+    def __init__(self, base_res=TEACHER_BASE_RES):
         super().__init__()
         # Create a ViT Encoder
         self.vit = VitEncoder(
+            base_res=base_res,
             patch_size=16,
             embed_dim=384,
             depth=12,
@@ -129,9 +134,9 @@ class DINOHead(nn.Module):
 class DINOModel(nn.Module):
     """DINO model combining the ViT backbone and the DINO head, returning the projected features."""
 
-    def __init__(self, out_dim=65536):
+    def __init__(self, base_res, out_dim=65536):
         super().__init__()
-        self.backbone = ViTBackbone()
+        self.backbone = ViTBackbone(base_res=base_res)
         dim = dim = self.backbone.vit.embed_dim
         self.head = DINOHead(dim, out_dim=out_dim)
 
@@ -217,14 +222,18 @@ class DINOSession(nn.Module):
             out_dim=out_dim, teacher_temp=teacher_temp, student_temp=student_temp, center_momentum=center_momentum
         ).to(self.device)
 
-        # Create student and teacher models
-        self.student = DINOModel(out_dim=out_dim).to(self.device)
-        self.teacher = DINOModel(out_dim=out_dim).to(self.device)
+        # Create student and teacher models with the same encoder configuration.
+        # The crop size differs at runtime via the transforms, but the positional
+        # embedding buffer must stay identical so teacher initialization can copy
+        # the student weights and EMA updates remain compatible.
+        self.student = DINOModel(base_res=MODEL_BASE_RES, out_dim=out_dim).to(self.device)
+        self.teacher = DINOModel(base_res=MODEL_BASE_RES, out_dim=out_dim).to(self.device)
 
-        # Initialize teacher with student weights and freeze teacher parameters
+        # Initialize teacher with student weights and freeze teacher parameters.
         self.teacher.load_state_dict(self.student.state_dict())
         for p in self.teacher.parameters():
             p.requires_grad = False
+        self.teacher.eval()
 
     def forward(self, student_inputs, teacher_inputs):
         """Compute the DINO loss for a batch of student and teacher inputs."""
@@ -238,8 +247,8 @@ class DINOSession(nn.Module):
     def update_teacher(self, momentum=0.996):
         with torch.no_grad():
             for ps, pt in zip(self.student.parameters(), self.teacher.parameters()):
-                # Update teacher parameters with momentum, using the student parameters
-                pt.mul_(momentum).add_(ps, alpha=1 - momentum)
+                # Update teacher parameters with momentum using detached student parameters.
+                pt.mul_(momentum).add_(ps.detach(), alpha=1 - momentum)
 
     def save(self, path_ckpt: Path):
         torch.save(
