@@ -25,11 +25,15 @@ mlfield/
 │
 ├── .devcontainer/      # Reproducible development environment (incl. VS Code devcontainer, direct init not supported)
 │
-├── hugging_face/       # Experiments using Hugging Face models, datasets, and pipelines
+├── components/         # Reusable layers, functions and models
 │
-├── notes/              # Research notes, logs, design sketches, and conceptual writeups
+├── experiments/        # The trainings and evaluations
 │
-├── ssl/                # Self-&Semi-supervised learning experiments and prototypes
+├── notes/              # General research notes, logs, design sketches, and conceptual writeups
+│
+├── tools/              # Standalone utilities for editing checkpoints, for controlling WSL2 etc
+│
+├── _to_clarify/        # Legacy before restructering, which needs to be deleted or continued
 │
 └── (more coming...)
 ```
