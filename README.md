@@ -50,7 +50,14 @@ git clone https://github.com/t-lou/mlfield
 bash mlfield/.devcontainer/launch.sh
 ```
 
-After creation with bash, optionally reopen the folder with VS Code inside a container. Please reopen only, rebuilding will break.
+You can either launch the container with launch.sh script or open it with VS Code extension "Dev Containers".
+
+If you are cautious about the base docker image, you can also create the base image from scatch and rename it with "docker tag...".
+
+```bash
+bash .devcontainer/create_base_container.sh  # create mlfield_cuda_base:latest
+docker tag mlfield_cuda_base:latest tlou/mlfield_cuda_base:latest
+```
 
 ---
 
