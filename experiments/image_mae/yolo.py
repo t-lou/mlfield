@@ -32,7 +32,7 @@ from pycocotools.coco import COCO
 from torch.utils.data import DataLoader, Dataset
 from torchvision import transforms
 
-from components.utils.device import get_device
+from components.utils.device import get_device, resolve_num_workers
 from components.utils.logger import configure_logger, logger
 
 
@@ -796,6 +796,7 @@ def train(
     distill_weight: float = 0.1,
     mae_variant: str = "imagenet",
     max_steps: int = -1,
+    num_workers: Optional[int] = None,
 ):
     """
     Train YOLOv8-s with optional MAE knowledge distillation.
@@ -824,24 +825,43 @@ def train(
 
     Path(save_dir).mkdir(parents=True, exist_ok=True)
 
+    resolved_num_workers = resolve_num_workers(num_workers)
     train_dataset = COCODetectionDataset(data_root, split="train", image_size=config.image_size)
     val_dataset = COCODetectionDataset(data_root, split="val", image_size=config.image_size)
-    train_loader = DataLoader(
-        train_dataset,
-        batch_size=config.batch_size,
-        shuffle=True,
-        num_workers=2,
-        pin_memory=torch.cuda.is_available(),
-        collate_fn=_collate_coco_detection,
-    )
-    val_loader = DataLoader(
-        val_dataset,
-        batch_size=config.batch_size,
-        shuffle=False,
-        num_workers=2,
-        pin_memory=torch.cuda.is_available(),
-        collate_fn=_collate_coco_detection,
-    )
+    train_loader_kwargs = {
+        "batch_size": config.batch_size,
+        "shuffle": True,
+        "pin_memory": torch.cuda.is_available(),
+        "collate_fn": _collate_coco_detection,
+    }
+    val_loader_kwargs = {
+        "batch_size": config.batch_size,
+        "shuffle": False,
+        "pin_memory": torch.cuda.is_available(),
+        "collate_fn": _collate_coco_detection,
+    }
+
+    if resolved_num_workers > 0:
+        train_loader_kwargs.update(
+            {
+                "num_workers": resolved_num_workers,
+                "prefetch_factor": 2,
+                "persistent_workers": True,
+            }
+        )
+        val_loader_kwargs.update(
+            {
+                "num_workers": resolved_num_workers,
+                "prefetch_factor": 2,
+                "persistent_workers": True,
+            }
+        )
+    else:
+        train_loader_kwargs["num_workers"] = 0
+        val_loader_kwargs["num_workers"] = 0
+
+    train_loader = DataLoader(train_dataset, **train_loader_kwargs)
+    val_loader = DataLoader(val_dataset, **val_loader_kwargs)
 
     model = YOLOv8s(
         num_classes=config.num_classes,
@@ -956,6 +976,12 @@ def main():
         default=-1,
         help="Maximum number of training steps per epoch (default: -1 for no limit)",
     )
+    parser.add_argument(
+        "--num-workers",
+        type=int,
+        default=None,
+        help="Number of DataLoader workers. Defaults to automatic CPU-count based selection.",
+    )
 
     args = parser.parse_args()
 
@@ -971,6 +997,7 @@ def main():
         distill_weight=args.distill_weight,
         mae_variant=args.mae_variant,
         max_steps=args.max_steps,
+        num_workers=args.num_workers,
     )
 
 

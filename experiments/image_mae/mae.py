@@ -32,7 +32,7 @@ import torch
 from torch.utils.data import DataLoader, Dataset
 from torchvision import datasets, transforms
 
-from components.utils.device import get_device
+from components.utils.device import get_device, resolve_num_workers
 from components.utils.logger import configure_logger, logger
 from components.vit.mae import MAE, VARIANT_CONFIG, MAEVariantConfig
 
@@ -79,7 +79,7 @@ class ImageOnlyDataset(Dataset):
         return img
 
 
-def make_cifar10_dataloader(root: str, batch_size: int, num_workers: int = 4) -> DataLoader:
+def make_cifar10_dataloader(root: str, batch_size: int, num_workers: Optional[int] = None) -> DataLoader:
     """
     Create CIFAR-10 dataloader for MAE pre-training.
 
@@ -113,21 +113,32 @@ def make_cifar10_dataloader(root: str, batch_size: int, num_workers: int = 4) ->
         transform=transform,
     )
 
-    return DataLoader(
-        ImageOnlyDataset(dataset),
-        batch_size=batch_size,
-        shuffle=True,
-        drop_last=True,
-        num_workers=num_workers,
-        pin_memory=True,
-    )
+    resolved_num_workers = resolve_num_workers(num_workers)
+    loader_kwargs = {
+        "batch_size": batch_size,
+        "shuffle": True,
+        "drop_last": True,
+        "pin_memory": True,
+    }
+    if resolved_num_workers > 0:
+        loader_kwargs.update(
+            {
+                "num_workers": resolved_num_workers,
+                "prefetch_factor": 2,
+                "persistent_workers": True,
+            }
+        )
+    else:
+        loader_kwargs["num_workers"] = 0
+
+    return DataLoader(ImageOnlyDataset(dataset), **loader_kwargs)
 
 
 def make_imagenet_dataloader(
     root: str,
     batch_size: int,
     image_size: int = 224,
-    num_workers: int = 8,
+    num_workers: Optional[int] = None,
     train: bool = True,
 ) -> DataLoader:
     """
@@ -175,21 +186,32 @@ def make_imagenet_dataloader(
         transform=transform,
     )
 
-    return DataLoader(
-        ImageOnlyDataset(dataset),
-        batch_size=batch_size,
-        shuffle=train,
-        drop_last=True,
-        num_workers=num_workers,
-        pin_memory=True,
-    )
+    resolved_num_workers = resolve_num_workers(num_workers)
+    loader_kwargs = {
+        "batch_size": batch_size,
+        "shuffle": train,
+        "drop_last": True,
+        "pin_memory": True,
+    }
+    if resolved_num_workers > 0:
+        loader_kwargs.update(
+            {
+                "num_workers": resolved_num_workers,
+                "prefetch_factor": 2,
+                "persistent_workers": True,
+            }
+        )
+    else:
+        loader_kwargs["num_workers"] = 0
+
+    return DataLoader(ImageOnlyDataset(dataset), **loader_kwargs)
 
 
 def make_coco_dataloader(
     root: str,
     batch_size: int,
     image_size: int = 224,
-    num_workers: int = 8,
+    num_workers: Optional[int] = None,
     train: bool = True,
 ) -> DataLoader:
     """
@@ -238,14 +260,25 @@ def make_coco_dataloader(
         transform=transform,
     )
 
-    return DataLoader(
-        ImageOnlyDataset(dataset),
-        batch_size=batch_size,
-        shuffle=train,
-        drop_last=True,
-        num_workers=num_workers,
-        pin_memory=True,
-    )
+    resolved_num_workers = resolve_num_workers(num_workers)
+    loader_kwargs = {
+        "batch_size": batch_size,
+        "shuffle": train,
+        "drop_last": True,
+        "pin_memory": True,
+    }
+    if resolved_num_workers > 0:
+        loader_kwargs.update(
+            {
+                "num_workers": resolved_num_workers,
+                "prefetch_factor": 2,
+                "persistent_workers": True,
+            }
+        )
+    else:
+        loader_kwargs["num_workers"] = 0
+
+    return DataLoader(ImageOnlyDataset(dataset), **loader_kwargs)
 
 
 def _find_dataset_root_by_markers(base_dir: Path, required_dirs: Tuple[str, ...]) -> Optional[Path]:
@@ -491,6 +524,7 @@ def build_model_and_loader(
     kaggle_imagenet_dataset: str = DEFAULT_KAGGLE_DATASETS["imagenet"],
     kaggle_imagenet_mini_dataset: str = DEFAULT_KAGGLE_DATASETS["imagenet_mini"],
     kaggle_coco_dataset: str = DEFAULT_KAGGLE_DATASETS["coco"],
+    num_workers: Optional[int] = None,
 ) -> Tuple[MAEVariantConfig, MAE, DataLoader]:
     """
     Convenience function to build MAE model and corresponding dataloader.
@@ -529,18 +563,20 @@ def build_model_and_loader(
     )
 
     if variant == "cifar10":
-        loader = make_cifar10_dataloader(root=resolved_root, batch_size=cfg.batch_size)
+        loader = make_cifar10_dataloader(root=resolved_root, batch_size=cfg.batch_size, num_workers=num_workers)
     elif variant in {"imagenet", "imagenet_mini"}:
         loader = make_imagenet_dataloader(
             root=resolved_root,
             batch_size=cfg.batch_size,
             image_size=cfg.image_size,
+            num_workers=num_workers,
         )
     else:
         loader = make_coco_dataloader(
             root=resolved_root,
             batch_size=cfg.batch_size,
             image_size=cfg.image_size,
+            num_workers=num_workers,
         )
 
     return cfg, model, loader
@@ -555,6 +591,7 @@ def train(
     kaggle_imagenet_dataset: str = DEFAULT_KAGGLE_DATASETS["imagenet"],
     kaggle_imagenet_mini_dataset: str = DEFAULT_KAGGLE_DATASETS["imagenet_mini"],
     kaggle_coco_dataset: str = DEFAULT_KAGGLE_DATASETS["coco"],
+    num_workers: Optional[int] = None,
 ) -> None:
     """
     Train MAE model for one epoch with optional checkpointing and visualization.
@@ -698,6 +735,12 @@ def main() -> None:
         default=DEFAULT_KAGGLE_DATASETS["coco"],
         help="Kaggle dataset slug for COCO-style data (owner/dataset).",
     )
+    parser.add_argument(
+        "--num-workers",
+        type=int,
+        default=None,
+        help="Number of DataLoader workers. Defaults to automatic CPU-count based selection.",
+    )
     args = parser.parse_args()
 
     if args.variant not in VARIANT_CONFIG:
@@ -715,6 +758,7 @@ def main() -> None:
             kaggle_imagenet_dataset=args.kaggle_imagenet_dataset,
             kaggle_imagenet_mini_dataset=args.kaggle_imagenet_mini_dataset,
             kaggle_coco_dataset=args.kaggle_coco_dataset,
+            num_workers=args.num_workers,
         )
 
 
