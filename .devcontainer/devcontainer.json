@@ -6,7 +6,7 @@
 
   "remoteUser": "${localEnv:USERNAME}",
 
-  "initializeCommand": ".devcontainer/detect-platform.sh",
+  "initializeCommand": ".devcontainer/detect-platform.sh && .devcontainer/generate_docker_compose.sh \"$(uname -s)\" \"$(pwd)\" \"$(id -u)\" \"$(id -g)\" \"$(whoami)\" \"${DISPLAY}\"",
 
   "build": {
     "args": {
