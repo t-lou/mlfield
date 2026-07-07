@@ -28,7 +28,6 @@ GLOBAL_TRANSFORM = transforms.Compose(
         transforms.RandomHorizontalFlip(),
         transforms.ColorJitter(0.4, 0.4, 0.4, 0.1),
         transforms.RandomGrayscale(p=0.2),
-        transforms.Resize(TEACHER_BASE_RES),
         transforms.ToTensor(),
     ]
 )
@@ -39,7 +38,6 @@ LOCAL_TRANSFORM = transforms.Compose(
         transforms.RandomHorizontalFlip(),
         transforms.ColorJitter(0.4, 0.4, 0.4, 0.1),
         transforms.RandomGrayscale(p=0.2),
-        transforms.Resize(STUDENT_BASE_RES),
         transforms.ToTensor(),
     ]
 )
@@ -278,7 +276,9 @@ def train(
     num_global_crops=2,
     num_local_crops=8,
     use_amp=True,
-    num_workers=2,
+    num_workers=8,
+    prefetch_factor=4,
+    persistent_workers=True,
 ):
     """Train the DINO model on ImageNet 256x256 dataset with multi-crop augmentation."""
     if not Path(data_root).exists():
@@ -295,14 +295,18 @@ def train(
         num_global_crops=num_global_crops,
         num_local_crops=num_local_crops,
     )
-    loader = DataLoader(
-        dataset,
-        batch_size=bs,
-        shuffle=True,
-        num_workers=num_workers,
-        collate_fn=dino_collate_fn,
-        pin_memory=(device.type == "cuda"),
-    )
+    loader_kwargs = {
+        "dataset": dataset,
+        "batch_size": bs,
+        "shuffle": True,
+        "num_workers": num_workers,
+        "collate_fn": dino_collate_fn,
+        "pin_memory": (device.type == "cuda"),
+    }
+    if num_workers > 0:
+        loader_kwargs["prefetch_factor"] = prefetch_factor
+        loader_kwargs["persistent_workers"] = persistent_workers
+    loader = DataLoader(**loader_kwargs)
 
     dino_session = DINOSession(device=device)
 
@@ -355,6 +359,7 @@ def train(
             dino_session.update_teacher(momentum=0.996)
 
         dino_session.save(dir_ckpt / f"epoch_{epoch:03d}.pth")
+        logger.info(f"Epoch {epoch:03d}, Loss: {loss.item():.4f}")
 
 
 if __name__ == "__main__":
@@ -377,7 +382,18 @@ if __name__ == "__main__":
         help="Number of local crops to generate per image",
     )
     argument_parser.add_argument("--disable-amp", action="store_true", help="Disable mixed precision training")
-    argument_parser.add_argument("--num-workers", type=int, default=2, help="Number of DataLoader workers")
+    argument_parser.add_argument("--num-workers", type=int, default=16, help="Number of DataLoader workers")
+    argument_parser.add_argument(
+        "--prefetch-factor",
+        type=int,
+        default=4,
+        help="Number of batches prefetched per worker when num_workers > 0",
+    )
+    argument_parser.add_argument(
+        "--disable-persistent-workers",
+        action="store_true",
+        help="Disable persistent DataLoader workers",
+    )
     args = argument_parser.parse_args()
     train(
         args.num_epochs,
@@ -387,4 +403,6 @@ if __name__ == "__main__":
         num_local_crops=args.num_local_crops,
         use_amp=not args.disable_amp,
         num_workers=args.num_workers,
+        prefetch_factor=args.prefetch_factor,
+        persistent_workers=not args.disable_persistent_workers,
     )
