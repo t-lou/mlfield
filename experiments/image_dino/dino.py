@@ -127,10 +127,11 @@ def train(
 
     if start_epoch > 0 and (dir_ckpt / f"epoch_{start_epoch:03d}.pth").exists():
         dino_session.load(dir_ckpt / f"epoch_{start_epoch:03d}.pth")
-        logger.info(f"Resuming training from epoch {start_epoch}")
+        next_epoch = start_epoch + 1
+        logger.info(f"Resuming training from epoch {start_epoch}; next epoch is {next_epoch}")
     else:
         logger.info(f"Starting training from scratch at epoch {start_epoch}")
-        start_epoch = 0
+        next_epoch = 0
 
     student = dino_session.student
     teacher = dino_session.teacher
@@ -149,7 +150,8 @@ def train(
         f"amp={'enabled' if scaler is not None else 'disabled'}"
     )
 
-    for epoch in range(start_epoch, num_epochs):
+    stop_epoch = next_epoch + num_epochs
+    for epoch in range(next_epoch, stop_epoch):
         for imgs in loader:
             imgs = [img.to(device, non_blocking=True) for img in imgs]
 
@@ -181,7 +183,12 @@ if __name__ == "__main__":
     configure_logger("dino")
 
     argument_parser = argparse.ArgumentParser(description="DINO Training")
-    argument_parser.add_argument("--num-epochs", type=int, default=100, help="Number of training epochs")
+    argument_parser.add_argument(
+        "--num-epochs",
+        type=int,
+        default=100,
+        help="Number of epochs to run in this invocation",
+    )
     argument_parser.add_argument("--batch-size", type=int, default=32, help="Batch size for training")
     argument_parser.add_argument("--start-epoch", type=int, default=-1, help="Starting epoch for training")
     argument_parser.add_argument(

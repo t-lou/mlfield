@@ -44,7 +44,7 @@ class DINOHead(nn.Module):
         """Forward pass through the DINO head, returning normalized logits."""
         x = self.mlp(x)  # features
         x = self.last_layer(x)  # logits
-        x = nn.functional.normalize(x, dim=-1)  # L2‑normalize final output
+        x = nn.functional.normalize(x.float(), dim=-1, eps=1e-6)  # keep normalization stable under AMP
         return x
 
 

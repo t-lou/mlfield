@@ -35,8 +35,8 @@ class DINOLoss(nn.Module):
             teacher_outputs: List of tensors from the teacher model for each global crop.
             global_crop_indices: Indices of the global crops in the student outputs.
         """
-        student_out = [s / self.student_temp for s in student_outputs]
-        teacher_out = [(t - self.center) / self.teacher_temp for t in teacher_outputs]
+        student_out = [s.float() / self.student_temp for s in student_outputs]
+        teacher_out = [(t.float() - self.center.float()) / self.teacher_temp for t in teacher_outputs]
 
         student_probs = [F.log_softmax(s, dim=-1) for s in student_out]
         teacher_probs = [F.softmax(t, dim=-1) for t in teacher_out]
@@ -62,9 +62,9 @@ class DINOLoss(nn.Module):
         total_loss /= n_terms
 
         # Update the center of the teacher outputs using momentum
-        batch_center = torch.cat(teacher_outputs).mean(dim=0, keepdim=True)
+        batch_center = torch.cat([t.float() for t in teacher_outputs]).mean(dim=0, keepdim=True)
         # Update the center with momentum to stabilize training
-        self.center = self.center * self.center_momentum + batch_center * (1 - self.center_momentum)
+        self.center.mul_(self.center_momentum).add_(batch_center.to(self.center.dtype), alpha=1 - self.center_momentum)
 
         return total_loss
 
