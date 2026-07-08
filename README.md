@@ -59,6 +59,12 @@ bash .devcontainer/create_base_container.sh  # create mlfield_cuda_base:latest
 docker tag mlfield_cuda_base:latest tlou/mlfield_cuda_base:latest
 ```
 
+If you already have everything installed (mainly pytorch), then just load the env var to make import work:
+
+```bash
+source .devcontainer/envrc
+```
+
 ---
 
 ### 📁 Optional Dataset Mount (`DATASET_DIR` via `local.env`)
