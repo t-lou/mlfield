@@ -14,9 +14,6 @@ from components.vit.dino_defs import DINOConfig
 from components.vit.dino_session import DINOSession
 from components.vit.dino_transform import DINOTransform
 
-# Try to reuse the MAE dataset.
-DEFAULG_DATA_ROOT_DIR = "./data/kaggle/imagenet/"
-
 
 def dino_collate_fn(batch):
     """Collate a batch of multi-crop samples into a list of crop tensors."""
@@ -31,7 +28,6 @@ def dino_collate_fn(batch):
 def train(
     config: DINOConfig,
     num_epochs=100,
-    data_root=DEFAULG_DATA_ROOT_DIR,
     start_epoch=-1,
     use_amp=True,
     num_workers=8,
@@ -39,8 +35,6 @@ def train(
     persistent_workers=True,
 ):
     """Train the DINO model on ImageNet 256x256 dataset with multi-crop augmentation."""
-    if not Path(data_root).exists():
-        raise ValueError(f"Data root directory {data_root} does not exist.")
 
     dir_ckpt = Path("./dino_checkpoints")
     if not dir_ckpt.exists():

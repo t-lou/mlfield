@@ -66,7 +66,7 @@ VARIANT_CONFIG = {
         dataset_size=1_281_167,
         image_size=256,  # ↑ use full 256 for better spatial detail
         patch_size=16,
-        batch_size=16 * 1,
+        batch_size=2 * 1,
         # ---------------- Encoder ----------------
         encoder_dim=768,
         encoder_depth=12,

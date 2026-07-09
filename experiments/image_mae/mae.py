@@ -22,16 +22,16 @@ Improvement Opportunities:
 """
 
 import argparse
-import os
 import zipfile
 from pathlib import Path
 from typing import Dict, Optional, Tuple
 
 import matplotlib.pyplot as plt
 import torch
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
 
+from components.dataset.image_only_dataset import ImageOnlyDataset
 from components.utils.device import get_device, resolve_num_workers
 from components.utils.logger import configure_logger, logger
 from components.vit.mae import MAE, VARIANT_CONFIG, MAEVariantConfig
@@ -46,37 +46,26 @@ DEFAULT_KAGGLE_DATASETS: Dict[str, str] = {
 }
 
 
-class ImageOnlyDataset(Dataset):
-    """
-    Wrapper dataset that extracts only images from label-aware datasets.
+def make_dataloader_args(batch_size: int, num_workers: Optional[int] = None):
+    resolved_num_workers = resolve_num_workers(num_workers)
+    loader_kwargs = {
+        "batch_size": batch_size,
+        "shuffle": True,
+        "drop_last": True,
+        "pin_memory": True,
+    }
+    if resolved_num_workers > 0:
+        loader_kwargs.update(
+            {
+                "num_workers": resolved_num_workers,
+                "prefetch_factor": 2,
+                "persistent_workers": True,
+            }
+        )
+    else:
+        loader_kwargs["num_workers"] = 0
 
-    Used to convert classification datasets (which return (image, label) tuples)
-    into image-only datasets for unsupervised pre-training.
-    """
-
-    def __init__(self, dataset: Dataset) -> None:
-        """
-        Args:
-            dataset: A dataset that returns tuples containing image as first element
-        """
-        self.dataset = dataset
-
-    def __len__(self) -> int:
-        """Return total number of samples in dataset."""
-        return len(self.dataset)
-
-    def __getitem__(self, idx: int) -> torch.Tensor:
-        """
-        Get image at given index (discarding labels and other metadata).
-
-        Args:
-            idx: Index of sample to retrieve
-
-        Returns:
-            Image tensor
-        """
-        img, *_ = self.dataset[idx]
-        return img
+    return loader_kwargs
 
 
 def make_cifar10_dataloader(root: str, batch_size: int, num_workers: Optional[int] = None) -> DataLoader:
@@ -113,42 +102,25 @@ def make_cifar10_dataloader(root: str, batch_size: int, num_workers: Optional[in
         transform=transform,
     )
 
-    resolved_num_workers = resolve_num_workers(num_workers)
-    loader_kwargs = {
-        "batch_size": batch_size,
-        "shuffle": True,
-        "drop_last": True,
-        "pin_memory": True,
-    }
-    if resolved_num_workers > 0:
-        loader_kwargs.update(
-            {
-                "num_workers": resolved_num_workers,
-                "prefetch_factor": 2,
-                "persistent_workers": True,
-            }
-        )
-    else:
-        loader_kwargs["num_workers"] = 0
+    loader_kwargs = make_dataloader_args(batch_size=batch_size, num_workers=num_workers)
 
-    return DataLoader(ImageOnlyDataset(dataset), **loader_kwargs)
+    return DataLoader(dataset, **loader_kwargs)
 
 
-def make_imagenet_dataloader(
-    root: str,
+def make_dataloader_from_classification_dataset(
+    data_dirs: list[str],
     batch_size: int,
     image_size: int = 224,
     num_workers: Optional[int] = None,
     train: bool = True,
 ) -> DataLoader:
     """
-    Create ImageNet dataloader for MAE pre-training or fine-tuning.
+    Create dataloader which are designed for classification.
 
-    ImageNet-1K has 1.2M training samples at variable resolutions.
-    Images are resized to `image_size` for ViT compatibility.
+    Images for classification tend to be similar in size and scale, and needs less cropping.
 
     Args:
-        root: Root directory containing train/ and val/ subdirectories
+        data_dirs: List of directories containing datasets.
         batch_size: Number of samples per batch
         image_size: Size to resize and crop images to
         num_workers: Number of parallel data loading workers
@@ -161,9 +133,6 @@ def make_imagenet_dataloader(
         FileNotFoundError: If expected directory structure is not found
 
     Note:
-        - ImageNet must be manually downloaded and organized
-        - Expected layout: <root>/train/<class_name>/*.JPEG
-        - Shuffling enabled only for training split
         - Images normalized with ImageNet statistics
 
     Improvement: Consider adding:
@@ -180,48 +149,27 @@ def make_imagenet_dataloader(
         ]
     )
 
-    split = "train" if train else "val"
-    dataset = datasets.ImageFolder(
-        root=os.path.join(root, split),
-        transform=transform,
-    )
+    dataset = ImageOnlyDataset(data_dirs, transform=transform)
 
-    resolved_num_workers = resolve_num_workers(num_workers)
-    loader_kwargs = {
-        "batch_size": batch_size,
-        "shuffle": train,
-        "drop_last": True,
-        "pin_memory": True,
-    }
-    if resolved_num_workers > 0:
-        loader_kwargs.update(
-            {
-                "num_workers": resolved_num_workers,
-                "prefetch_factor": 2,
-                "persistent_workers": True,
-            }
-        )
-    else:
-        loader_kwargs["num_workers"] = 0
+    loader_kwargs = make_dataloader_args(batch_size=batch_size, num_workers=num_workers)
 
     return DataLoader(ImageOnlyDataset(dataset), **loader_kwargs)
 
 
-def make_coco_dataloader(
-    root: str,
+def make_dataloader_from_detection_dataset(
+    data_dirs: list[str],
     batch_size: int,
     image_size: int = 224,
     num_workers: Optional[int] = None,
     train: bool = True,
 ) -> DataLoader:
     """
-    Create COCO 2017 dataloader for MAE pre-training.
+    Create dataloader which are designed for detection.
 
-    COCO has 118K training images with diverse objects, scenes, and textures.
-    Images are resized and randomly cropped to `image_size` for consistency.
+    Detection dataset contains more objects and requires more cropping.
 
     Args:
-        root: Root directory containing train2017, val2017, and annotations/
+        data_dirs: List of directories containing datasets.
         batch_size: Number of samples per batch
         image_size: Size to resize and crop images to
         num_workers: Number of parallel data loading workers
@@ -232,9 +180,6 @@ def make_coco_dataloader(
 
     Note:
         - Uses RandomResizedCrop for scale and aspect ratio augmentation
-        - Expected layout: <root>/train2017/, <root>/val2017/, <root>/annotations/
-        - Annotations are loaded but discarded (image-only dataset)
-        - Good dataset for learning diverse visual features
 
     Improvement: Consider adding:
         - Custom collate_fn to handle variable-size images
@@ -250,67 +195,11 @@ def make_coco_dataloader(
         ]
     )
 
-    split = "train" if train else "val"
-    image_root = os.path.join(root, f"{split}2017")
-    ann_file = os.path.join(root, "annotations", f"instances_{split}2017.json")
+    dataset = ImageOnlyDataset(data_dirs, transform=transform)
 
-    dataset = datasets.CocoDetection(
-        root=image_root,
-        annFile=ann_file,
-        transform=transform,
-    )
-
-    resolved_num_workers = resolve_num_workers(num_workers)
-    loader_kwargs = {
-        "batch_size": batch_size,
-        "shuffle": train,
-        "drop_last": True,
-        "pin_memory": True,
-    }
-    if resolved_num_workers > 0:
-        loader_kwargs.update(
-            {
-                "num_workers": resolved_num_workers,
-                "prefetch_factor": 2,
-                "persistent_workers": True,
-            }
-        )
-    else:
-        loader_kwargs["num_workers"] = 0
+    loader_kwargs = make_dataloader_args(batch_size=batch_size, num_workers=num_workers)
 
     return DataLoader(ImageOnlyDataset(dataset), **loader_kwargs)
-
-
-def _find_dataset_root_by_markers(base_dir: Path, required_dirs: Tuple[str, ...]) -> Optional[Path]:
-    """
-    Recursively find a directory containing all required marker subdirectories.
-
-    Searches from shallowest to deepest paths to prefer top-level directories.
-    Useful for finding dataset roots when they may be nested in archive extractions.
-
-    Args:
-        base_dir: Starting directory for search
-        required_dirs: Tuple of directory names that must all be present
-
-    Returns:
-        Path to directory containing all markers, or None if not found
-
-    Example:
-        >>> root = _find_dataset_root_by_markers(Path('./data'), ('train', 'val'))
-        # Returns path containing both train/ and val/ subdirectories
-
-    Improvement: Consider adding:
-        - Symbolic link resolution
-        - Caching of found paths for repeated searches
-        - Timeout for very deep directory structures
-    """
-    candidates = [base_dir]
-    candidates.extend(p for p in base_dir.rglob("*") if p.is_dir())
-
-    for path in candidates:
-        if all((path / marker).exists() for marker in required_dirs):
-            return path
-    return None
 
 
 def _download_kaggle_dataset(dataset_slug: str, dest_dir: Path) -> None:
@@ -358,101 +247,6 @@ def _download_kaggle_dataset(dataset_slug: str, dest_dir: Path) -> None:
         extract_dir = zip_path.parent
         with zipfile.ZipFile(zip_path, "r") as zf:
             zf.extractall(extract_dir)
-
-
-def resolve_variant_data_root(
-    variant: str,
-    data_root: str,
-    use_kaggle: bool,
-    kaggle_imagenet_dataset: str,
-    kaggle_imagenet_mini_dataset: str,
-    kaggle_coco_dataset: str,
-) -> str:
-    """
-    Resolve dataset root path for a given MAE variant with auto-download support.
-
-    Handles four different dataset types with fallback logic:
-    - cifar10: Auto-downloads if not present
-    - imagenet: Looks for existing structure, optionally downloads from Kaggle
-    - imagenet_mini: Looks for existing structure, optionally downloads from Kaggle
-    - coco: Looks for existing structure, optionally downloads from Kaggle
-
-    Args:
-        variant: Dataset variant ('cifar10', 'imagenet', 'imagenet_mini', or 'coco')
-        data_root: Base directory to search for or download datasets
-        use_kaggle: Enable Kaggle auto-download if dataset not found
-        kaggle_imagenet_dataset: Kaggle slug for ImageNet (256x256) alternative
-        kaggle_imagenet_mini_dataset: Kaggle slug for ImageNet-mini alternative
-        kaggle_coco_dataset: Kaggle slug for COCO alternative
-
-    Returns:
-        Resolved path to dataset root
-
-    Raises:
-        FileNotFoundError: If dataset not found and use_kaggle is False
-        ValueError: If variant is not recognized
-
-    Note:
-        - CIFAR-10 downloads automatically via torchvision
-        - ImageNet and ImageNet-Mini requires manual download or Kaggle credentials
-        - ImageNet is ImageNet-256 variant (1.2M images, 256x256), needs preprocessing
-        - COCO download is large (~20GB compressed)
-
-    Improvement: Consider adding:
-        - Parallel downloads for large files
-        - Dataset integrity verification
-        - Support for custom dataset paths
-    """
-    root = Path(data_root)
-    if variant == "cifar10":
-        return str(root)
-
-    if variant in {"imagenet", "imagenet_mini"}:
-        prepared_root = _find_dataset_root_by_markers(root, ("train", "val"))
-        if prepared_root is not None:
-            return str(prepared_root)
-
-        if not use_kaggle:
-            raise FileNotFoundError(
-                f"Could not find ImageNet layout under {root}. Expected directories: train/ and val/."
-            )
-
-        cache_dir = root / "kaggle" / variant
-        prepared_root = _find_dataset_root_by_markers(cache_dir, ("train", "val"))
-        if prepared_root is None:
-            # imagenet_mini is already split into train/val; imagenet-256 is not, so we place its download under train/.
-            if variant == "imagenet_mini":
-                _download_kaggle_dataset(kaggle_imagenet_mini_dataset, cache_dir)
-            else:
-                dir_train = cache_dir / "train"
-                _download_kaggle_dataset(kaggle_imagenet_dataset, dir_train)
-                dir_val = cache_dir / "val"
-                dir_val.mkdir(parents=True, exist_ok=True)
-            prepared_root = _find_dataset_root_by_markers(cache_dir, ("train", "val"))
-
-        if prepared_root is None:
-            raise FileNotFoundError("Downloaded ImageNet dataset does not expose train/ and val/ directories.")
-        return str(prepared_root)
-
-    # coco
-    prepared_root = _find_dataset_root_by_markers(root, ("train2017", "val2017", "annotations"))
-    if prepared_root is not None:
-        return str(prepared_root)
-
-    if not use_kaggle:
-        raise FileNotFoundError(
-            f"Could not find COCO layout under {root}. Expected train2017/, val2017/, annotations/."
-        )
-
-    cache_dir = root / "kaggle" / "coco"
-    prepared_root = _find_dataset_root_by_markers(cache_dir, ("train2017", "val2017", "annotations"))
-    if prepared_root is None:
-        _download_kaggle_dataset(kaggle_coco_dataset, cache_dir)
-        prepared_root = _find_dataset_root_by_markers(cache_dir, ("train2017", "val2017", "annotations"))
-
-    if prepared_root is None:
-        raise FileNotFoundError("Downloaded COCO dataset does not expose train2017/, val2017/, annotations/.")
-    return str(prepared_root)
 
 
 def mae_visualize(model: MAE, imgs: torch.Tensor, save_path: Path) -> None:
@@ -520,10 +314,6 @@ def mae_visualize(model: MAE, imgs: torch.Tensor, save_path: Path) -> None:
 def build_model_and_loader(
     variant: str,
     data_root: str = "./data",
-    use_kaggle: bool = True,
-    kaggle_imagenet_dataset: str = DEFAULT_KAGGLE_DATASETS["imagenet"],
-    kaggle_imagenet_mini_dataset: str = DEFAULT_KAGGLE_DATASETS["imagenet_mini"],
-    kaggle_coco_dataset: str = DEFAULT_KAGGLE_DATASETS["coco"],
     num_workers: Optional[int] = None,
 ) -> Tuple[MAEVariantConfig, MAE, DataLoader]:
     """
@@ -537,9 +327,6 @@ def build_model_and_loader(
     Args:
         variant: Model variant ('cifar10', 'imagenet', 'coco')
         data_root: Root directory for datasets
-        use_kaggle: Enable Kaggle auto-download
-        kaggle_imagenet_dataset: Kaggle slug for ImageNet
-        kaggle_coco_dataset: Kaggle slug for COCO
 
     Returns:
         Tuple of (config, model, dataloader)
@@ -553,27 +340,19 @@ def build_model_and_loader(
     model.load_checkpoint()
 
     cfg = VARIANT_CONFIG[variant]
-    resolved_root = resolve_variant_data_root(
-        variant=variant,
-        data_root=data_root,
-        use_kaggle=use_kaggle,
-        kaggle_imagenet_dataset=kaggle_imagenet_dataset,
-        kaggle_imagenet_mini_dataset=kaggle_imagenet_mini_dataset,
-        kaggle_coco_dataset=kaggle_coco_dataset,
-    )
 
     if variant == "cifar10":
-        loader = make_cifar10_dataloader(root=resolved_root, batch_size=cfg.batch_size, num_workers=num_workers)
+        loader = make_cifar10_dataloader(root=data_root, batch_size=cfg.batch_size, num_workers=num_workers)
     elif variant in {"imagenet", "imagenet_mini"}:
-        loader = make_imagenet_dataloader(
-            root=resolved_root,
+        loader = make_dataloader_from_classification_dataset(
+            data_dirs=[data_root],
             batch_size=cfg.batch_size,
             image_size=cfg.image_size,
             num_workers=num_workers,
         )
     else:
-        loader = make_coco_dataloader(
-            root=resolved_root,
+        loader = make_dataloader_from_detection_dataset(
+            data_dirs=[data_root],
             batch_size=cfg.batch_size,
             image_size=cfg.image_size,
             num_workers=num_workers,
@@ -587,10 +366,6 @@ def train(
     steps: int = -1,
     data_root: str = "./data",
     epoch: int = 0,
-    use_kaggle: bool = True,
-    kaggle_imagenet_dataset: str = DEFAULT_KAGGLE_DATASETS["imagenet"],
-    kaggle_imagenet_mini_dataset: str = DEFAULT_KAGGLE_DATASETS["imagenet_mini"],
-    kaggle_coco_dataset: str = DEFAULT_KAGGLE_DATASETS["coco"],
     num_workers: Optional[int] = None,
 ) -> None:
     """
@@ -609,9 +384,6 @@ def train(
         steps: Max steps per epoch (-1 = full epoch)
         data_root: Root directory for datasets
         epoch: Epoch number (used for logging/visualization)
-        use_kaggle: Enable Kaggle auto-download
-        kaggle_imagenet_dataset: Kaggle slug for ImageNet
-        kaggle_coco_dataset: Kaggle slug for COCO
 
     Notes:
         - Uses AdamW optimizer with standard MAE hyperparameters
@@ -631,10 +403,6 @@ def train(
     cfg, model, loader = build_model_and_loader(
         variant,
         data_root=data_root,
-        use_kaggle=use_kaggle,
-        kaggle_imagenet_dataset=kaggle_imagenet_dataset,
-        kaggle_imagenet_mini_dataset=kaggle_imagenet_mini_dataset,
-        kaggle_coco_dataset=kaggle_coco_dataset,
     )
     device = get_device()
     model = model.to(device)
@@ -704,36 +472,13 @@ def main() -> None:
         "--variant", type=str, default="cifar10", choices=["cifar10", "imagenet", "imagenet_mini", "coco"]
     )
     parser.add_argument("--steps", type=int, default=-1)
-    parser.add_argument("--epochs", type=int, default=10)
+    parser.add_argument("--num-epochs", type=int, default=10)
     parser.add_argument("--start-epoch", type=int, default=0)
     parser.add_argument(
         "--data-root",
         type=str,
         default="./data",
-        help="Root directory for CIFAR-10 or ImageNet. CIFAR-10 downloads here. ImageNet must be prepared locally.",
-    )
-    parser.add_argument(
-        "--no-kaggle",
-        action="store_true",
-        help="Disable Kaggle auto-download for ImageNet/COCO. Requires datasets to already exist in --data-root.",
-    )
-    parser.add_argument(
-        "--kaggle-imagenet-dataset",
-        type=str,
-        default=DEFAULT_KAGGLE_DATASETS["imagenet"],
-        help="Kaggle dataset slug for ImageNet-256 data (owner/dataset).",
-    )
-    parser.add_argument(
-        "--kaggle-imagenet-mini-dataset",
-        type=str,
-        default=DEFAULT_KAGGLE_DATASETS["imagenet_mini"],
-        help="Kaggle dataset slug for ImageNet-mini data (owner/dataset).",
-    )
-    parser.add_argument(
-        "--kaggle-coco-dataset",
-        type=str,
-        default=DEFAULT_KAGGLE_DATASETS["coco"],
-        help="Kaggle dataset slug for COCO-style data (owner/dataset).",
+        help="Root directory for datasets.",
     )
     parser.add_argument(
         "--num-workers",
@@ -747,17 +492,13 @@ def main() -> None:
         supported = ", ".join(sorted(VARIANT_CONFIG))
         raise ValueError(f"Unknown variant '{args.variant}'. Supported: {supported}")
 
-    for epoch_rel in range(args.epochs):
+    for epoch_rel in range(args.num_epochs):
         epoch = args.start_epoch + epoch_rel
         train(
             variant=args.variant,
             steps=args.steps,
             data_root=args.data_root,
             epoch=epoch,
-            use_kaggle=not args.no_kaggle,
-            kaggle_imagenet_dataset=args.kaggle_imagenet_dataset,
-            kaggle_imagenet_mini_dataset=args.kaggle_imagenet_mini_dataset,
-            kaggle_coco_dataset=args.kaggle_coco_dataset,
             num_workers=args.num_workers,
         )
 
