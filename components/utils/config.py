@@ -1,0 +1,35 @@
+from dataclasses import asdict, fields
+from pathlib import Path
+from typing import Type, TypeVar
+
+import yaml
+
+from components.utils.logger import logger
+
+T = TypeVar("T")
+
+
+def dump_yaml(obj: T, path: Path) -> None:
+    with path.open("w", encoding="utf-8") as f:
+        yaml.safe_dump(asdict(obj), f)
+
+
+def create_default(cls: Type[T], path: Path) -> None:
+    obj = cls(**{f.name: f.default if f.default is not None else None for f in fields(cls)})
+    print(type(obj))
+    print(obj)
+    dump_yaml(obj, path)
+
+
+def load_yaml(path: Path, cls: Type[T]) -> T:
+    if not path.exists():
+        logger.info(f"Cannot find config {path}, with create with default values.")
+        create_default(cls, path)
+
+    with path.open(encoding="utf-8") as f:
+        data = yaml.safe_load(f) or {}
+
+    allowed = {f.name for f in fields(cls)}
+    filtered = {k: v for k, v in data.items() if k in allowed}
+
+    return cls(**filtered)

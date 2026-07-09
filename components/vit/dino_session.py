@@ -5,14 +5,14 @@ import torch.nn as nn
 from torch.nn import functional as F
 
 from components.utils.device import get_device
-from components.vit.dino_defs import MODEL_BASE_RES
+from components.vit.dino_defs import DINOConfig
 from components.vit.dino_model import DINOModel
 
 
 class DINOLoss(nn.Module):
     """DINO loss function for self-supervised learning, comparing student and teacher outputs across multiple crops."""
 
-    def __init__(self, out_dim=65536, teacher_temp=0.04, student_temp=0.1, center_momentum=0.9):
+    def __init__(self, out_dim, teacher_temp, student_temp, center_momentum):
         """Initialize the DINO loss with temperature parameters and center momentum.
 
         Args:
@@ -72,7 +72,7 @@ class DINOLoss(nn.Module):
 class DINOSession(nn.Module):
     def __init__(
         self,
-        out_dim=65536,
+        config: DINOConfig,
         teacher_temp=0.04,
         student_temp=0.1,
         center_momentum=0.9,
@@ -82,15 +82,18 @@ class DINOSession(nn.Module):
         super().__init__()
         self.device = device if device is not None else get_device()
         self.loss_fn = DINOLoss(
-            out_dim=out_dim, teacher_temp=teacher_temp, student_temp=student_temp, center_momentum=center_momentum
+            out_dim=config.out_dim,
+            teacher_temp=teacher_temp,
+            student_temp=student_temp,
+            center_momentum=center_momentum,
         ).to(self.device)
 
         # Create student and teacher models with the same encoder configuration.
         # The crop size differs at runtime via the transforms, but the positional
         # embedding buffer must stay identical so teacher initialization can copy
         # the student weights and EMA updates remain compatible.
-        self.student = DINOModel(base_res=MODEL_BASE_RES, out_dim=out_dim).to(self.device)
-        self.teacher = DINOModel(base_res=MODEL_BASE_RES, out_dim=out_dim).to(self.device)
+        self.student = DINOModel(config).to(self.device)
+        self.teacher = DINOModel(config).to(self.device)
 
         # Initialize teacher with student weights and freeze teacher parameters.
         self.teacher.load_state_dict(self.student.state_dict())

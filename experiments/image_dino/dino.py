@@ -4,48 +4,17 @@ from pathlib import Path
 
 import torch
 from torch.utils.data import DataLoader
-from torchvision import transforms
 
-from components.data.image_only_dataset import ImageOnlyDataset
+from components.dataset.image_only_dataset import ImageOnlyDataset
+from components.utils.config import load_yaml
 from components.utils.device import get_device, resolve_num_workers
 from components.utils.logger import configure_logger, logger
-from components.vit.dino_defs import STUDENT_BASE_RES, TEACHER_BASE_RES
+from components.vit.dino_defs import DINOConfig
 from components.vit.dino_session import DINOSession
+from components.vit.dino_transform import DINOTransform
 
 # Try to reuse the MAE dataset.
 DEFAULG_DATA_ROOT_DIR = "./data/kaggle/imagenet/"
-
-
-# Global and local crop transformations for DINO
-GLOBAL_TRANSFORM = transforms.Compose(
-    [
-        transforms.RandomResizedCrop(TEACHER_BASE_RES, scale=(0.4, 1.0)),
-        transforms.RandomHorizontalFlip(),
-        transforms.ColorJitter(0.4, 0.4, 0.4, 0.1),
-        transforms.RandomGrayscale(p=0.2),
-        transforms.ToTensor(),
-    ]
-)
-
-LOCAL_TRANSFORM = transforms.Compose(
-    [
-        transforms.RandomResizedCrop(STUDENT_BASE_RES, scale=(0.05, 0.4)),
-        transforms.RandomHorizontalFlip(),
-        transforms.ColorJitter(0.4, 0.4, 0.4, 0.1),
-        transforms.RandomGrayscale(p=0.2),
-        transforms.ToTensor(),
-    ]
-)
-
-
-def multicrop_augment(img, num_global_crops=2, num_local_crops=8):
-    """Generate multiple crops of the input image for DINO training."""
-    crops = []
-    for _ in range(num_global_crops):
-        crops.append(GLOBAL_TRANSFORM(img))
-    for _ in range(num_local_crops):
-        crops.append(LOCAL_TRANSFORM(img))
-    return crops
 
 
 def dino_collate_fn(batch):
@@ -59,12 +28,10 @@ def dino_collate_fn(batch):
 
 
 def train(
+    config: DINOConfig,
     num_epochs=100,
-    bs=8,
     data_root=DEFAULG_DATA_ROOT_DIR,
     start_epoch=-1,
-    num_global_crops=2,
-    num_local_crops=8,
     use_amp=True,
     num_workers=8,
     prefetch_factor=4,
@@ -79,14 +46,15 @@ def train(
         dir_ckpt.mkdir(parents=True, exist_ok=True)
 
     device = get_device()
+    dino_transform = DINOTransform(config)
     dataset = ImageOnlyDataset(
-        root_dir=data_root,
-        transform=lambda x: multicrop_augment(x, num_global_crops, num_local_crops),
+        root_dirs=config.data_dirs,
+        transform=lambda x: dino_transform(x),
     )
     num_workers = resolve_num_workers(num_workers)
     loader_kwargs = {
         "dataset": dataset,
-        "batch_size": bs,
+        "batch_size": config.batch_size,
         "shuffle": True,
         "num_workers": num_workers,
         "collate_fn": dino_collate_fn,
@@ -97,7 +65,7 @@ def train(
         loader_kwargs["persistent_workers"] = persistent_workers
     loader = DataLoader(**loader_kwargs)
 
-    dino_session = DINOSession(device=device)
+    dino_session = DINOSession(config, device=device)
 
     if start_epoch > 0 and (dir_ckpt / f"epoch_{start_epoch:03d}.pth").exists():
         dino_session.load(dir_ckpt / f"epoch_{start_epoch:03d}.pth")
@@ -120,7 +88,7 @@ def train(
         scaler = None
 
     logger.info(
-        f"Training with {num_global_crops} global crops, {num_local_crops} local crops, "
+        f"Training with {config.num_teachers} global crops, {config.num_students} local crops, "
         f"amp={'enabled' if scaler is not None else 'disabled'}"
     )
 
@@ -134,9 +102,9 @@ def train(
                 student_outputs = [student(crop) for crop in imgs]
 
                 with torch.inference_mode():
-                    teacher_outputs = [teacher(imgs[i]) for i in range(num_global_crops)]
+                    teacher_outputs = [teacher(imgs[i]) for i in range(config.num_teachers)]
 
-                loss = criterion(student_outputs, teacher_outputs, global_crop_indices=list(range(num_global_crops)))
+                loss = criterion(student_outputs, teacher_outputs, global_crop_indices=list(range(config.num_teachers)))
 
             optimizer.zero_grad(set_to_none=True)
             if scaler is not None:
@@ -158,25 +126,15 @@ if __name__ == "__main__":
 
     argument_parser = argparse.ArgumentParser(description="DINO Training")
     argument_parser.add_argument(
+        "--path-config", type=str, default="./experiments/image_dino/dino_config.yaml", help="Path for the configs"
+    )
+    argument_parser.add_argument(
         "--num-epochs",
         type=int,
         default=100,
         help="Number of epochs to run in this invocation",
     )
-    argument_parser.add_argument("--batch-size", type=int, default=32, help="Batch size for training")
     argument_parser.add_argument("--start-epoch", type=int, default=-1, help="Starting epoch for training")
-    argument_parser.add_argument(
-        "--num-global-crops",
-        type=int,
-        default=2,
-        help="Number of global crops to generate per image",
-    )
-    argument_parser.add_argument(
-        "--num-local-crops",
-        type=int,
-        default=8,
-        help="Number of local crops to generate per image",
-    )
     argument_parser.add_argument("--disable-amp", action="store_true", help="Disable mixed precision training")
     argument_parser.add_argument(
         "--num-workers",
@@ -196,12 +154,14 @@ if __name__ == "__main__":
         help="Disable persistent DataLoader workers",
     )
     args = argument_parser.parse_args()
+
+    path_config = Path(args.path_config)
+    config = load_yaml(path_config, DINOConfig)
+
     train(
+        config,
         args.num_epochs,
-        args.batch_size,
         start_epoch=args.start_epoch,
-        num_global_crops=args.num_global_crops,
-        num_local_crops=args.num_local_crops,
         use_amp=not args.disable_amp,
         num_workers=args.num_workers,
         prefetch_factor=args.prefetch_factor,

@@ -10,9 +10,8 @@ from components.utils.logger import logger
 class ImageOnlyDataset(torch.utils.data.Dataset):
     """Dataset for images without annotation."""
 
-    def __init__(self, root_dir: str, transform: Optional[Callable] = None):
+    def __init__(self, root_dirs: list[str], transform: Optional[Callable] = None):
         """Initialize the dataset with the root directory and transformation."""
-        self.root_dir = root_dir
         self._transform = transform
 
         glob_patterns = (
@@ -21,8 +20,9 @@ class ImageOnlyDataset(torch.utils.data.Dataset):
             "*.png",
         )
         self.image_paths = []
-        for pattern in glob_patterns:
-            self.image_paths.extend(Path(root_dir).rglob(pattern))
+        for root_dir in root_dirs:
+            for pattern in glob_patterns:
+                self.image_paths.extend(Path(root_dir).rglob(pattern))
 
         logger.info(f"Found {len(self.image_paths)} images in {root_dir}")
 
