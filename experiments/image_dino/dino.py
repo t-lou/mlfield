@@ -3,10 +3,10 @@ from contextlib import nullcontext
 from pathlib import Path
 
 import torch
-from PIL import Image
 from torch.utils.data import DataLoader
 from torchvision import transforms
 
+from components.data.image_only_dataset import ImageOnlyDataset
 from components.utils.device import get_device, resolve_num_workers
 from components.utils.logger import configure_logger, logger
 from components.vit.dino_defs import STUDENT_BASE_RES, TEACHER_BASE_RES
@@ -58,30 +58,6 @@ def dino_collate_fn(batch):
     return [torch.stack([sample[i] for sample in batch], dim=0) for i in range(num_crops)]
 
 
-class Imagenet256Dataset(torch.utils.data.Dataset):
-    """Dataset for ImageNet 256x256 images with multi-crop augmentation."""
-
-    def __init__(self, root_dir: str, transform: callable, num_global_crops=2, num_local_crops=8):
-        """Initialize the dataset with the root directory and transformation."""
-        self.root_dir = root_dir
-        self.transform = transform
-        self.num_global_crops = num_global_crops
-        self.num_local_crops = num_local_crops
-        self.image_paths = list(Path(root_dir).rglob("*.jpg")) + list(Path(root_dir).rglob("*.png"))
-        logger.info(f"Found {len(self.image_paths)} images in {root_dir}")
-
-    def __len__(self):
-        return len(self.image_paths)
-
-    def __getitem__(self, idx):
-        """Get an item from the dataset at the specified index."""
-        img_path = self.image_paths[idx]
-        with Image.open(img_path) as image:
-            image = image.convert("RGB")
-            crops = self.transform(image, self.num_global_crops, self.num_local_crops)
-        return crops
-
-
 def train(
     num_epochs=100,
     bs=8,
@@ -103,11 +79,9 @@ def train(
         dir_ckpt.mkdir(parents=True, exist_ok=True)
 
     device = get_device()
-    dataset = Imagenet256Dataset(
+    dataset = ImageOnlyDataset(
         root_dir=data_root,
-        transform=multicrop_augment,
-        num_global_crops=num_global_crops,
-        num_local_crops=num_local_crops,
+        transform=lambda x: multicrop_augment(x, num_global_crops, num_local_crops),
     )
     num_workers = resolve_num_workers(num_workers)
     loader_kwargs = {
