@@ -8,6 +8,7 @@ from torch.utils.data import DataLoader
 from components.dataset.image_only_dataset import ImageOnlyDataset
 from components.utils.config import load_yaml
 from components.utils.device import get_device, resolve_num_workers
+from components.utils.fps_logger import FpsLogger
 from components.utils.logger import configure_logger, logger
 from components.vit.dino_defs import DINOConfig
 from components.vit.dino_session import DINOSession
@@ -93,6 +94,7 @@ def train(
     )
 
     stop_epoch = next_epoch + num_epochs
+    fps_logger = FpsLogger(batch_size=config.batch_size)
     for epoch in range(next_epoch, stop_epoch):
         for imgs in loader:
             imgs = [img.to(device, non_blocking=True) for img in imgs]
@@ -116,6 +118,7 @@ def train(
                 optimizer.step()
 
             dino_session.update_teacher(momentum=0.996)
+            fps_logger.tick()
 
         dino_session.save(dir_ckpt / f"epoch_{epoch:03d}.pth")
         logger.info(f"Epoch {epoch:03d}, Loss: {loss.item():.4f}")
