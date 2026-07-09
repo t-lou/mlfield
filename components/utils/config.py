@@ -10,14 +10,16 @@ T = TypeVar("T")
 
 
 def dump_yaml(obj: T, path: Path) -> None:
+    raw_dict = asdict(obj)
+
+    ordered_dict = {f.name: raw_dict[f.name] for f in fields(obj)}
+
     with path.open("w", encoding="utf-8") as f:
-        yaml.safe_dump(asdict(obj), f)
+        yaml.safe_dump(ordered_dict, f, sort_keys=False)
 
 
 def create_default(cls: Type[T], path: Path) -> None:
     obj = cls(**{f.name: f.default if f.default is not None else None for f in fields(cls)})
-    print(type(obj))
-    print(obj)
     dump_yaml(obj, path)
 
 

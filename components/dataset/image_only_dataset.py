@@ -24,7 +24,7 @@ class ImageOnlyDataset(torch.utils.data.Dataset):
             for pattern in glob_patterns:
                 self.image_paths.extend(Path(root_dir).rglob(pattern))
 
-        logger.info(f"Found {len(self.image_paths)} images in {root_dir}")
+            logger.info(f"Collected {len(self.image_paths)} images until {root_dir}")
 
     def __len__(self):
         return len(self.image_paths)
