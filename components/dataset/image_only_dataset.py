@@ -22,7 +22,6 @@ class ImageOnlyDataset(torch.utils.data.Dataset):
         self.image_paths = []
         for root_dir in root_dirs:
             for pattern in glob_patterns:
-                print(type(root_dir), root_dir)
                 self.image_paths.extend(Path(root_dir).rglob(pattern))
 
             logger.info(f"Collected {len(self.image_paths)} images until {root_dir}")
@@ -38,3 +37,16 @@ class ImageOnlyDataset(torch.utils.data.Dataset):
             if self._transform:
                 data = self._transform(data)
         return data
+
+
+if __name__ == "__main__":
+    import sys
+
+    from components.utils.logger import configure_logger, logger
+
+    if len(sys.argv) > 1:
+        configure_logger("explore image-only-dataset")
+        # Try to load the datasets with paths
+        concated_paths = sys.argv[1]
+        root_dirs = concated_paths.split(",")
+        _ = ImageOnlyDataset(root_dirs=root_dirs, transform=None)
