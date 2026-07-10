@@ -62,8 +62,10 @@ docker tag mlfield_cuda_base:latest tlou/mlfield_cuda_base:latest
 If you already have everything installed (mainly pytorch), then just load the env var to make import work:
 
 ```bash
-source .devcontainer/envrc
+source .envrc
 ```
+
+Then run either with `python3 -m FOLDER1.FOLDER2.PART` or `runpy FOLDER1/FOLDER2/PART.py`.
 
 ---
 
