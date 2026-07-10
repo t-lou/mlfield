@@ -9,7 +9,9 @@ import torch.nn.functional as F
 from PIL import Image
 from torchvision import transforms
 
+from components.utils.config import load_yaml
 from components.utils.device import get_device
+from components.vit.dino_defs import DINOConfig
 from components.vit.dino_session import DINOSession
 
 # Replace these with your real image paths, or pass --images on CLI.
@@ -19,27 +21,6 @@ IMAGE_PATHS = [
     "./data/kaggle/coco/coco2017/val2017/000000060823.jpg",
     "./data/kaggle/coco/coco2017/val2017/000000074457.jpg",
 ]
-
-
-def infer_input_resolution(student: torch.nn.Module, fallback: int = 224) -> int:
-    """Best-effort input resolution inference from nested model attributes."""
-    candidates = [
-        ("backbone", "vit", "base_res"),
-        ("backbone", "vit", "img_size"),
-        ("backbone", "base_res"),
-    ]
-    for path in candidates:
-        ref = student
-        ok = True
-        for key in path:
-            if hasattr(ref, key):
-                ref = getattr(ref, key)
-            else:
-                ok = False
-                break
-        if ok and isinstance(ref, int):
-            return int(ref)
-    return fallback
 
 
 def preprocess_image(path: Path, image_size: int) -> Tuple[torch.Tensor, np.ndarray]:
@@ -224,9 +205,9 @@ def render_feature_grids(
     print(f"Saved: {output_path}")
 
 
-def load_student_from_checkpoint(ckpt_path: Path, device: torch.device) -> torch.nn.Module:
+def load_student_from_checkpoint(config: DINOConfig, ckpt_path: Path, device: torch.device) -> torch.nn.Module:
     """Load student via DINOSession checkpoint as requested."""
-    session = DINOSession(device=device)
+    session = DINOSession(config, device=device)
     session.load(ckpt_path)
     student = session.student.to(device)
     student.eval()
@@ -235,6 +216,9 @@ def load_student_from_checkpoint(ckpt_path: Path, device: torch.device) -> torch
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Visualize DINO attention and patch-token feature maps")
+    parser.add_argument(
+        "--path-config", type=str, default="./experiments/image_dino/dino_config.yaml", help="Path for the configs"
+    )
     parser.add_argument("--ckpt", type=str, required=True, help="Path to DINO checkpoint (.pth)")
     parser.add_argument(
         "--images",
@@ -256,8 +240,9 @@ def main() -> None:
     output_path = Path(args.output_path)
     image_paths = [Path(p) for p in (args.images if args.images is not None and len(args.images) > 0 else IMAGE_PATHS)]
 
-    student = load_student_from_checkpoint(ckpt_path, device)
-    image_size = args.image_size if args.image_size is not None else infer_input_resolution(student, fallback=224)
+    config = load_yaml(Path(args.path_config), DINOConfig)
+    student = load_student_from_checkpoint(config=config, ckpt_path=ckpt_path, device=device)
+    image_size = args.image_size if args.image_size is not None else config.model_base_res
 
     render_feature_grids(
         student=student,
