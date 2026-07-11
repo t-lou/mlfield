@@ -85,3 +85,14 @@ The compose file uses:
 
 If `DATASET_DIR` is set in `.devcontainer/local.env`, that directory is mounted read‑only at `/mnt/dataset`.
 If it’s missing, the mount safely falls back to `/dev/null`.
+
+## Dataset Usage Policy
+
+This repository contains multiple experiments using different datasets
+(e.g., Open Images, ImageNet, KITTI, audio datasets). No dataset files
+are included in this repository.
+
+Each dataset has its own license and usage terms. Users must download
+datasets from their official sources and comply with their licenses.
+
+Dataset-specific notes are provided in each experiment folder.
