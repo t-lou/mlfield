@@ -46,8 +46,7 @@ import torch.nn as nn
 from components.utils.config import load_yaml
 from components.utils.device import get_device
 from components.vit.dino_defs import DINOConfig
-from components.vit.dino_inf import load_from_checkpoint
-from components.vit.dino_vis import preprocess_image
+from components.vit.dino_inf import load_from_checkpoint, preprocess_image
 
 # --------------------------------------------------------------------------
 # Attention capture
@@ -190,7 +189,7 @@ def compute_entropy_for_checkpoint(
         catcher = register_entropy_hooks(model)
 
         for img_path in image_paths:
-            x, _rgb = preprocess_image(img_path, image_size)
+            x, _ = preprocess_image(img_path, image_size)
             x = x.unsqueeze(0).to(device)
 
             catcher.reset()

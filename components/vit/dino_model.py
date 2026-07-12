@@ -20,7 +20,7 @@ class ViTBackbone(nn.Module):
             drop_path_rate=0.1,
             qkv_bias=True,
         )
-        # assume vit.forward(x) returns CLS + patch tokens
+        # assume vit.forward(x) returns CLS only
 
     def forward(self, x):
         feats = self.vit.forward(x)  # [B, D]

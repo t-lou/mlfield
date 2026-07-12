@@ -6,7 +6,7 @@ from torch.nn import functional as F
 
 from components.utils.device import get_device
 from components.vit.dino_defs import DINOConfig
-from components.vit.dino_model import DINOModel
+from components.vit.dino_model import DINOModel, ViTBackbone
 
 
 class DINOLoss(nn.Module):
@@ -102,11 +102,11 @@ class DINOSession(nn.Module):
         self.teacher.eval()
 
     @staticmethod
-    def create_student(config: DINOConfig, device=torch.device) -> DINOModel:
+    def create_student(config: DINOConfig, device: torch.device) -> DINOModel:
         return DINOModel(config).to(device)
 
     @staticmethod
-    def create_teacher(config: DINOConfig, device=torch.device) -> DINOModel:
+    def create_teacher(config: DINOConfig, device: torch.device) -> DINOModel:
         return DINOModel(config).to(device)
 
     def forward(self, student_inputs, teacher_inputs):
@@ -123,6 +123,14 @@ class DINOSession(nn.Module):
             for ps, pt in zip(self.student.parameters(), self.teacher.parameters()):
                 # Update teacher parameters with momentum using detached student parameters.
                 pt.mul_(momentum).add_(ps.detach(), alpha=1 - momentum)
+
+    @staticmethod
+    def build_encoder(config: DINOConfig, path_ckpt: Path, device=torch.device) -> ViTBackbone:
+        teacher_part = DINOModel(config).to(device)
+        ckpt = torch.load(str(path_ckpt), map_location=device)
+        teacher_part.load_state_dict(ckpt["teacher"])
+        teacher_part.eval()
+        return teacher_part.backbone
 
     def save(self, path_ckpt: Path):
         torch.save(

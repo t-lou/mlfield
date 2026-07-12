@@ -4,23 +4,8 @@ from typing import List, Optional, Tuple
 import numpy as np
 import torch
 import torch.nn.functional as F
-from PIL import Image
-from torchvision import transforms
 
-
-def preprocess_image(path: Path, image_size: int) -> Tuple[torch.Tensor, np.ndarray]:
-    """Load and resize image to the DINO encoder input size."""
-    image = Image.open(path).convert("RGB")
-    tfm = transforms.Compose(
-        [
-            transforms.Resize(image_size),
-            transforms.CenterCrop(image_size),
-            transforms.ToTensor(),
-        ]
-    )
-    tensor = tfm(image)
-    rgb = np.array(image.resize((image_size, image_size)))
-    return tensor, rgb
+from components.vit.dino_inf import preprocess_image
 
 
 def _reshape_token_vector_to_grid(vec: torch.Tensor) -> Optional[torch.Tensor]:
