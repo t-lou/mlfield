@@ -79,7 +79,7 @@ def main() -> None:
     ckpt_path = Path(args.ckpt)
     output_path = Path(args.output_path)
     image_candidates = args.images if args.images is not None and len(args.images) > 0 else IMAGE_PATHS
-    image_paths = [Path(p) for p in image_candidates if p.exists()]
+    image_paths = [Path(p) for p in image_candidates if Path(p).exists()]
 
     config = load_yaml(Path(args.path_config), DINOConfig)
     student = load_student_from_checkpoint(config=config, ckpt_path=ckpt_path, device=device)
