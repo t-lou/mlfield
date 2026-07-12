@@ -92,14 +92,22 @@ class DINOSession(nn.Module):
         # The crop size differs at runtime via the transforms, but the positional
         # embedding buffer must stay identical so teacher initialization can copy
         # the student weights and EMA updates remain compatible.
-        self.student = DINOModel(config).to(self.device)
-        self.teacher = DINOModel(config).to(self.device)
+        self.student = self.create_student(config, self.device)
+        self.teacher = self.create_teacher(config, self.device)
 
         # Initialize teacher with student weights and freeze teacher parameters.
         self.teacher.load_state_dict(self.student.state_dict())
         for p in self.teacher.parameters():
             p.requires_grad = False
         self.teacher.eval()
+
+    @staticmethod
+    def create_student(config: DINOConfig, device=torch.device) -> DINOModel:
+        return DINOModel(config).to(device)
+
+    @staticmethod
+    def create_teacher(config: DINOConfig, device=torch.device) -> DINOModel:
+        return DINOModel(config).to(device)
 
     def forward(self, student_inputs, teacher_inputs):
         """Compute the DINO loss for a batch of student and teacher inputs."""

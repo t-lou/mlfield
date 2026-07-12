@@ -1,11 +1,10 @@
+from enum import Enum
 from pathlib import Path
 
 import torch
 
 from components.vit.dino_defs import DINOConfig
 from components.vit.dino_session import DINOSession
-
-from enum import Enum
 
 
 class DINOPartID(Enum):
@@ -24,14 +23,14 @@ def load_from_checkpoint(config: DINOConfig, ckpt_path: Path, device: torch.devi
     """Load either student or teacher via DINOSession checkpoint as requested."""
     part_id = _to_part_id(part_name)
 
-    session = DINOSession(config, device=device)
-    session.load(ckpt_path)
-
     if part_id == DINOPartID.TEACHER:
-        part = session.teacher.to(device)
+        part = DINOSession.create_teacher(config, device)
     elif part_id == DINOPartID.STUDENT:
-        part = session.student.to(device)
+        part = DINOSession.create_student(config, device)
     else:
         raise ValueError(f"Unsupported DINO part {part_name}")
+
+    ckpt = torch.load(str(ckpt_path), map_location=device)
+    part.load_state_dict(ckpt[part_name.lower()])
     part.eval()
     return part
