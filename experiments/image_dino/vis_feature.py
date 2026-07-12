@@ -8,7 +8,7 @@ import numpy as np
 from components.utils.config import load_yaml
 from components.utils.device import get_device
 from components.vit.dino_defs import DINOConfig
-from components.vit.dino_inf import load_student_from_checkpoint
+from components.vit.dino_inf import load_from_checkpoint
 from components.vit.dino_vis import get_features
 
 # Replace these with your real image paths, or pass --images on CLI.
@@ -61,6 +61,9 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--ckpt", type=str, required=True, help="Path to DINO checkpoint (.pth)")
     parser.add_argument(
+        "--part-name", type=str, default="teacher", help="Part of DINO Session to use, either teacher or student"
+    )
+    parser.add_argument(
         "--images",
         type=str,
         nargs="*",
@@ -82,11 +85,11 @@ def main() -> None:
     image_paths = [Path(p) for p in image_candidates if Path(p).exists()]
 
     config = load_yaml(Path(args.path_config), DINOConfig)
-    student = load_student_from_checkpoint(config=config, ckpt_path=ckpt_path, device=device)
+    encoder = load_from_checkpoint(config=config, ckpt_path=ckpt_path, device=device, part_name=args.part_name)
     image_size = args.image_size if args.image_size is not None else config.model_base_res
 
     rgbs, attn_maps, token_maps = get_features(
-        student=student,
+        encoder=encoder,
         image_paths=image_paths,
         image_size=image_size,
         device=device,

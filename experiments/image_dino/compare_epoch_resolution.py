@@ -8,7 +8,7 @@ import numpy as np
 from components.utils.config import load_yaml
 from components.utils.device import get_device
 from components.vit.dino_defs import DINOConfig
-from components.vit.dino_inf import load_student_from_checkpoint
+from components.vit.dino_inf import load_from_checkpoint
 from components.vit.dino_vis import get_features
 
 
@@ -49,6 +49,9 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--ckpt-dir", type=str, required=True, help="Path of folder to DINO checkpoints (*.pth)")
     parser.add_argument(
+        "--part-name", type=str, default="teacher", help="Part of DINO Session to use, either teacher or student"
+    )
+    parser.add_argument(
         "--image",
         type=str,
         required=True,
@@ -85,11 +88,11 @@ def main() -> None:
     fig2, axes2 = plt.subplots(n_rows, n_cols, figsize=(4 * n_cols, 4 * n_rows), squeeze=False)
 
     for col, ckpt_path in enumerate(ckpt_paths):
-        student = load_student_from_checkpoint(config=config, ckpt_path=ckpt_path, device=device)
+        encoder = load_from_checkpoint(config=config, ckpt_path=ckpt_path, device=device, part_name=args.part_name)
 
         for row, image_size in enumerate(image_sizes):
             _, attn_maps, token_maps = get_features(
-                student=student,
+                encoder=encoder,
                 image_paths=[image],
                 image_size=image_size,
                 device=device,

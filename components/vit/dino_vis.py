@@ -116,7 +116,7 @@ class ActivationCatcher:
 
 @torch.no_grad()
 def get_features(
-    student: torch.nn.Module,
+    encoder: torch.nn.Module,
     image_paths: List[Path],
     image_size: int,
     device: torch.device,
@@ -125,7 +125,7 @@ def get_features(
 
     catcher = ActivationCatcher()
     hooks = []
-    for name, module in student.backbone.vit.named_modules():
+    for name, module in encoder.backbone.vit.named_modules():
         hooks.append(module.register_forward_hook(catcher.make_hook(name)))
 
     rgbs = []
@@ -138,7 +138,7 @@ def get_features(
 
         catcher.last_attn = None
         catcher.last_tokens = None
-        _ = student(x)
+        _ = encoder(x)
 
         attn_map, token_map = extract_maps_from_activations(
             catcher.last_attn,
