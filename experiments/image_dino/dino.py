@@ -12,17 +12,7 @@ from components.utils.fps_logger import FpsLogger
 from components.utils.logger import configure_logger, logger
 from components.vit.dino_defs import DINOConfig
 from components.vit.dino_session import DINOSession
-from components.vit.dino_transform import DINOTransform
-
-
-def dino_collate_fn(batch):
-    """Collate a batch of multi-crop samples into a list of crop tensors."""
-    if not batch:
-        return []
-    num_crops = len(batch[0])
-    if any(len(sample) != num_crops for sample in batch):
-        raise ValueError("Inconsistent number of crops in batch")
-    return [torch.stack([sample[i] for sample in batch], dim=0) for i in range(num_crops)]
+from components.vit.dino_transform import DINOTransform, dino_collate_fn
 
 
 def train(

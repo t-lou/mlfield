@@ -1,3 +1,4 @@
+import torch
 from torchvision import transforms
 
 from components.utils.logger import logger
@@ -42,3 +43,13 @@ class DINOTransform:
         for _ in range(self.num_students):
             crops.append(self.local_transform(img))
         return crops
+
+
+def dino_collate_fn(batch):
+    """Collate a batch of multi-crop samples into a list of crop tensors."""
+    if not batch:
+        return []
+    num_crops = len(batch[0])
+    if any(len(sample) != num_crops for sample in batch):
+        raise ValueError("Inconsistent number of crops in batch")
+    return [torch.stack([sample[i] for sample in batch], dim=0) for i in range(num_crops)]
