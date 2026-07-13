@@ -152,7 +152,7 @@ def make_dataloader_from_classification_dataset(
 
     loader_kwargs = make_dataloader_args(batch_size=batch_size, num_workers=num_workers)
 
-    return DataLoader(ImageOnlyDataset(dataset), **loader_kwargs)
+    return DataLoader(dataset, **loader_kwargs)
 
 
 def make_dataloader_from_detection_dataset(
@@ -198,7 +198,7 @@ def make_dataloader_from_detection_dataset(
 
     loader_kwargs = make_dataloader_args(batch_size=batch_size, num_workers=num_workers)
 
-    return DataLoader(ImageOnlyDataset(dataset), **loader_kwargs)
+    return DataLoader(dataset, **loader_kwargs)
 
 
 def mae_visualize(model: MAE, imgs: torch.Tensor, save_path: Path) -> None:
@@ -355,6 +355,7 @@ def train(
     cfg, model, loader = build_model_and_loader(
         variant,
         data_root=data_root,
+        num_workers=num_workers,
     )
     device = get_device()
     model = model.to(device)
@@ -366,7 +367,12 @@ def train(
         scaler = torch.amp.GradScaler("cuda", enabled=True)
 
     model.train()
-    for step, imgs in enumerate(loader, start=1):
+    for step, batch in enumerate(loader, start=1):
+        if isinstance(batch, (tuple, list)):
+            imgs = batch[0]
+        else:
+            imgs = batch
+
         imgs = imgs.to(device, non_blocking=True)
         optimizer.zero_grad(set_to_none=True)
 
