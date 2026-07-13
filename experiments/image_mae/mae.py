@@ -23,7 +23,7 @@ Improvement Opportunities:
 
 import argparse
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional
 
 import matplotlib.pyplot as plt
 import torch
@@ -31,9 +31,11 @@ from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
 
 from components.dataset.image_only_dataset import ImageOnlyDataset
+from components.utils.config import load_yaml
 from components.utils.device import get_device, resolve_num_workers
 from components.utils.logger import configure_logger, logger
-from components.vit.mae import MAE, VARIANT_CONFIG, MAEVariantConfig
+from components.vit.mae import MAE
+from components.vit.mae_defs import MAE_MINI_CONFIG, MAEConfig
 
 DEFAULT_KAGGLE_DATASETS: Dict[str, str] = {
     # Default full ImageNet dataset for MAE pre-training.
@@ -263,62 +265,13 @@ def mae_visualize(model: MAE, imgs: torch.Tensor, save_path: Path) -> None:
     plt.close(fig)
 
 
-def build_model_and_loader(
-    variant: str,
-    data_root: str = "./data",
-    num_workers: Optional[int] = None,
-) -> Tuple[MAEVariantConfig, MAE, DataLoader]:
-    """
-    Convenience function to build MAE model and corresponding dataloader.
-
-    Handles:
-    - Model instantiation and checkpoint loading
-    - Dataset path resolution with auto-download
-    - Dataloader creation
-
-    Args:
-        variant: Model variant ('cifar10', 'imagenet', 'coco')
-        data_root: Root directory for datasets
-
-    Returns:
-        Tuple of (config, model, dataloader)
-
-    Example:
-        >>> cfg, model, loader = build_model_and_loader('imagenet', './data')
-        >>> for imgs in loader:
-        ...     loss, pred, target, mask = model(imgs)
-    """
-    model = MAE(variant)
-    model.load_checkpoint()
-
-    cfg = VARIANT_CONFIG[variant]
-
-    if variant == "cifar10":
-        loader = make_cifar10_dataloader(root=data_root, batch_size=cfg.batch_size, num_workers=num_workers)
-    elif variant in {"imagenet", "imagenet_mini"}:
-        loader = make_dataloader_from_classification_dataset(
-            data_dirs=[data_root],
-            batch_size=cfg.batch_size,
-            image_size=cfg.image_size,
-            num_workers=num_workers,
-        )
-    else:
-        loader = make_dataloader_from_detection_dataset(
-            data_dirs=[data_root],
-            batch_size=cfg.batch_size,
-            image_size=cfg.image_size,
-            num_workers=num_workers,
-        )
-
-    return cfg, model, loader
-
-
 def train(
-    variant: str = "cifar10",
+    config: MAEConfig,
     steps: int = -1,
     data_root: str = "./data",
     epoch: int = 0,
     num_workers: Optional[int] = None,
+    mini: bool = False,
 ) -> None:
     """
     Train MAE model for one epoch with optional checkpointing and visualization.
@@ -332,7 +285,7 @@ def train(
     6. Visualize reconstructions at epoch end
 
     Args:
-        variant: Model variant ('cifar10', 'imagenet', 'coco')
+        config: Model config (model size, dataset type etc)
         steps: Max steps per epoch (-1 = full epoch)
         data_root: Root directory for datasets
         epoch: Epoch number (used for logging/visualization)
@@ -352,14 +305,23 @@ def train(
         - Implement early stopping
         - Add exponential moving average (EMA) for better stability
     """
-    cfg, model, loader = build_model_and_loader(
-        variant,
-        data_root=data_root,
-        num_workers=num_workers,
-    )
     device = get_device()
+
+    model = MAE(config)
+    model.load_checkpoint()
     model = model.to(device)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=cfg.learning_rate, betas=(0.9, 0.95), weight_decay=0.05)
+
+    if mini:
+        loader = make_cifar10_dataloader(root=data_root, batch_size=config.batch_size, num_workers=num_workers)
+    else:
+        loader = make_dataloader_from_classification_dataset(
+            data_dirs=[data_root],
+            batch_size=config.batch_size,
+            image_size=config.image_size,
+            num_workers=num_workers,
+        )
+
+    optimizer = torch.optim.AdamW(model.parameters(), lr=config.learning_rate, betas=(0.9, 0.95), weight_decay=0.05)
 
     use_amp = device.type == "cuda"
 
@@ -391,44 +353,26 @@ def train(
             break
         elif (step + 1) % 10_000 == 0:
             logger.info(
-                f"variant={variant} epoch={epoch} step={step} loss={float(loss):.6f} "
+                f"epoch={epoch} step={step} loss={float(loss):.6f} "
                 f"pred_shape={tuple(pred.shape)} target_shape={tuple(target.shape)}"
             )
 
             model.save_checkpoint()
 
     logger.info(
-        f"variant={variant} epoch={epoch} step={step} loss={float(loss):.6f} "
+        f"epoch={epoch} step={step} loss={float(loss):.6f} "
         f"pred_shape={tuple(pred.shape)} target_shape={tuple(target.shape)}"
     )
     model.save_checkpoint()
 
-    path_vis = Path(f"mae_visualizations/{variant}")
+    path_vis = Path("mae_visualizations")
     path_vis.mkdir(parents=True, exist_ok=True)
     mae_visualize(model, imgs, save_path=(path_vis / f"step_{epoch:06}_{step:06}.png"))
 
 
 def main() -> None:
-    """
-    Command-line interface for MAE training.
-
-    Parses arguments and launches training loop for specified epochs.
-    Supports three dataset variants with automatic Kaggle download.
-
-    Example usage:
-        # CIFAR-10 training (quick)
-        python main.py --variant cifar10 --epochs 10
-
-        # ImageNet with Kaggle download
-        python main.py --variant imagenet --epochs 100 --data-root ./data
-
-        # COCO without Kaggle download (must have dataset ready)
-        python main.py --variant coco --no-kaggle --data-root /path/to/coco
-    """
     parser = argparse.ArgumentParser(description="MAE debug trainer with CIFAR-10 and ImageNet presets")
-    parser.add_argument(
-        "--variant", type=str, default="cifar10", choices=["cifar10", "imagenet", "imagenet_mini", "coco"]
-    )
+    parser.add_argument("--path-config", type=str, default="./experiments/image_mae/mae_config.yaml")
     parser.add_argument("--steps", type=int, default=-1)
     parser.add_argument("--num-epochs", type=int, default=10)
     parser.add_argument("--start-epoch", type=int, default=0)
@@ -444,20 +388,24 @@ def main() -> None:
         default=None,
         help="Number of DataLoader workers. Defaults to automatic CPU-count based selection.",
     )
+    parser.add_argument("--mini", action="store_true", help="Whether to use ciphar10 dataset and smaller model.")
     args = parser.parse_args()
 
-    if args.variant not in VARIANT_CONFIG:
-        supported = ", ".join(sorted(VARIANT_CONFIG))
-        raise ValueError(f"Unknown variant '{args.variant}'. Supported: {supported}")
+    if not args.mini:
+        path_config = Path(args.path_config)
+        config = load_yaml(path_config, MAEConfig)
+    else:
+        config = MAE_MINI_CONFIG
 
     for epoch_rel in range(args.num_epochs):
         epoch = args.start_epoch + epoch_rel
         train(
-            variant=args.variant,
+            config=config,
             steps=args.steps,
             data_root=args.data_root,
             epoch=epoch,
             num_workers=args.num_workers,
+            mini=args.mini,
         )
 
 

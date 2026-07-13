@@ -1,4 +1,3 @@
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Tuple
 
@@ -6,115 +5,10 @@ import torch
 from torch import nn
 
 from components.utils.logger import logger
+from components.vit.mae_defs import MAEConfig
 from components.vit.patch_embed import PatchEmbed
 from components.vit.position_embedding import build_2d_sincos_position_embedding
 from components.vit.transformer_block import TransformerBlock
-
-
-@dataclass(frozen=True)
-class MAEVariantConfig:
-    """
-    Configuration for different MAE model variants.
-
-    Attributes:
-        dataset_size: Total number of samples in the dataset
-        image_size: Input image resolution (pixels)
-        patch_size: Size of image patches (pixels)
-        batch_size: Training batch size
-        encoder_dim: Embedding dimension for transformer encoder
-        encoder_depth: Number of transformer blocks in encoder
-        encoder_heads: Number of attention heads in encoder
-        decoder_dim: Embedding dimension for transformer decoder
-        decoder_depth: Number of transformer blocks in decoder
-        decoder_heads: Number of attention heads in decoder
-        mask_ratio: Fraction of patches to mask during training (0-1)
-        learning_rate: Initial learning rate for optimization
-    """
-
-    dataset_size: int
-    image_size: int
-    patch_size: int
-    batch_size: int
-    encoder_dim: int
-    encoder_depth: int
-    encoder_heads: int
-    decoder_dim: int
-    decoder_depth: int
-    decoder_heads: int
-    mask_ratio: float
-    learning_rate: float
-
-
-VARIANT_CONFIG = {
-    # Fits typical 4GB GPUs for debugging (with AMP).
-    "cifar10": MAEVariantConfig(
-        dataset_size=50_000,
-        image_size=32,
-        patch_size=4,
-        batch_size=32 * 1,
-        encoder_dim=384,
-        encoder_depth=8,
-        encoder_heads=6,
-        decoder_dim=192,
-        decoder_depth=4,
-        decoder_heads=6,
-        mask_ratio=0.75,
-        learning_rate=1e-3,
-    ),
-    # MAE-Base style scale for larger GPUs (32-40GB+ suggested).
-    "imagenet": MAEVariantConfig(
-        dataset_size=1_281_167,
-        image_size=256,  # ↑ use full 256 for better spatial detail
-        patch_size=16,
-        batch_size=2 * 1,
-        # ---------------- Encoder ----------------
-        encoder_dim=768,
-        encoder_depth=12,
-        encoder_heads=12,
-        # ---------------- Decoder ----------------
-        decoder_dim=768,  # ↑ stronger decoder for sharper teacher features
-        decoder_depth=8,  # keep 8 (good balance)
-        decoder_heads=12,  # ↓ from 16 → 12 (matches encoder, more stable)
-        # ---------------- Masking ----------------
-        mask_ratio=0.6,  # ↓ from 0.75 → 0.6 (better for dense tasks)
-        # ---------------- Optimization ----------------
-        learning_rate=1.5e-4,  # unchanged; still optimal for MAE-B
-        # missing fields you should add:
-        # use_sin_pos_embed=True,   # recommended: 2D sin-cos positional embeddings
-        # drop_path_rate=0.1,       # stable for ViT-B encoder
-        # decoder_drop_path_rate=0.0,
-        # loss_type="mse",          # better for YOLO distillation
-    ),
-    # Same MAE scale as ImageNet but intended for smaller ImageNet-style subsets.
-    "imagenet_mini": MAEVariantConfig(
-        dataset_size=100_000,
-        image_size=224,
-        patch_size=16,
-        batch_size=32 * 1,
-        encoder_dim=768,
-        encoder_depth=12,
-        encoder_heads=12,
-        decoder_dim=512,
-        decoder_depth=8,
-        decoder_heads=16,
-        mask_ratio=0.75,
-        learning_rate=1.5e-4,
-    ),
-    "coco": MAEVariantConfig(
-        dataset_size=1_281_167,
-        image_size=256,
-        patch_size=16,
-        batch_size=32 * 1,
-        encoder_dim=768,
-        encoder_depth=12,
-        encoder_heads=12,
-        decoder_dim=512,
-        decoder_depth=8,
-        decoder_heads=16,
-        mask_ratio=0.75,
-        learning_rate=1.5e-4,
-    ),
-}
 
 
 class MAE(nn.Module):
@@ -151,16 +45,12 @@ class MAE(nn.Module):
         - Contrastive learning combined with reconstruction
     """
 
-    def __init__(self, variant: str, in_chans: int = 3) -> None:
+    def __init__(self, config: MAEConfig) -> None:
         """
-        Initialize MAE model with variant-specific configuration.
+        Initialize MAE model.
 
         Args:
-            variant: Model variant ('cifar10', 'imagenet', or 'coco')
-            in_chans: Number of input channels (3 for RGB images)
-
-        Raises:
-            KeyError: If variant not in VARIANT_CONFIG
+            config: contains the configs about the model size etc
 
         Example:
             >>> mae = MAE('imagenet')
@@ -168,20 +58,20 @@ class MAE(nn.Module):
         """
         super().__init__()
 
-        self.cfg = VARIANT_CONFIG[variant]
-        self.in_chans = in_chans
+        self.cfg = config
+        self.in_chans = config.in_chans
 
         # Patch embedding layer: converts images to patch embeddings
         if (self.cfg.image_size % self.cfg.patch_size) != 0:
             raise ValueError(f"img_size {self.cfg.image_size} must be divisible by patch_size {self.cfg.patch_size}")
         self.patch_embed = PatchEmbed(
             patch_size=self.cfg.patch_size,
-            in_chans=in_chans,
+            in_chans=config.in_chans,
             embed_dim=self.cfg.encoder_dim,
         )
         self.grid_size = self.cfg.image_size // self.cfg.patch_size
         self.num_patches = self.grid_size * self.grid_size
-        self.patch_dim = self.cfg.patch_size * self.cfg.patch_size * in_chans
+        self.patch_dim = self.cfg.patch_size * self.cfg.patch_size * config.in_chans
 
         # Initialize learnable tokens and position embeddings
         self.cls_token = nn.Parameter(torch.zeros(1, 1, self.cfg.encoder_dim))
@@ -218,7 +108,7 @@ class MAE(nn.Module):
 
         self._init_weights()
 
-        self.path_final_ckpt = Path(__file__).resolve().parent / "mae_checkpoints" / variant / "final.pth"
+        self.path_final_ckpt = Path(__file__).resolve().parent / "mae_checkpoints" / "final.pth"
         if not self.path_final_ckpt.parent.exists():
             self.path_final_ckpt.parent.mkdir(parents=True, exist_ok=True)
 

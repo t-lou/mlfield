@@ -1,4 +1,5 @@
 from dataclasses import asdict, fields
+from enum import Enum
 from pathlib import Path
 from typing import Type, TypeVar
 
@@ -9,8 +10,20 @@ from components.utils.logger import logger
 T = TypeVar("T")
 
 
+def _enum_to_value(d):
+    r = {}
+    for k, v in d.items():
+        if isinstance(v, Enum):
+            r[k] = v.value
+        else:
+            r[k] = v
+    return r
+
+
 def dump_yaml(obj: T, path: Path) -> None:
     raw_dict = asdict(obj)
+
+    raw_dict = _enum_to_value(raw_dict)
 
     ordered_dict = {f.name: raw_dict[f.name] for f in fields(obj)}
 
