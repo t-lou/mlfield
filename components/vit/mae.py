@@ -108,7 +108,7 @@ class MAE(nn.Module):
 
         self._init_weights()
 
-        self.path_final_ckpt = Path(__file__).resolve().parent / "mae_checkpoints" / "final.pth"
+        self.path_final_ckpt = Path("mae_checkpoints") / "final.pth"
         if not self.path_final_ckpt.parent.exists():
             self.path_final_ckpt.parent.mkdir(parents=True, exist_ok=True)
 
@@ -412,5 +412,5 @@ class MAE(nn.Module):
             logger.info(f"{path_ckpt} not found, cannot load")
             return
 
-        state_dict = torch.load(path_ckpt, map_location=device)
+        state_dict = torch.load(path_ckpt, map_location=device, weights_only=False)
         self.load_state_dict(state_dict)

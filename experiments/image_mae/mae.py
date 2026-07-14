@@ -25,7 +25,6 @@ import argparse
 from pathlib import Path
 from typing import Dict, Optional
 
-import matplotlib.pyplot as plt
 import torch
 from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
@@ -203,68 +202,6 @@ def make_dataloader_from_detection_dataset(
     return DataLoader(dataset, **loader_kwargs)
 
 
-def mae_visualize(model: MAE, imgs: torch.Tensor, save_path: Path) -> None:
-    """
-    Visualize MAE reconstruction quality by showing original, masked, and reconstructed images.
-
-    Creates a 3xN subplot figure where:
-    - Row 0: Original images
-    - Row 1: Images with masked patches zeroed out
-    - Row 2: Reconstructed images from encoder-decoder
-
-    Visually demonstrates what MAE learned to reconstruct masked regions.
-    Good diagnostic tool for evaluating model training progress.
-
-    Args:
-        model: Trained MAE model (will be set to eval mode)
-        imgs: Batch of input images (batch, 3, H, W)
-        save_path: Path to save visualization image
-
-    Note:
-        - Shows maximum 6 images to keep figure readable
-        - Clipped to [0, 1] range for display
-        - Uses model.eval() and torch.no_grad() for inference
-
-    Improvement: Consider adding:
-        - Difference maps (original - reconstruction)
-        - Uncertainty/confidence estimates
-        - Progressive reconstruction frames (decoder layers)
-        - Histogram of reconstruction errors
-    """
-    model.eval()
-    with torch.no_grad():
-        latent, mask, ids_restore = model.forward_encoder(imgs, model.cfg.mask_ratio)
-        pred = model.forward_decoder(latent, ids_restore)
-        rec_imgs = model.unpatchify(pred)
-
-        B, C, H, W = imgs.shape
-        patch = model.cfg.patch_size
-
-        mask = mask.unsqueeze(-1).repeat(1, 1, patch * patch * C)
-        mask = model.unpatchify(mask)
-        masked_imgs = imgs * (1 - mask)
-
-    num_show = min(6, imgs.shape[0])
-    fig, axes = plt.subplots(3, num_show, figsize=(3 * num_show, 9))
-
-    for i in range(num_show):
-        axes[0, i].imshow(imgs[i].permute(1, 2, 0).cpu().numpy().clip(0, 1))
-        axes[0, i].set_title("Original")
-        axes[0, i].axis("off")
-
-        axes[1, i].imshow(masked_imgs[i].permute(1, 2, 0).cpu().numpy().clip(0, 1))
-        axes[1, i].set_title("Masked")
-        axes[1, i].axis("off")
-
-        axes[2, i].imshow(rec_imgs[i].permute(1, 2, 0).cpu().numpy().clip(0, 1))
-        axes[2, i].set_title("Reconstructed")
-        axes[2, i].axis("off")
-
-    plt.tight_layout()
-    plt.savefig(save_path)
-    plt.close(fig)
-
-
 def train(
     config: MAEConfig,
     steps: int = -1,
@@ -364,10 +301,6 @@ def train(
         f"pred_shape={tuple(pred.shape)} target_shape={tuple(target.shape)}"
     )
     model.save_checkpoint()
-
-    path_vis = Path("mae_visualizations")
-    path_vis.mkdir(parents=True, exist_ok=True)
-    mae_visualize(model, imgs, save_path=(path_vis / f"step_{epoch:06}_{step:06}.png"))
 
 
 def main() -> None:
