@@ -34,15 +34,17 @@ def main() -> None:
     print(f"Input size is {x.shape}")
 
     with torch.inference_mode():
-        feature = encoder(x)
+        feature_cls = encoder(x)
+        feature_full = encoder.forward_full(x)
 
-    print(f"Feature size is {feature.shape}")
+    print(f"Feature CLS size is {feature_cls.shape}")
+    print(f"Feature full is {feature_full.shape}")
 
     out_path = Path("data/temp/dino_feature.pt")
     if not out_path.parent.exists():
         out_path.parent.mkdir(parents=True, exist_ok=True)
 
-    torch.save(feature.cpu(), out_path)
+    torch.save({"feature_cls": feature_cls.cpu(), "feature_full": feature_full.cpu()}, out_path)
 
 
 if __name__ == "__main__":

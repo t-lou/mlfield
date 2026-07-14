@@ -42,7 +42,9 @@ class VitEncoder(nn.Module):
         )
 
         # Transformer blocks
-        dpr = [drop_path_rate * i / (depth - 1) for i in range(depth)]
+        if depth <= 0:
+            raise ValueError("depth must be >= 1")
+        dpr = [drop_path_rate * i / max(depth - 1, 1) for i in range(depth)]
         self.blocks = nn.ModuleList(
             [
                 VitBlock(
@@ -75,31 +77,87 @@ class VitEncoder(nn.Module):
 
         return torch.cat([cls_pos, spatial_pos], dim=1)
 
-    def forward(self, imgs):
+    def _tokenize(self, imgs, add_cls_token=True):
         B = imgs.shape[0]
 
         # Patch embedding
         x = self.patch_embed(imgs)  # (B, HW, C)
 
-        # Add CLS token, note that it should be dropped in v2
-        cls = self.cls_token.repeat(B, 1, 1)  # faster that expand
-        x = torch.cat((cls, x), dim=1)
-
-        # Compute new grid size
+        # Compute patch grid for positional interpolation
         H_patch = imgs.shape[2] // self._patch_size
         W_patch = imgs.shape[3] // self._patch_size
 
         # Add positional embeddings
         pos = self.interpolate_pos_encoding(H_patch, W_patch)
-        x = x + pos
+
+        if add_cls_token:
+            cls_ = self.cls_token.repeat(B, 1, 1)  # faster than expand
+            x = torch.cat((cls_, x), dim=1)
+            x = x + pos
+        else:
+            # If not adding CLS token, just add positional embeddings to patch tokens
+            x = x + pos[:, 1:, :]
+
+        return x
+
+    def forward_full(self, imgs, patch_keep_mask=None, add_cls_token=True):
+        """
+        Encode image tokens and optionally keep only selected patch tokens.
+
+        Args:
+            imgs: Input images, shape (B, 3, H, W)
+            patch_keep_mask: Optional boolean mask of shape (B, num_patches),
+                where True means keep this patch token.
+            add_cls_token: If True, prepend CLS token before transformer blocks.
+
+        Returns:
+            Token features after transformer + norm.
+        """
+        x = self._tokenize(imgs, add_cls_token=add_cls_token)
+
+        if patch_keep_mask is not None:
+            if patch_keep_mask.ndim != 2:
+                raise ValueError("patch_keep_mask must have shape (B, num_patches)")
+
+            if add_cls_token:
+                cls_keep = torch.ones(
+                    (patch_keep_mask.shape[0], 1),
+                    dtype=torch.bool,
+                    device=patch_keep_mask.device,
+                )
+                token_keep_mask = torch.cat([cls_keep, patch_keep_mask], dim=1)
+            else:
+                token_keep_mask = patch_keep_mask
+
+            keep_counts = token_keep_mask.sum(dim=1)
+            if int(keep_counts.min().item()) != int(keep_counts.max().item()):
+                raise ValueError("All samples in a batch must keep the same number of tokens")
+
+            keep_count = int(keep_counts[0].item())
+            keep_order = torch.argsort(token_keep_mask.to(torch.int64), dim=1, descending=True)
+            keep_idx = keep_order[:, :keep_count]
+            x = torch.gather(x, dim=1, index=keep_idx.unsqueeze(-1).expand(-1, -1, x.shape[2]))
 
         # Transformer blocks
         for blk in self.blocks:
             x = blk(x)
 
-        x = self.norm(x)
+        return self.norm(x)  # Shape: (B, num_tokens, embed_dim)
 
-        return x[:, 0]  # CLS token output
+    def forward(self, imgs, patch_keep_mask=None, add_cls_token=True):
+        """
+        Forward pass for the ViT encoder.
+
+        Args:
+            imgs: Input images, shape (B, 3, H, W)
+            patch_keep_mask: Optional boolean mask of shape (B, num_patches),
+                where True means keep this patch token.
+            add_cls_token: If True, prepend CLS token before transformer blocks.
+
+        Returns:
+            CLS token output.
+        """
+        return self.forward_full(imgs, patch_keep_mask, add_cls_token)[:, 0]  # CLS token output, shape: (B, embed_dim)
 
 
 def _smoke_test():

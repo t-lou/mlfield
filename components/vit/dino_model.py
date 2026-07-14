@@ -20,11 +20,17 @@ class ViTBackbone(nn.Module):
             drop_path_rate=0.1,
             qkv_bias=True,
         )
-        # assume vit.forward(x) returns CLS only
+        # Assume vit.forward(x) returns CLS only, and vit.forward_full(x) returns all tokens
 
     def forward(self, x):
+        """Forward pass through the ViT backbone, returning the CLS token embedding."""
         feats = self.vit.forward(x)  # [B, D]
         return feats  # CLS token embedding
+
+    def forward_full(self, x):
+        """Forward pass through the ViT backbone, returning all token embeddings."""
+        feats = self.vit.forward_full(x)  # [B, num_tokens, D]
+        return feats  # All token embeddings
 
 
 class DINOHead(nn.Module):
