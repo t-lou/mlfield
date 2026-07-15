@@ -290,7 +290,7 @@ def main() -> None:
     parser.add_argument("--path-config", type=str, default="./experiments/image_mae/mae_config.yaml")
     parser.add_argument("--steps", type=int, default=-1)
     parser.add_argument("--num-epochs", type=int, default=10)
-    parser.add_argument("--start-epoch", type=int, default=0)
+    parser.add_argument("--start-epoch", type=int, default=-1)
     parser.add_argument(
         "--data-root",
         type=str,
@@ -316,9 +316,11 @@ def main() -> None:
     checkpoint_path = get_checkpoint_path(args.start_epoch)
     if checkpoint_path.exists():
         model.load_checkpoint(checkpoint_path)
-        logger.info(f"Loaded checkpoint from {checkpoint_path}")
+        start_epoch = args.start_epoch + 1
+        logger.info(f"Loaded checkpoint from {checkpoint_path}, will starte with epoch {start_epoch}")
     else:
-        logger.info("No checkpoint found. Starting from scratch.")
+        start_epoch = 0
+        logger.info(f"No checkpoint found, will starte with epoch {start_epoch}")
 
     train(
         model=model,
