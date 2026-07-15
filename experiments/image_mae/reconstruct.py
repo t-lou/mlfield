@@ -109,17 +109,17 @@ def main() -> None:
     }
     loader = DataLoader(dataset, **loader_kwargs)
 
-    model = MAE(config)
-    model.load_checkpoint(path=args.path_config, device=device)
-    model = model.to(device)
+    model = MAE(config).to(device)
+    model.load_checkpoint(path=args.path_ckpt, device=device)
 
     model.eval()
 
     for imgs in loader:
+        imgs = imgs.to(device, non_blocking=True)
         visualize_mae(model, imgs, save_path=args.path_output)
         break
 
 
 if __name__ == "__main__":
-    configure_logger("mae")
+    configure_logger("mae_vis")
     main()

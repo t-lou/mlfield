@@ -202,50 +202,36 @@ def make_dataloader_from_detection_dataset(
     return DataLoader(dataset, **loader_kwargs)
 
 
+def get_checkpoint_path(epoch: int) -> Path:
+    checkpoint_dir = Path("mae_checkpoints")
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    return checkpoint_dir / f"checkpoint_{epoch:05d}.pth"
+
+
 def train(
+    model: MAE,
     config: MAEConfig,
     steps: int = -1,
     data_root: str = "./data",
-    epoch: int = 0,
+    start_epoch: int = 0,
+    num_epochs: int = 1,
     num_workers: Optional[int] = None,
     mini: bool = False,
 ) -> None:
     """
-    Train MAE model for one epoch with optional checkpointing and visualization.
-
-    Training procedure:
-    1. Load model, optimizer, and dataloader
-    2. Iterate through batches
-    3. Forward pass (encoding and decoding)
-    4. Backward pass with optional mixed precision (AMP)
-    5. Checkpoint every 10K steps
-    6. Visualize reconstructions at epoch end
+    Train MAE model for a sequence of epochs with checkpointing.
 
     Args:
+        model: MAE model already initialized and optionally loaded from checkpoint.
         config: Model config (model size, dataset type etc)
         steps: Max steps per epoch (-1 = full epoch)
         data_root: Root directory for datasets
-        epoch: Epoch number (used for logging/visualization)
-
-    Notes:
-        - Uses AdamW optimizer with standard MAE hyperparameters
-        - Mixed precision (AMP) enabled on CUDA for memory efficiency
-        - Saves checkpoint every 10K steps and at epoch end
-        - Generates reconstruction visualization at epoch end
-
-    Improvement opportunities:
-        - Add learning rate scheduling (cosine annealing, warmup)
-        - Implement gradient accumulation for larger batch sizes
-        - Add per-step validation on held-out set
-        - Support distributed training (DDP)
-        - Add tensorboard/wandb logging
-        - Implement early stopping
-        - Add exponential moving average (EMA) for better stability
+        start_epoch: Starting epoch number for checkpointing and logs
+        num_epochs: Number of epochs to run
+        num_workers: Number of DataLoader workers
+        mini: If True, use CIFAR-10 data loader and smaller model config
     """
     device = get_device()
-
-    model = MAE(config)
-    model.load_checkpoint()
     model = model.to(device)
 
     if mini:
@@ -259,48 +245,44 @@ def train(
         )
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=config.learning_rate, betas=(0.9, 0.95), weight_decay=0.05)
-
     use_amp = device.type == "cuda"
-
-    if use_amp:
-        scaler = torch.amp.GradScaler("cuda", enabled=True)
+    scaler = torch.amp.GradScaler("cuda", enabled=True) if use_amp else None
 
     model.train()
-    for step, batch in enumerate(loader, start=1):
-        if isinstance(batch, (tuple, list)):
-            imgs = batch[0]
-        else:
-            imgs = batch
+    for epoch_offset in range(num_epochs):
+        epoch = start_epoch + epoch_offset
+        logger.info(f"Starting epoch {epoch}")
 
-        imgs = imgs.to(device, non_blocking=True)
-        optimizer.zero_grad(set_to_none=True)
+        for step, batch in enumerate(loader, start=1):
+            if isinstance(batch, (tuple, list)):
+                imgs = batch[0]
+            else:
+                imgs = batch
 
-        if use_amp:
-            with torch.autocast(device_type="cuda", dtype=torch.float16):
+            imgs = imgs.to(device, non_blocking=True)
+            optimizer.zero_grad(set_to_none=True)
+
+            if use_amp:
+                with torch.autocast(device_type="cuda", dtype=torch.float16):
+                    loss, pred, target, mask = model(imgs)
+                scaler.scale(loss).backward()
+                scaler.step(optimizer)
+                scaler.update()
+            else:
                 loss, pred, target, mask = model(imgs)
-            scaler.scale(loss).backward()
-            scaler.step(optimizer)
-            scaler.update()
-        else:
-            loss, pred, target, mask = model(imgs)
-            loss.backward()
-            optimizer.step()
+                loss.backward()
+                optimizer.step()
 
-        if steps >= 0 and step >= steps:
-            break
-        elif (step + 1) % 10_000 == 0:
-            logger.info(
-                f"epoch={epoch} step={step} loss={float(loss):.6f} "
-                f"pred_shape={tuple(pred.shape)} target_shape={tuple(target.shape)}"
-            )
+            if steps >= 0 and step >= steps:
+                break
 
-            model.save_checkpoint()
-
-    logger.info(
-        f"epoch={epoch} step={step} loss={float(loss):.6f} "
-        f"pred_shape={tuple(pred.shape)} target_shape={tuple(target.shape)}"
-    )
-    model.save_checkpoint()
+        logger.info(
+            f"epoch={epoch} step={step} loss={float(loss):.6f} "
+            f"pred_shape={tuple(pred.shape)} target_shape={tuple(target.shape)}"
+        )
+        checkpoint_path = get_checkpoint_path(epoch)
+        model.save_checkpoint(checkpoint_path)
+        logger.info(f"Saved checkpoint for epoch {epoch}: {checkpoint_path}")
 
 
 def main() -> None:
@@ -330,16 +312,24 @@ def main() -> None:
     else:
         config = MAE_MINI_CONFIG
 
-    for epoch_rel in range(args.num_epochs):
-        epoch = args.start_epoch + epoch_rel
-        train(
-            config=config,
-            steps=args.steps,
-            data_root=args.data_root,
-            epoch=epoch,
-            num_workers=args.num_workers,
-            mini=args.mini,
-        )
+    model = MAE(config)
+    checkpoint_path = get_checkpoint_path(args.start_epoch)
+    if checkpoint_path.exists():
+        model.load_checkpoint(checkpoint_path)
+        logger.info(f"Loaded checkpoint from {checkpoint_path}")
+    else:
+        logger.info("No checkpoint found. Starting from scratch.")
+
+    train(
+        model=model,
+        config=config,
+        steps=args.steps,
+        data_root=args.data_root,
+        start_epoch=args.start_epoch,
+        num_epochs=args.num_epochs,
+        num_workers=args.num_workers,
+        mini=args.mini,
+    )
 
 
 if __name__ == "__main__":

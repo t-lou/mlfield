@@ -407,9 +407,10 @@ class MAE(nn.Module):
             Prints warning if checkpoint not found but doesn't raise exception.
         """
         path_ckpt = self.path_final_ckpt if path is None else path
+        logger.info(f"trying to load ckpt {path_ckpt}")
 
         if not path_ckpt.exists():
-            logger.info(f"{path_ckpt} not found, cannot load")
+            logger.warning(f"{path_ckpt} not found, cannot load")
             return
 
         state_dict = torch.load(path_ckpt, map_location=device, weights_only=False)
