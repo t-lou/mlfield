@@ -96,3 +96,17 @@ Each dataset has its own license and usage terms. Users must download
 datasets from their official sources and comply with their licenses.
 
 Dataset-specific notes are provided in each experiment folder.
+
+### Citations about dataset
+
+```
+@InProceedings{bdd100k,
+  author    = {Yu, Fisher and Chen, Haofeng and Wang, Xin and Xian, Wenqi
+               and Chen, Yingying and Liu, Fangchen and Madhavan, Vashisht
+               and Darrell, Trevor},
+  title     = {BDD100K: A Diverse Driving Dataset for Heterogeneous Multitask Learning},
+  booktitle = {IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR)},
+  month     = {June},
+  year      = {2020}
+}
+```
