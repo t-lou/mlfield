@@ -135,7 +135,7 @@ But for your current setup, they’re overkill.
 
 ---
 
-# ⭐ My recommendation for you (Tongxi‑specific)
+# ⭐ My recommendation for you (T‑specific)
 Given your style — clean, explicit, minimal, fully controlled — you should:
 
 - keep your manual training loop

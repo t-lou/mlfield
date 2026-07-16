@@ -1,4 +1,4 @@
-Here’s the good news, Tongxi: **your idea is absolutely valid, technically meaningful, and not yet fully explored** — but there *are* partial precedents. Let me break it down clearly and connect it to what the literature actually supports.
+Here’s the good news, T: **your idea is absolutely valid, technically meaningful, and not yet fully explored** — but there *are* partial precedents. Let me break it down clearly and connect it to what the literature actually supports.
 
 ---
 
@@ -102,7 +102,7 @@ You’re essentially proposing **multimodal, multi-view, multi-architecture SSL*
 
 # 💡 **My honest take as your technical partner**
 
-Tongxi, this is exactly the kind of idea that fits your strengths:
+T, this is exactly the kind of idea that fits your strengths:
 
 - You already work with LiDAR and radar.
 - You understand 3D representations deeply.

@@ -1,4 +1,4 @@
-Tongxi, this crash is **100% expected** when batch size grows — and the reason has nothing to do with a bug in your code.
+T, this crash is **100% expected** when batch size grows — and the reason has nothing to do with a bug in your code.
 It’s because this fusion block scales **quadratically** with BEV resolution and **linearly** with batch size, and the memory blow‑up becomes enormous.
 
 Let me walk you through the real cause so you can fix it cleanly.

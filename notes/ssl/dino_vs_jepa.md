@@ -1,7 +1,7 @@
 **Short answer:**  
 DINO’s *teacher–student* setup and JEPA’s *context–target* setup look similar on the surface, but they solve **different problems**, use **different prediction targets**, and create **different training dynamics**. DINO aligns *embeddings of augmented views*, while JEPA predicts *embeddings of missing or future content*. This leads to major differences in stability, memory use, and what the model learns.
 
-Below is a deep, structured comparison tailored for you, Tongxi.
+Below is a deep, structured comparison tailored for you, T.
 
 ---
 

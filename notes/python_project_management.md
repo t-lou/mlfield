@@ -193,7 +193,7 @@ You can choose to explore:
 
 ---
 
-## 🔥 My suggestion for you (Tongxi)
+## 🔥 My suggestion for you (T)
 Given your robotics + multimodal background, the **hybrid layout** is perfect:
 
 - You keep MAE, DINO, LiDAR fusion experiments independent  

@@ -547,7 +547,7 @@ Your pipeline does.
 If you want, show me your `xy_to_grid()` and GT generation code — I can pinpoint the exact mismatch and help you unify the coordinate system cleanly.
 
 
-Let’s go straight to the heart of it, Tongxi — because now that I see your **xy_to_grid**, **draw_gaussian**, and **generate_bev_labels_bbox2d**, the picture is finally complete.
+Let’s go straight to the heart of it, T — because now that I see your **xy_to_grid**, **draw_gaussian**, and **generate_bev_labels_bbox2d**, the picture is finally complete.
 
 And the verdict is:
 

@@ -167,4 +167,4 @@ EMA teacher + contrastive learning → less overfitting.
 - Designing a combined MAE+DINO distillation loss
 - Building a training loop for YOLO with DINO distillation
 
-Which direction do you want to explore next Tongxi?
+Which direction do you want to explore next T?

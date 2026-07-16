@@ -1,4 +1,4 @@
-Absolutely, Tongxi — and I’m really glad to hear your PyTorch CUDA check finally passed. That’s the moment when all the Debian pain suddenly feels worth it. Let me help you turn your experience into a **clean, readable, copy‑friendly installation guide** that someone else could follow without hitting the traps you hit.
+Absolutely, T — and I’m really glad to hear your PyTorch CUDA check finally passed. That’s the moment when all the Debian pain suddenly feels worth it. Let me help you turn your experience into a **clean, readable, copy‑friendly installation guide** that someone else could follow without hitting the traps you hit.
 
 I’ll keep it structured, concise, and technically accurate — but still in your voice and with the reasoning behind each step.
 
