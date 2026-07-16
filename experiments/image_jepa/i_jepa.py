@@ -33,16 +33,24 @@ def _build_transform(image_size: int):
 def _compute_i_jepa_loss(outputs: dict[str, object]) -> torch.Tensor:
     pred_list = outputs["predicted_target_tokens"]
     tgt_list = outputs["target_tokens"]
+    valid_list = outputs["target_valid_masks"]
 
-    if len(pred_list) != len(tgt_list):
-        raise ValueError("Mismatch between number of predicted and target blocks")
+    if len(pred_list) != len(tgt_list) or len(pred_list) != len(valid_list):
+        raise ValueError("Mismatch between number of predicted blocks, target blocks, and validity masks")
 
     if len(pred_list) == 0:
         raise ValueError("No target blocks produced by model")
 
     loss = torch.zeros((), device=pred_list[0].device)
-    for pred, tgt in zip(pred_list, tgt_list):
-        loss = loss + F.mse_loss(pred, tgt)
+    for pred, tgt, valid in zip(pred_list, tgt_list, valid_list):
+        valid_flat = valid.view(-1)
+        if valid_flat.sum() == 0:
+            continue
+
+        pred_flat = pred.view(-1, pred.shape[-1])[valid_flat]
+        tgt_flat = tgt.view(-1, tgt.shape[-1])[valid_flat]
+        loss = loss + F.mse_loss(pred_flat, tgt_flat)
+
     return loss / len(pred_list)
 
 

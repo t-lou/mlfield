@@ -137,7 +137,7 @@ class I_JEPA(nn.Module):
         self, batch_size: int, device: torch.device
     ) -> tuple[torch.Tensor, List[torch.Tensor]]:
         """
-        Create one context mask and multiple target masks.
+        Create per-image context masks and multiple per-image target masks.
 
         Returns:
             context_keep_mask: (B, N) bool
@@ -146,76 +146,162 @@ class I_JEPA(nn.Module):
         grid_h = self.grid_size
         grid_w = self.grid_size
 
-        context_keep = self._sample_rect_mask(
-            grid_h,
-            grid_w,
-            self.cfg.context_scale_min,
-            self.cfg.context_scale_max,
-            self.cfg.aspect_ratio_min,
-            self.cfg.aspect_ratio_max,
-            device,
-        )
+        context_masks: List[torch.Tensor] = []
+        target_masks: List[List[torch.Tensor]] = [[] for _ in range(self.cfg.num_target_blocks)]
 
-        available = ~context_keep
-        target_masks_1d: List[torch.Tensor] = []
-        for _ in range(self.cfg.num_target_blocks):
-            target = self._sample_rect_mask(
+        for _ in range(batch_size):
+            context_keep = self._sample_rect_mask(
                 grid_h,
                 grid_w,
-                self.cfg.target_scale_min,
-                self.cfg.target_scale_max,
+                self.cfg.context_scale_min,
+                self.cfg.context_scale_max,
                 self.cfg.aspect_ratio_min,
                 self.cfg.aspect_ratio_max,
                 device,
             )
-            target = target & available
+            available = ~context_keep
 
-            if target.sum() == 0:
+            for block_idx in range(self.cfg.num_target_blocks):
+                target = self._sample_rect_mask(
+                    grid_h,
+                    grid_w,
+                    self.cfg.target_scale_min,
+                    self.cfg.target_scale_max,
+                    self.cfg.aspect_ratio_min,
+                    self.cfg.aspect_ratio_max,
+                    device,
+                )
+                target = target & available
+
+                if target.sum() == 0:
+                    avail_idx = torch.where(available)[0]
+                    if avail_idx.numel() == 0:
+                        target = torch.zeros_like(available)
+                        target[torch.randint(0, target.numel(), (1,), device=device)] = True
+                    else:
+                        target = torch.zeros_like(available)
+                        target[avail_idx[torch.randint(0, avail_idx.numel(), (1,), device=device)]] = True
+
+                target_masks[block_idx].append(target)
+
+            context_masks.append(context_keep)
+
+        # If no target blocks were sampled because cfg.num_target_blocks is zero,
+        # fall back to a single random target per batch element.
+        if self.cfg.num_target_blocks == 0:
+            for i in range(batch_size):
+                available = ~context_masks[i]
+                target = torch.zeros_like(available)
                 avail_idx = torch.where(available)[0]
                 if avail_idx.numel() == 0:
-                    break
-                target = torch.zeros_like(available)
-                target[avail_idx[torch.randint(0, avail_idx.numel(), (1,), device=device)]] = True
+                    target[torch.randint(0, target.numel(), (1,), device=device)] = True
+                else:
+                    target[avail_idx[torch.randint(0, avail_idx.numel(), (1,), device=device)]] = True
+                target_masks = [[target] for _ in range(batch_size)]
 
-            target_masks_1d.append(target)
-
-        if len(target_masks_1d) == 0:
-            # Minimal safety fallback: at least one target token
-            fallback = torch.zeros_like(available)
-            fallback[torch.randint(0, fallback.numel(), (1,), device=device)] = True
-            target_masks_1d = [fallback]
-
-        context_keep_mask = context_keep.unsqueeze(0).repeat(batch_size, 1)
-        target_masks = [tm.unsqueeze(0).repeat(batch_size, 1) for tm in target_masks_1d]
+        context_keep_mask = torch.stack(context_masks, dim=0)
+        target_masks = [torch.stack(block_masks, dim=0) for block_masks in target_masks]
         return context_keep_mask, target_masks
+
+    def _gather_padded_target_tokens(
+        self,
+        full_tokens: torch.Tensor,
+        target_masks: List[torch.Tensor],
+    ) -> tuple[List[torch.Tensor], List[torch.Tensor]]:
+        """
+        Gather per-block target tokens and pad each block to a common length.
+
+        Returns:
+            target_tokens: list[(B, max_Nt, D)]
+            target_valid_masks: list[(B, max_Nt)] bool
+        """
+        targets: List[torch.Tensor] = []
+        masks: List[torch.Tensor] = []
+
+        for mask in target_masks:
+            counts = mask.sum(dim=1)
+            max_count = int(counts.max().item())
+            if max_count == 0:
+                max_count = 1
+
+            block_tokens: List[torch.Tensor] = []
+            block_masks: List[torch.Tensor] = []
+            for i in range(mask.shape[0]):
+                idx = torch.where(mask[i])[0]
+                if idx.numel() == 0:
+                    tok = torch.zeros((1, full_tokens.shape[2]), device=full_tokens.device)
+                    valid = torch.zeros((1,), dtype=torch.bool, device=full_tokens.device)
+                else:
+                    tok = full_tokens[i, idx, :]
+                    valid = torch.ones((idx.numel(),), dtype=torch.bool, device=full_tokens.device)
+
+                if tok.shape[0] < max_count:
+                    pad = max_count - tok.shape[0]
+                    tok = torch.cat([tok, torch.zeros((pad, full_tokens.shape[2]), device=full_tokens.device)], dim=0)
+                    valid = torch.cat([valid, torch.zeros((pad,), dtype=torch.bool, device=full_tokens.device)], dim=0)
+
+                block_tokens.append(tok)
+                block_masks.append(valid)
+
+            targets.append(torch.stack(block_tokens, dim=0))
+            masks.append(torch.stack(block_masks, dim=0))
+
+        return targets, masks
 
     def _predict_targets(
         self,
         context_tokens: torch.Tensor,
         target_masks: List[torch.Tensor],
         pos_spatial: torch.Tensor,
-    ) -> List[torch.Tensor]:
+    ) -> tuple[List[torch.Tensor], List[torch.Tensor]]:
         """Predict target-token latents from context tokens and target positions."""
         bsz = context_tokens.shape[0]
         context_z = self.pred_in(context_tokens)
 
         preds: List[torch.Tensor] = []
+        pred_masks: List[torch.Tensor] = []
         pos_proj = self.pred_in_pos(pos_spatial)
 
         for target_mask in target_masks:
-            idx = torch.where(target_mask[0])[0]  # target_masks is assumed to be the same per batch
-            target_queries = self.pred_mask_token.repeat(bsz, idx.numel(), 1)
-            target_queries = target_queries + pos_proj[:, idx, :]  # alternative + pos_spatial[:, idx, :]
+            counts = target_mask.sum(dim=1)
+            max_count = int(counts.max().item())
+            if max_count == 0:
+                max_count = 1
 
-            z = torch.cat([context_z, target_queries], dim=1)
-            for blk in self.pred_blocks:
-                z = blk(z)
-            z = self.pred_norm(z)
+            block_preds: List[torch.Tensor] = []
+            block_valid: List[torch.Tensor] = []
+            for i in range(bsz):
+                idx = torch.where(target_mask[i])[0]
+                if idx.numel() == 0:
+                    target_queries = self.pred_mask_token.repeat(1, 1, 1)
+                    target_queries = target_queries + pos_proj[:, :1, :]
+                    valid = torch.zeros((1,), dtype=torch.bool, device=context_tokens.device)
+                else:
+                    target_queries = self.pred_mask_token.repeat(1, idx.numel(), 1)
+                    target_queries = target_queries + pos_proj[:, idx, :]
+                    valid = torch.ones((idx.numel(),), dtype=torch.bool, device=context_tokens.device)
 
-            pred_target = self.pred_out(z[:, -idx.numel() :, :])
-            preds.append(pred_target)
+                z = torch.cat([context_z[i : i + 1], target_queries], dim=1)
+                for blk in self.pred_blocks:
+                    z = blk(z)
+                z = self.pred_norm(z)
 
-        return preds
+                pred_target = self.pred_out(z[:, -target_queries.shape[1] :, :])
+                if pred_target.shape[1] < max_count:
+                    pad = max_count - pred_target.shape[1]
+                    pred_target = torch.cat(
+                        [pred_target, torch.zeros((1, pad, pred_target.shape[2]), device=pred_target.device)],
+                        dim=1,
+                    )
+                    valid = torch.cat([valid, torch.zeros((pad,), dtype=torch.bool, device=valid.device)], dim=0)
+
+                block_preds.append(pred_target.squeeze(0))
+                block_valid.append(valid)
+
+            preds.append(torch.stack(block_preds, dim=0))
+            pred_masks.append(torch.stack(block_valid, dim=0))
+
+        return preds, pred_masks
 
     def forward(self, imgs: torch.Tensor) -> Dict[str, object]:
         """
@@ -257,12 +343,9 @@ class I_JEPA(nn.Module):
         w_patch = imgs.shape[3] // self.cfg.patch_size
         pos_all = self.context_encoder.interpolate_pos_encoding(h_patch, w_patch)[:, 1:, :]
 
-        predicted_target_tokens = self._predict_targets(context_tokens, target_masks, pos_all)
+        predicted_target_tokens, predicted_target_masks = self._predict_targets(context_tokens, target_masks, pos_all)
 
-        target_tokens: List[torch.Tensor] = []
-        for mask in target_masks:
-            idx = torch.where(mask[0])[0]
-            target_tokens.append(full_target_tokens[:, idx, :])
+        target_tokens, target_valid_masks = self._gather_padded_target_tokens(full_target_tokens, target_masks)
 
         return {
             "predicted_target_tokens": predicted_target_tokens,
@@ -270,6 +353,8 @@ class I_JEPA(nn.Module):
             "context_tokens": context_tokens,
             "context_mask": context_mask,
             "target_masks": target_masks,
+            "target_valid_masks": target_valid_masks,
+            "predicted_target_masks": predicted_target_masks,
         }
 
 
