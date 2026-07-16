@@ -164,7 +164,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--path-config",
         type=str,
-        default="./experiments/image_dino/i_jepa_config.yaml",
+        default="./experiments/image_jepa/i_jepa_config.yaml",
         help="Path to I-JEPA config YAML",
     )
     parser.add_argument("--num-epochs", type=int, default=100, help="Number of epochs to run in this invocation")
