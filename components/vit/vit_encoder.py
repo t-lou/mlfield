@@ -100,7 +100,7 @@ class VitEncoder(nn.Module):
 
         return x
 
-    def forward_full(self, imgs, patch_keep_mask=None, add_cls_token=True):
+    def forward_full(self, imgs, patch_keep_mask=None, add_cls_token=True, return_padding_mask=False):
         """
         Encode image tokens and optionally keep only selected patch tokens.
 
@@ -109,12 +109,14 @@ class VitEncoder(nn.Module):
             patch_keep_mask: Optional boolean mask of shape (B, num_patches),
                 where True means keep this patch token.
             add_cls_token: If True, prepend CLS token before transformer blocks.
+            return_padding_mask: If True, return the padding mask for selected tokens.
 
         Returns:
-            Token features after transformer + norm.
+            Token features after transformer + norm, optionally paired with padding mask.
         """
         x = self._tokenize(imgs, add_cls_token=add_cls_token)
 
+        padding_mask = None
         if patch_keep_mask is not None:
             if patch_keep_mask.ndim != 2:
                 raise ValueError("patch_keep_mask must have shape (B, num_patches)")
@@ -130,19 +132,26 @@ class VitEncoder(nn.Module):
                 token_keep_mask = patch_keep_mask
 
             keep_counts = token_keep_mask.sum(dim=1)
-            if int(keep_counts.min().item()) != int(keep_counts.max().item()):
-                raise ValueError("All samples in a batch must keep the same number of tokens")
-
-            keep_count = int(keep_counts[0].item())
+            max_keep = int(keep_counts.max().item())
             keep_order = torch.argsort(token_keep_mask.to(torch.int64), dim=1, descending=True)
-            keep_idx = keep_order[:, :keep_count]
+            keep_idx = keep_order[:, :max_keep]
             x = torch.gather(x, dim=1, index=keep_idx.unsqueeze(-1).expand(-1, -1, x.shape[2]))
+
+            selected = torch.gather(token_keep_mask, dim=1, index=keep_idx)
+            padding_mask = ~selected
+            x = x.masked_fill(padding_mask.unsqueeze(-1), 0.0)
 
         # Transformer blocks
         for blk in self.blocks:
-            x = blk(x)
+            x = blk(x, padding_mask=padding_mask)
 
-        return self.norm(x)  # Shape: (B, num_tokens, embed_dim)
+        if padding_mask is not None:
+            x = x.masked_fill(padding_mask.unsqueeze(-1), 0.0)
+
+        x = self.norm(x)
+        if return_padding_mask:
+            return x, padding_mask
+        return x
 
     def forward(self, imgs, patch_keep_mask=None, add_cls_token=True):
         """

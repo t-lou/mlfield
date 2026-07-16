@@ -91,7 +91,7 @@ class VitBlock(nn.Module):
         # attention dropout
         self.attn_drop = nn.Dropout(attn_drop)
 
-    def forward(self, x):
+    def forward(self, x, padding_mask: torch.Tensor | None = None):
         B, N, D = x.shape
 
         # --- Attention ---
@@ -108,11 +108,23 @@ class VitBlock(nn.Module):
 
         # scaled dot-product attention
         attn = (q @ k.transpose(-2, -1)) * self.scale
+        if padding_mask is not None:
+            padding_mask = padding_mask.to(torch.bool)
+            # mask out padded key positions for every query
+            key_mask = padding_mask[:, None, None, :]
+            attn = attn.masked_fill(key_mask, torch.finfo(attn.dtype).min)
+            # set padded query rows to zero so they do not contribute after residual
+            query_mask = padding_mask[:, None, :, None]
+            attn = attn.masked_fill(query_mask, 0.0)
+
         attn = attn.softmax(dim=-1)
         attn = self.attn_drop(attn)  # attention dropout
 
         out = attn @ v  # (B, heads, N, head_dim)
         out = out.transpose(1, 2).reshape(B, N, D)
+
+        if padding_mask is not None:
+            out = out.masked_fill(padding_mask.unsqueeze(-1), 0.0)
 
         out = self.proj(out)
         out = self.proj_drop(out)
@@ -124,8 +136,14 @@ class VitBlock(nn.Module):
         x_norm = self.norm2(x)
         mlp_out = self.mlp(x_norm)
 
+        if padding_mask is not None:
+            mlp_out = mlp_out.masked_fill(padding_mask.unsqueeze(-1), 0.0)
+
         # residual + stochastic depth
         x = x + self.drop_path(mlp_out)
+
+        if padding_mask is not None:
+            x = x.masked_fill(padding_mask.unsqueeze(-1), 0.0)
 
         return x
 

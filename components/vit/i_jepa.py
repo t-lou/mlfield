@@ -251,6 +251,7 @@ class I_JEPA(nn.Module):
     def _predict_targets(
         self,
         context_tokens: torch.Tensor,
+        context_padding_mask: torch.Tensor | None,
         target_masks: List[torch.Tensor],
         pos_spatial: torch.Tensor,
     ) -> tuple[List[torch.Tensor], List[torch.Tensor]]:
@@ -282,8 +283,21 @@ class I_JEPA(nn.Module):
                     valid = torch.ones((idx.numel(),), dtype=torch.bool, device=context_tokens.device)
 
                 z = torch.cat([context_z[i : i + 1], target_queries], dim=1)
+                if context_padding_mask is not None:
+                    combined_padding = torch.cat(
+                        [
+                            context_padding_mask[i : i + 1],
+                            torch.zeros(
+                                (1, target_queries.shape[1]), dtype=torch.bool, device=context_padding_mask.device
+                            ),
+                        ],
+                        dim=1,
+                    )
+                else:
+                    combined_padding = None
+
                 for blk in self.pred_blocks:
-                    z = blk(z)
+                    z = blk(z, padding_mask=combined_padding)
                 z = self.pred_norm(z)
 
                 pred_target = self.pred_out(z[:, -target_queries.shape[1] :, :])
@@ -325,10 +339,11 @@ class I_JEPA(nn.Module):
 
         context_mask, target_masks = self._sample_context_and_target_masks(batch_size=bsz, device=device)
 
-        context_tokens = self.context_encoder.forward_full(
+        context_tokens, context_padding_mask = self.context_encoder.forward_full(
             imgs,
             patch_keep_mask=context_mask,
             add_cls_token=False,
+            return_padding_mask=True,
         )
 
         self.target_encoder.eval()
@@ -343,7 +358,9 @@ class I_JEPA(nn.Module):
         w_patch = imgs.shape[3] // self.cfg.patch_size
         pos_all = self.context_encoder.interpolate_pos_encoding(h_patch, w_patch)[:, 1:, :]
 
-        predicted_target_tokens, predicted_target_masks = self._predict_targets(context_tokens, target_masks, pos_all)
+        predicted_target_tokens, predicted_target_masks = self._predict_targets(
+            context_tokens, context_padding_mask, target_masks, pos_all
+        )
 
         target_tokens, target_valid_masks = self._gather_padded_target_tokens(full_target_tokens, target_masks)
 
