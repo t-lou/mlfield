@@ -10,6 +10,7 @@ from torch.utils.data import DataLoader
 from torchvision import transforms
 
 from components.dataset.image_only_dataset import ImageOnlyDataset
+from components.dataset.mask_prefetch import collate_fn_with_masks
 from components.utils.config import load_yaml
 from components.utils.device import get_device, resolve_num_workers
 from components.utils.fps_logger import FpsLogger
@@ -31,6 +32,11 @@ def _build_transform(image_size: int):
 
 
 def _compute_i_jepa_loss(outputs: dict[str, object]) -> torch.Tensor:
+    """Compute I-JEPA loss using fully vectorized masked operations.
+
+    Critical optimization: Keep all computations on GPU without CPU-GPU syncs.
+    Never convert tensor values to Python scalars (no .item(), no += with Python ints).
+    """
     pred_list = outputs["predicted_target_tokens"]
     tgt_list = outputs["target_tokens"]
     valid_list = outputs["target_valid_masks"]
@@ -41,17 +47,25 @@ def _compute_i_jepa_loss(outputs: dict[str, object]) -> torch.Tensor:
     if len(pred_list) == 0:
         raise ValueError("No target blocks produced by model")
 
-    loss = torch.zeros((), device=pred_list[0].device)
+    device = pred_list[0].device
+    total_loss = torch.tensor(0.0, device=device)
+    total_valid_count = torch.tensor(0.0, device=device)
+
     for pred, tgt, valid in zip(pred_list, tgt_list, valid_list):
-        valid_flat = valid.view(-1)
-        if valid_flat.sum() == 0:
-            continue
+        # Compute MSE loss on full tensors without reshaping
+        # Shape: pred (B, T, D), tgt (B, T, D), valid (B, T)
+        loss_per_token = F.mse_loss(pred, tgt, reduction="none").mean(dim=-1)  # (B, T)
 
-        pred_flat = pred.view(-1, pred.shape[-1])[valid_flat]
-        tgt_flat = tgt.view(-1, tgt.shape[-1])[valid_flat]
-        loss = loss + F.mse_loss(pred_flat, tgt_flat)
+        # Apply mask via element-wise multiplication (fully parallelized)
+        # No advanced indexing - pure CUDA operations
+        loss_masked = loss_per_token * valid.float()  # (B, T)
 
-    return loss / len(pred_list)
+        # Accumulate loss and count (all GPU tensors, no conversion to Python)
+        total_loss = total_loss + loss_masked.sum()
+        total_valid_count = total_valid_count + valid.sum().float()
+
+    # Safe division on GPU (no Python scalars involved)
+    return total_loss / torch.clamp(total_valid_count, min=1.0)
 
 
 def _save_checkpoint(path: Path, model: I_JEPA, optimizer: torch.optim.Optimizer) -> None:
@@ -81,8 +95,14 @@ def train(
     prefetch_factor: int = 4,
     persistent_workers: bool = True,
     ema_momentum: float = 0.996,
+    use_mask_prefetch: bool = False,
 ) -> None:
-    """Train I-JEPA with a DINO-like orchestration loop."""
+    """Train I-JEPA with a DINO-like orchestration loop.
+
+    Args:
+        use_mask_prefetch: If True, generate masks in DataLoader prefetch (experimental).
+                          Can improve GPU utilization if mask sampling is bottleneck.
+    """
 
     # SHARED FROM dino.py: checkpoint folder handling.
     dir_ckpt = Path("./i_jepa_checkpoints")
@@ -106,6 +126,13 @@ def train(
         "pin_memory": (device.type == "cuda"),
         "drop_last": True,
     }
+
+    # Use custom collate function if mask prefetching is enabled
+    if use_mask_prefetch:
+        loader_kwargs["collate_fn"] = lambda batch: collate_fn_with_masks(
+            batch, config, device=torch.device("cpu")
+        )  # cuda doesn't seem to be a good idea in dataloader
+
     if resolved_num_workers > 0:
         loader_kwargs["prefetch_factor"] = prefetch_factor
         loader_kwargs["persistent_workers"] = persistent_workers
@@ -138,13 +165,26 @@ def train(
     stop_epoch = next_epoch + num_epochs
     fps_logger = FpsLogger(batch_size=config.batch_size)
 
+    logger.info(f"Mask prefetching: {'ENABLED' if use_mask_prefetch else 'DISABLED'}")
+
     for epoch in range(next_epoch, stop_epoch):
         model.train()
-        for imgs in loader:
+        for batch_data in loader:
+            # Handle both prefetched masks and on-the-fly sampling
+            if use_mask_prefetch:
+                imgs, context_mask_cpu, target_masks_cpu = batch_data
+                # Move masks to GPU
+                context_mask = context_mask_cpu.to(device)
+                target_masks = [m.to(device) for m in target_masks_cpu]
+            else:
+                imgs = batch_data
+                context_mask = None
+                target_masks = None
+
             imgs = imgs.to(device, non_blocking=True)
 
             with amp_context:
-                outputs = model(imgs)
+                outputs = model(imgs, context_mask=context_mask, target_masks=target_masks)
                 loss = _compute_i_jepa_loss(outputs)
 
             optimizer.zero_grad(set_to_none=True)
@@ -196,6 +236,11 @@ if __name__ == "__main__":
         help="Disable persistent DataLoader workers",
     )
     parser.add_argument("--ema-momentum", type=float, default=0.996, help="EMA momentum for target encoder")
+    parser.add_argument(
+        "--use-mask-prefetch",
+        action="store_true",
+        help="Enable mask prefetching via DataLoader (experimental, may improve GPU utilization)",
+    )
     args = parser.parse_args()
 
     cfg = load_yaml(Path(args.path_config), IJEPAConfig)
@@ -208,4 +253,5 @@ if __name__ == "__main__":
         prefetch_factor=args.prefetch_factor,
         persistent_workers=not args.disable_persistent_workers,
         ema_momentum=args.ema_momentum,
+        use_mask_prefetch=args.use_mask_prefetch,
     )

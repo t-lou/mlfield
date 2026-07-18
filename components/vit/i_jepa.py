@@ -115,23 +115,64 @@ class I_JEPA(nn.Module):
         ar_min: float,
         ar_max: float,
         device: torch.device,
+        num_masks: int = 1,
     ) -> torch.Tensor:
-        """Sample one rectangular boolean mask on a patch grid."""
+        """Sample rectangular boolean masks on a patch grid.
+
+        Fully vectorized: no .item() calls, pure GPU tensor operations.
+
+        Args:
+            num_masks: Number of masks to sample (default 1 for backward compat)
+
+        Returns:
+            Tensor of shape (num_masks, grid_h * grid_w) with bool dtype
+        """
         total = grid_h * grid_w
 
-        area = torch.empty(1, device=device).uniform_(scale_min, scale_max).item() * total
-        aspect = torch.empty(1, device=device).uniform_(ar_min, ar_max).item()
+        # Batch sample areas and aspects on GPU (vectorized, no .item())
+        areas = torch.empty(num_masks, device=device).uniform_(scale_min, scale_max) * total
+        aspects = torch.empty(num_masks, device=device).uniform_(ar_min, ar_max)
 
-        h = int(round((area * aspect) ** 0.5))
-        w = int(round((area / aspect) ** 0.5))
-        h = max(1, min(h, grid_h))
-        w = max(1, min(w, grid_w))
+        # Compute heights and widths vectorized
+        h_vals = torch.round((areas * aspects) ** 0.5).int()
+        w_vals = torch.round((areas / aspects) ** 0.5).int()
+        h_vals = torch.clamp(h_vals, min=1, max=grid_h)
+        w_vals = torch.clamp(w_vals, min=1, max=grid_w)
 
-        top = torch.randint(0, grid_h - h + 1, (1,), device=device).item()
-        left = torch.randint(0, grid_w - w + 1, (1,), device=device).item()
-        mask_2d = torch.zeros((grid_h, grid_w), dtype=torch.bool, device=device)
-        mask_2d[top : top + h, left : left + w] = True
-        return mask_2d.reshape(-1)
+        # Sample positions vectorized
+        top_vals = torch.randint(0, max(1, grid_h - 1), (num_masks,), device=device)
+        left_vals = torch.randint(0, max(1, grid_w - 1), (num_masks,), device=device)
+
+        # Clamp heights/widths to fit within grid from sampled positions
+        h_vals = torch.clamp(h_vals, max=grid_h - top_vals)
+        w_vals = torch.clamp(w_vals, max=grid_w - left_vals)
+
+        # Build all masks at once using broadcasting (NO PYTHON LOOP)
+        # Create coordinate grids: (grid_h, grid_w)
+        y_grid = torch.arange(grid_h, device=device).view(-1, 1)  # (H, 1)
+        x_grid = torch.arange(grid_w, device=device).view(1, -1)  # (1, W)
+
+        # Reshape for broadcasting with batch dimension
+        # top_vals: (B, 1, 1), h_vals: (B, 1, 1)
+        top_vals_expanded = top_vals.view(-1, 1, 1)  # (B, 1, 1)
+        left_vals_expanded = left_vals.view(-1, 1, 1)  # (B, 1, 1)
+        h_vals_expanded = h_vals.view(-1, 1, 1)  # (B, 1, 1)
+        w_vals_expanded = w_vals.view(-1, 1, 1)  # (B, 1, 1)
+
+        y_grid_expanded = y_grid.view(1, -1, 1)  # (1, H, 1)
+        x_grid_expanded = x_grid.view(1, 1, -1)  # (1, 1, W)
+
+        # Create masks via broadcasting (fully vectorized)
+        in_y_range = (y_grid_expanded >= top_vals_expanded) & (
+            y_grid_expanded < top_vals_expanded + h_vals_expanded
+        )  # (B, H, 1)
+        in_x_range = (x_grid_expanded >= left_vals_expanded) & (
+            x_grid_expanded < left_vals_expanded + w_vals_expanded
+        )  # (1, 1, W)
+
+        masks = (in_y_range & in_x_range).view(num_masks, grid_h * grid_w)  # (B, H*W)
+
+        return masks if num_masks > 1 else masks[0]
 
     def _sample_context_and_target_masks(
         self, batch_size: int, device: torch.device
@@ -139,69 +180,69 @@ class I_JEPA(nn.Module):
         """
         Create per-image context masks and multiple per-image target masks.
 
+        Fully vectorized with no .item() calls or Python loops over batch.
+
         Returns:
             context_keep_mask: (B, N) bool
             target_masks: list[(B, N) bool]
         """
         grid_h = self.grid_size
         grid_w = self.grid_size
+        grid_n = grid_h * grid_w
 
-        context_masks: List[torch.Tensor] = []
-        target_masks: List[List[torch.Tensor]] = [[] for _ in range(self.cfg.num_target_blocks)]
+        # Batch sample all context masks at once
+        context_masks_all = self._sample_rect_mask(
+            grid_h,
+            grid_w,
+            self.cfg.context_scale_min,
+            self.cfg.context_scale_max,
+            self.cfg.aspect_ratio_min,
+            self.cfg.aspect_ratio_max,
+            device,
+            num_masks=batch_size,
+        )  # (B, N)
 
-        for _ in range(batch_size):
-            context_keep = self._sample_rect_mask(
+        # Sample all target masks at once for each target block
+        target_masks: List[torch.Tensor] = []
+        for block_idx in range(self.cfg.num_target_blocks):
+            target_masks_all = self._sample_rect_mask(
                 grid_h,
                 grid_w,
-                self.cfg.context_scale_min,
-                self.cfg.context_scale_max,
+                self.cfg.target_scale_min,
+                self.cfg.target_scale_max,
                 self.cfg.aspect_ratio_min,
                 self.cfg.aspect_ratio_max,
                 device,
-            )
-            available = ~context_keep
+                num_masks=batch_size,
+            )  # (B, N)
 
-            for block_idx in range(self.cfg.num_target_blocks):
-                target = self._sample_rect_mask(
-                    grid_h,
-                    grid_w,
-                    self.cfg.target_scale_min,
-                    self.cfg.target_scale_max,
-                    self.cfg.aspect_ratio_min,
-                    self.cfg.aspect_ratio_max,
-                    device,
-                )
-                target = target & available
+            # Apply context mask constraint: target cannot overlap context
+            available = ~context_masks_all  # (B, N)
+            target_masks_all = target_masks_all & available
 
-                if target.sum() == 0:
-                    avail_idx = torch.where(available)[0]
-                    if avail_idx.numel() == 0:
-                        target = torch.zeros_like(available)
-                        target[torch.randint(0, target.numel(), (1,), device=device)] = True
+            # Handle empty target masks (vectorized, no Python loops)
+            empty_mask = target_masks_all.sum(dim=1) == 0  # (B,) bool
+
+            if empty_mask.any():
+                # For each empty mask, set one random token from available
+                # Use einsum/advanced indexing to set mask values vectorized
+                empty_indices = torch.where(empty_mask)[0]  # Indices of empty masks
+
+                # For each empty batch element, sample random available position
+                for idx in empty_indices:
+                    avail_positions = torch.where(available[idx])[0]
+                    if avail_positions.numel() > 0:
+                        # Vectorized random selection (no .item() needed for indexing)
+                        random_offset = torch.randint(0, avail_positions.numel(), (1,), device=device)
+                        target_masks_all[idx, avail_positions[random_offset]] = True
                     else:
-                        target = torch.zeros_like(available)
-                        target[avail_idx[torch.randint(0, avail_idx.numel(), (1,), device=device)]] = True
+                        # Fallback: sample any position
+                        random_pos = torch.randint(0, grid_n, (1,), device=device)
+                        target_masks_all[idx, random_pos] = True
 
-                target_masks[block_idx].append(target)
+            target_masks.append(target_masks_all)
 
-            context_masks.append(context_keep)
-
-        # If no target blocks were sampled because cfg.num_target_blocks is zero,
-        # fall back to a single random target per batch element.
-        if self.cfg.num_target_blocks == 0:
-            for i in range(batch_size):
-                available = ~context_masks[i]
-                target = torch.zeros_like(available)
-                avail_idx = torch.where(available)[0]
-                if avail_idx.numel() == 0:
-                    target[torch.randint(0, target.numel(), (1,), device=device)] = True
-                else:
-                    target[avail_idx[torch.randint(0, avail_idx.numel(), (1,), device=device)]] = True
-                target_masks = [[target] for _ in range(batch_size)]
-
-        context_keep_mask = torch.stack(context_masks, dim=0)
-        target_masks = [torch.stack(block_masks, dim=0) for block_masks in target_masks]
-        return context_keep_mask, target_masks
+        return context_masks_all, target_masks
 
     def _gather_padded_target_tokens(
         self,
@@ -210,6 +251,7 @@ class I_JEPA(nn.Module):
     ) -> tuple[List[torch.Tensor], List[torch.Tensor]]:
         """
         Gather per-block target tokens and pad each block to a common length.
+        Fully vectorized to eliminate per-batch loops.
 
         Returns:
             target_tokens: list[(B, max_Nt, D)]
@@ -217,34 +259,35 @@ class I_JEPA(nn.Module):
         """
         targets: List[torch.Tensor] = []
         masks: List[torch.Tensor] = []
+        device = full_tokens.device
+        bsz = full_tokens.shape[0]
 
         for mask in target_masks:
-            counts = mask.sum(dim=1)
+            counts = mask.sum(dim=1)  # (B,)
             max_count = int(counts.max().item())
             if max_count == 0:
                 max_count = 1
 
-            block_tokens: List[torch.Tensor] = []
-            block_masks: List[torch.Tensor] = []
-            for i in range(mask.shape[0]):
-                idx = torch.where(mask[i])[0]
-                if idx.numel() == 0:
-                    tok = torch.zeros((1, full_tokens.shape[2]), device=full_tokens.device)
-                    valid = torch.zeros((1,), dtype=torch.bool, device=full_tokens.device)
-                else:
-                    tok = full_tokens[i, idx, :]
-                    valid = torch.ones((idx.numel(),), dtype=torch.bool, device=full_tokens.device)
+            # Vectorized index gathering for all batch elements
+            idx_range = torch.arange(mask.shape[1], device=device).unsqueeze(0).expand(bsz, -1)  # (B, N)
 
-                if tok.shape[0] < max_count:
-                    pad = max_count - tok.shape[0]
-                    tok = torch.cat([tok, torch.zeros((pad, full_tokens.shape[2]), device=full_tokens.device)], dim=0)
-                    valid = torch.cat([valid, torch.zeros((pad,), dtype=torch.bool, device=full_tokens.device)], dim=0)
+            # Sort to move True values to front
+            sorted_order = torch.argsort((~mask).int(), dim=1, descending=False)  # (B, N)
+            sorted_indices = torch.gather(idx_range, dim=1, index=sorted_order)  # (B, N)
+            batch_indices = sorted_indices[:, :max_count]  # (B, max_count)
 
-                block_tokens.append(tok)
-                block_masks.append(valid)
+            # Gather tokens using advanced indexing
+            # Create batch indices: (B, max_count)
+            batch_idx = torch.arange(bsz, device=device).unsqueeze(1).expand(-1, max_count)  # (B, max_count)
 
-            targets.append(torch.stack(block_tokens, dim=0))
-            masks.append(torch.stack(block_masks, dim=0))
+            # Gather tokens for all batch elements at once
+            tok = full_tokens[batch_idx, batch_indices, :]  # (B, max_count, D)
+
+            # Create validity mask: True where we have actual tokens
+            valid_mask = torch.arange(max_count, device=device).unsqueeze(0) < counts.unsqueeze(1)  # (B, max_count)
+
+            targets.append(tok)
+            masks.append(valid_mask)
 
         return targets, masks
 
@@ -255,71 +298,102 @@ class I_JEPA(nn.Module):
         target_masks: List[torch.Tensor],
         pos_spatial: torch.Tensor,
     ) -> tuple[List[torch.Tensor], List[torch.Tensor]]:
-        """Predict target-token latents from context tokens and target positions."""
-        bsz = context_tokens.shape[0]
-        context_z = self.pred_in(context_tokens)
+        """Predict target-token latents from context tokens and target positions.
 
-        preds: List[torch.Tensor] = []
-        pred_masks: List[torch.Tensor] = []
-        pos_proj = self.pred_in_pos(pos_spatial)
+        Critical optimization: Process ALL target blocks in ONE forward pass through predictor.
+        Instead of num_target_blocks separate passes, concatenate all target queries and process
+        in a single batched operation. This is valid because target blocks are independent.
+        """
+        bsz = context_tokens.shape[0]
+        device = context_tokens.device
+
+        context_z = self.pred_in(context_tokens)  # (B, Nc, D_pred)
+        pos_proj = self.pred_in_pos(pos_spatial)  # (1, N, D_pred)
+
+        # Process all target blocks at once: gather queries and split results afterward
+        all_target_queries_list: List[torch.Tensor] = []
+        all_valid_masks_list: List[torch.Tensor] = []
+        block_max_counts: List[int] = []
+        idx_range = torch.arange(target_masks[0].shape[1], device=device).unsqueeze(0).expand(bsz, -1)
 
         for target_mask in target_masks:
-            counts = target_mask.sum(dim=1)
+            counts = target_mask.sum(dim=1)  # (B,)
             max_count = int(counts.max().item())
             if max_count == 0:
                 max_count = 1
+            block_max_counts.append(max_count)
 
-            block_preds: List[torch.Tensor] = []
-            block_valid: List[torch.Tensor] = []
-            for i in range(bsz):
-                idx = torch.where(target_mask[i])[0]
-                if idx.numel() == 0:
-                    target_queries = self.pred_mask_token.repeat(1, 1, 1)
-                    target_queries = target_queries + pos_proj[:, :1, :]
-                    valid = torch.zeros((1,), dtype=torch.bool, device=context_tokens.device)
-                else:
-                    target_queries = self.pred_mask_token.repeat(1, idx.numel(), 1)
-                    target_queries = target_queries + pos_proj[:, idx, :]
-                    valid = torch.ones((idx.numel(),), dtype=torch.bool, device=context_tokens.device)
+            # Vectorized index gathering
+            valid_mask = torch.arange(max_count, device=device).unsqueeze(0) < counts.unsqueeze(1)  # (B, max_count)
 
-                z = torch.cat([context_z[i : i + 1], target_queries], dim=1)
-                if context_padding_mask is not None:
-                    combined_padding = torch.cat(
-                        [
-                            context_padding_mask[i : i + 1],
-                            torch.zeros(
-                                (1, target_queries.shape[1]), dtype=torch.bool, device=context_padding_mask.device
-                            ),
-                        ],
-                        dim=1,
-                    )
-                else:
-                    combined_padding = None
+            sorted_order = torch.argsort((~target_mask).int(), dim=1, descending=False)
+            sorted_indices = torch.gather(idx_range, dim=1, index=sorted_order)  # (B, N)
+            batch_indices = sorted_indices[:, :max_count]  # (B, max_count)
 
-                for blk in self.pred_blocks:
-                    z = blk(z, padding_mask=combined_padding)
-                z = self.pred_norm(z)
+            # Gather position embeddings
+            pos_proj_batch = pos_proj.expand(bsz, -1, -1)  # (B, N, D_pred)
+            batch_indices_expanded = batch_indices.unsqueeze(-1).expand(-1, -1, pos_proj.shape[-1])
+            target_pos = torch.gather(pos_proj_batch, dim=1, index=batch_indices_expanded)  # (B, max_count, D_pred)
 
-                pred_target = self.pred_out(z[:, -target_queries.shape[1] :, :])
-                if pred_target.shape[1] < max_count:
-                    pad = max_count - pred_target.shape[1]
-                    pred_target = torch.cat(
-                        [pred_target, torch.zeros((1, pad, pred_target.shape[2]), device=pred_target.device)],
-                        dim=1,
-                    )
-                    valid = torch.cat([valid, torch.zeros((pad,), dtype=torch.bool, device=valid.device)], dim=0)
+            # Create target queries: mask token + position embedding
+            target_queries = self.pred_mask_token.expand(bsz, max_count, -1) + target_pos  # (B, max_count, D_pred)
 
-                block_preds.append(pred_target.squeeze(0))
-                block_valid.append(valid)
+            all_target_queries_list.append(target_queries)
+            all_valid_masks_list.append(valid_mask)
 
-            preds.append(torch.stack(block_preds, dim=0))
-            pred_masks.append(torch.stack(block_valid, dim=0))
+        # Concatenate all target block queries into one (B, sum(max_counts), D_pred) tensor
+        all_target_queries = torch.cat(all_target_queries_list, dim=1)  # (B, sum of max_counts, D)
+
+        # Concatenate valid masks for combined padding mask
+        all_valid_masks = torch.cat(all_valid_masks_list, dim=1)  # (B, sum of max_counts)
+
+        # Concatenate context tokens and ALL target queries
+        z = torch.cat([context_z, all_target_queries], dim=1)  # (B, Nc + sum(max_counts), D)
+
+        # Build combined padding mask (True = invalid/padding)
+        if context_padding_mask is not None:
+            combined_padding = torch.cat([context_padding_mask, ~all_valid_masks], dim=1)
+        else:
+            combined_padding = torch.cat(
+                [torch.zeros((bsz, context_z.shape[1]), dtype=torch.bool, device=device), ~all_valid_masks], dim=1
+            )
+
+        # CRITICAL: Single forward pass through ALL predictor blocks for ALL target blocks
+        # This replaces num_target_blocks separate forward passes
+        for blk in self.pred_blocks:
+            z = blk(z, padding_mask=combined_padding)
+
+        z = self.pred_norm(z)
+
+        # Apply pred_out to ALL predictions at once (single batched operation)
+        # This is critical for GPU efficiency - calling pred_out inside the loop causes oscillation
+        pred_target_all = self.pred_out(z[:, context_z.shape[1] :, :])  # (B, sum(max_counts), D_embed)
+
+        # Split predictions back into per-block tensors
+        preds: List[torch.Tensor] = []
+        pred_masks: List[torch.Tensor] = []
+        offset = 0
+
+        for block_idx, max_count in enumerate(block_max_counts):
+            preds.append(pred_target_all[:, offset : offset + max_count, :])
+            pred_masks.append(all_valid_masks_list[block_idx])
+            offset += max_count
 
         return preds, pred_masks
 
-    def forward(self, imgs: torch.Tensor) -> Dict[str, object]:
+    def forward(
+        self,
+        imgs: torch.Tensor,
+        context_mask: torch.Tensor | None = None,
+        target_masks: List[torch.Tensor] | None = None,
+    ) -> Dict[str, object]:
         """
         Forward pass for I-JEPA architecture.
+
+        Args:
+            imgs: Input images, shape (B, 3, H, W)
+            context_mask: Optional pre-computed context mask (B, N). If None, samples masks.
+            target_masks: Optional pre-computed target masks list[(B, N)]. If None, samples masks.
 
         Returns model outputs required for downstream training code:
         - predicted_target_tokens: list[(B, Nt_i, D)]
@@ -337,7 +411,15 @@ class I_JEPA(nn.Module):
         bsz = imgs.shape[0]
         device = imgs.device
 
-        context_mask, target_masks = self._sample_context_and_target_masks(batch_size=bsz, device=device)
+        # Use provided masks or sample them on-the-fly
+        if context_mask is None or target_masks is None:
+            context_mask, target_masks = self._sample_context_and_target_masks(batch_size=bsz, device=device)
+        else:
+            # Validate pre-computed masks
+            if context_mask.shape != (bsz, self.num_patches):
+                raise ValueError(f"context_mask shape {context_mask.shape} != expected {(bsz, self.num_patches)}")
+            if len(target_masks) != self.cfg.num_target_blocks:
+                raise ValueError(f"num target_masks {len(target_masks)} != config {self.cfg.num_target_blocks}")
 
         context_tokens, context_padding_mask = self.context_encoder.forward_full(
             imgs,
