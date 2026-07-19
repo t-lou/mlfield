@@ -17,6 +17,7 @@ def get_device():
     else:
         device = torch.device("cpu")
         logger.info("Using CPU")
+    return device
 
 
 def resolve_num_workers(num_workers: Optional[int] = None, max_num_workers: int = 20) -> int:
