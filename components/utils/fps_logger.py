@@ -14,6 +14,7 @@ class FpsLogger:
         self._count_tick = 0
 
     def tick(self):
+        """Increment the FPS counter and log if the interval is reached."""
         self._count_tick += 1
         self._num += self._inc
 

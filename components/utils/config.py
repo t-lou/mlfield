@@ -11,6 +11,7 @@ T = TypeVar("T")
 
 
 def _enum_to_value(d):
+    """Convert Enum values in a dictionary to their underlying values."""
     r = {}
     for k, v in d.items():
         if isinstance(v, Enum):
@@ -21,6 +22,7 @@ def _enum_to_value(d):
 
 
 def dump_yaml(obj: T, path: Path) -> None:
+    """Dump a dataclass object to a YAML file, preserving field order and converting Enums to their values."""
     raw_dict = asdict(obj)
 
     raw_dict = _enum_to_value(raw_dict)
@@ -32,11 +34,13 @@ def dump_yaml(obj: T, path: Path) -> None:
 
 
 def create_default(cls: Type[T], path: Path) -> None:
+    """Create a default instance of a dataclass and dump it to a YAML file."""
     obj = cls(**{f.name: f.default if f.default is not None else None for f in fields(cls)})
     dump_yaml(obj, path)
 
 
 def load_yaml(path: Path, cls: Type[T]) -> T:
+    """Load a YAML file into a dataclass object, ignoring unknown fields."""
     if not path.exists():
         logger.info(f"Cannot find config {path}, with create with default values.")
         create_default(cls, path)
