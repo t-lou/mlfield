@@ -110,3 +110,27 @@ Dataset-specific notes are provided in each experiment folder.
   year      = {2020}
 }
 ```
+
+```
+@article{geyer2020a2d2,
+  title   = {{A2D2}: {Audi Autonomous Driving Dataset}},
+  author  = {Geyer, Jakob and Kassahun, Yohannes and Mahmudi, Mentar and
+             Ricou, Xavier and Durgesh, Rupesh and Chung, Andrew S. and
+             Hauswald, Lorenz and Pham, Viet Hoang and M{\"u}hlegg, Maximilian and
+             Dorn, Sebastian and Fernandez, Tiffany and J{\"a}nicke, Martin and
+             Mirashi, Sudesh and Savani, Chiragkumar and Sturm, Martin and
+             Vorobiov, Oleksandr and Oelker, Martin and Garreis, Sebastian and
+             Schuberth, Peter},
+  journal = {arXiv preprint arXiv:2004.06320},
+  year    = {2020}
+}
+```
+
+```
+@article{openimages,
+  title={The Open Images Dataset V4: Unified image classification, object detection, and visual relationship detection at scale},
+  author={Kuznetsova, Alina and Rom, Hassan and Alldrin, Neil and Uijlings, Jasper and Krasin, Ivan and Pont-Tuset, Jordi and Kamali, Shahab and Popov, Stefan and Malloci, Matteo and Kolesnikov, Alexander and Duerig, Tom and Ferrari, Vittorio},
+  journal={International Journal of Computer Vision (IJCV)},
+  year={2020}
+}
+```
