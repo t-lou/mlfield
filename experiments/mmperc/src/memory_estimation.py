@@ -109,8 +109,9 @@ def get_parameter_size(model: torch.nn.Module) -> int:
 
 
 if __name__ == "__main__":
-    from common.device import get_best_device
     from datasets.a2d2_dataset import A2D2Dataset
+
+    from common.device import get_best_device
     from model.simple_model import SimpleModel
 
     device: str = get_best_device()

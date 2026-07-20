@@ -2,27 +2,27 @@ from __future__ import annotations
 
 from typing import Tuple
 
-from common.params import BACKBONE_STRIDE, BEV_H, BEV_W, X_RANGE, Y_RANGE
+from components.definitions.mmperc import MmpercParams
 
 
 # ================================================================
 # Resolution helpers
 # ================================================================
-def get_res() -> Tuple[float, float]:
+def get_res(mmperc_params: MmpercParams) -> Tuple[float, float]:
     """
     Returns (res_x, res_y) in meters per pixel.
     res_x: meters per pixel along X (width)
     res_y: meters per pixel along Y (height)
     """
-    res_x = (X_RANGE[1] - X_RANGE[0]) / BEV_W
-    res_y = (Y_RANGE[1] - Y_RANGE[0]) / BEV_H
+    res_x = (mmperc_params.x_range[1] - mmperc_params.x_range[0]) / mmperc_params.bev_params.bev_w
+    res_y = (mmperc_params.y_range[1] - mmperc_params.y_range[0]) / mmperc_params.bev_params.bev_h
     return res_x, res_y
 
 
 # ================================================================
 # World → Grid
 # ================================================================
-def xy_to_grid(x: float, y: float) -> Tuple[int, int]:
+def xy_to_grid(x: float, y: float, mmperc_params: MmpercParams) -> Tuple[int, int]:
     """
     Convert world coordinates (x, y) in meters into BEV grid indices (ix, iy).
 
@@ -37,8 +37,8 @@ def xy_to_grid(x: float, y: float) -> Tuple[int, int]:
     res_x, res_y = get_res()
 
     # Convert meters → pixel index
-    gx = (x - X_RANGE[0]) / res_x
-    gy = (y - Y_RANGE[0]) / res_y
+    gx = (x - mmperc_params.x_range[0]) / res_x
+    gy = (y - mmperc_params.y_range[0]) / res_y
 
     ix = int(gx)
     iy = int(gy)
@@ -51,7 +51,7 @@ def xy_to_grid(x: float, y: float) -> Tuple[int, int]:
 # ================================================================
 
 
-def xy_to_grid_stride(x: float, y: float) -> Tuple[int, int]:
+def xy_to_grid_stride(x: float, y: float, mmperc_params: MmpercParams) -> Tuple[int, int]:
     """
     Convert world coordinates (x, y) into BEV grid indices (ix, iy)
     for a downsampled grid with the given stride.
@@ -64,11 +64,11 @@ def xy_to_grid_stride(x: float, y: float) -> Tuple[int, int]:
     ix indexes width  (X direction)
     iy indexes height (Y direction)
     """
-    stride = float(BACKBONE_STRIDE)
-    res_x, res_y = get_res()
+    stride = float(mmperc_params.backbone_stride)
+    res_x, res_y = get_res(mmperc_params)
 
-    gx = (x - X_RANGE[0]) / (res_x * stride)
-    gy = (y - Y_RANGE[0]) / (res_y * stride)
+    gx = (x - mmperc_params.x_range[0]) / (res_x * stride)
+    gy = (y - mmperc_params.y_range[0]) / (res_y * stride)
 
     ix = int(gx)
     iy = int(gy)
@@ -78,7 +78,7 @@ def xy_to_grid_stride(x: float, y: float) -> Tuple[int, int]:
 # ================================================================
 # Grid → World
 # ================================================================
-def grid_to_xy(ix: int, iy: int) -> Tuple[float, float]:
+def grid_to_xy(ix: int, iy: int, mmperc_params: MmpercParams) -> Tuple[float, float]:
     """
     Convert BEV grid indices (ix, iy) back into world coordinates (x, y).
 
@@ -88,10 +88,10 @@ def grid_to_xy(ix: int, iy: int) -> Tuple[float, float]:
     Returns:
         (x, y) in meters.
     """
-    res_x, res_y = get_res()
+    res_x, res_y = get_res(mmperc_params)
 
-    x = X_RANGE[0] + ix * res_x
-    y = Y_RANGE[0] + iy * res_y
+    x = mmperc_params.x_range[0] + ix * res_x
+    y = mmperc_params.y_range[0] + iy * res_y
 
     return x, y
 
@@ -101,15 +101,15 @@ def grid_to_xy(ix: int, iy: int) -> Tuple[float, float]:
 # ================================================================
 
 
-def grid_to_xy_stride(ix: int, iy: int) -> tuple[float, float]:
+def grid_to_xy_stride(ix: int, iy: int, mmperc_params: MmpercParams) -> tuple[float, float]:
     """
     Convert BEV grid indices (ix, iy) at a downsampled stride
     back into world coordinates (x, y).
     """
-    stride = float(BACKBONE_STRIDE)
-    res_x, res_y = get_res()
+    stride = float(mmperc_params.backbone_stride)
+    res_x, res_y = get_res(mmperc_params)
 
-    x = X_RANGE[0] + ix * (res_x * stride)
-    y = Y_RANGE[0] + iy * (res_y * stride)
+    x = mmperc_params.x_range[0] + ix * (res_x * stride)
+    y = mmperc_params.y_range[0] + iy * (res_y * stride)
 
     return x, y

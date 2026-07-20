@@ -2,11 +2,11 @@ import sys
 from dataclasses import dataclass
 
 import torch.optim as optim
+from datasets.a2d2_dataset import A2D2Dataset, bev_collate
 from torch.utils.data import DataLoader
 
 import common.params as params
 from common.device import get_best_device
-from datasets.a2d2_dataset import A2D2Dataset, bev_collate
 from model.simple_model import SimpleModel
 from pipeline.train_a2d2 import train_model
 

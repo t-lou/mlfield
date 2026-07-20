@@ -6,11 +6,11 @@ from typing import Tuple
 
 import numpy as np
 import torch
+from common.bev_utils import get_res, grid_to_xy
+from datasets.a2d2_dataset import A2D2Dataset, bev_collate
 from torch.utils.data import DataLoader
 
-from common.bev_utils import get_res, grid_to_xy
 from common.device import get_best_device
-from datasets.a2d2_dataset import A2D2Dataset, bev_collate
 from model.simple_model import SimpleModel
 
 # ================================================================

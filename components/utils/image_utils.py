@@ -4,10 +4,8 @@ import numpy as np
 import torch.nn.functional as F
 from PIL import Image
 
-import common.params as params
 
-
-def rescale_image(x, scale_factor: float = params.IMAGE_SCALE, is_label: bool = False):
+def rescale_image(x, scale_factor: float, is_label: bool = False):
     if scale_factor == 1.0:
         return x
 

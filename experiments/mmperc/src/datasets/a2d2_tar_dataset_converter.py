@@ -11,10 +11,9 @@ from pathlib import Path, PurePosixPath
 from typing import Dict, List, Tuple
 
 import numpy as np
+from common.utils import encode_png_array
 from PIL import Image
 from tqdm import tqdm
-
-from common.utils import encode_png_array
 
 
 class A2D2TarDatasetConverter:

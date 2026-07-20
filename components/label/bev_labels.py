@@ -3,8 +3,8 @@ from typing import List
 
 import torch
 
-import common.params as params
-from common.bev_utils import get_res, grid_to_xy, xy_to_grid
+from components.definitions.mmperc import MmpercParams
+from components.utils.bev_utils import get_res, grid_to_xy, xy_to_grid
 
 GAUSSIAN_CACHE = {}
 
@@ -52,6 +52,7 @@ def draw_gaussian(heatmap: torch.Tensor, cx: int, cy: int, radius: int) -> None:
 
 def generate_bev_labels_bbox2d(
     gt_boxes: List[torch.Tensor],
+    mmperc_params: MmpercParams = MmpercParams(),
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """
     gt_boxes: list of tensors, each (N, 7) with [x, y, z, w, l_, h, yaw]
@@ -61,8 +62,8 @@ def generate_bev_labels_bbox2d(
         reg:     (B, 6, H_out, W_out)
         mask:    (B, 1, H_out, W_out)
     """
-    bev_h = params.BEV_H
-    bev_w = params.BEV_W
+    bev_h = mmperc_params.bev_params.bev_h
+    bev_w = mmperc_params.bev_params.bev_w
 
     B = len(gt_boxes)
     heatmap = torch.zeros((B, 1, bev_h, bev_w), dtype=torch.float16)

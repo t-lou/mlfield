@@ -1,9 +1,9 @@
 import torch
+from datasets.a2d2_dataset import A2D2Dataset, bev_collate
 from torch.utils.data import DataLoader
 from torchviz import make_dot
 
 import common.params as params
-from datasets.a2d2_dataset import A2D2Dataset, bev_collate
 from model.simple_model import SimpleModel
 
 
