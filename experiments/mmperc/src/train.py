@@ -1,30 +1,17 @@
 import sys
-from dataclasses import dataclass
 
 import torch.optim as optim
+from components.definitions.train import TrainConfig
+from components.mmperc.model.simple_model import SimpleModel
+from components.mmperc.pipeline.train_a2d2 import train_model
+from components.utils.device import get_device
 from datasets.a2d2_dataset import A2D2Dataset, bev_collate
 from torch.utils.data import DataLoader
 
-import common.params as params
-from common.device import get_best_device
-from model.simple_model import SimpleModel
-from pipeline.train_a2d2 import train_model
 
-
-@dataclass
-class TrainConfig:
-    # DataLoader
-    batch_size: int = 2
-    num_workers: int = 0
-    prefetch_factor: int = 2
-    pin_memory: bool = False
-    persistent_workers: bool = False
-    shuffle: bool = True
-    num_epoch: int = 10
-
-
-def main(config_name: str):
-    device = get_best_device()
+def main(config_name: str = "lite"):
+    path_data = ""
+    device = get_device()
     settings = {
         "lite": TrainConfig(
             batch_size=2,
@@ -49,7 +36,7 @@ def main(config_name: str):
 
     chosen_setting = settings[config_name]
 
-    dataset_train = A2D2Dataset(root=params.PATH_TRAIN)
+    dataset_train = A2D2Dataset(root=path_data)
     dataloader_train = DataLoader(
         dataset_train,
         batch_size=chosen_setting.batch_size,
@@ -61,7 +48,7 @@ def main(config_name: str):
         prefetch_factor=chosen_setting.prefetch_factor,
     )
 
-    dataset_eval = A2D2Dataset(root=params.PATH_EVAL)
+    dataset_eval = A2D2Dataset(root=path_data)
     dataloader_eval = DataLoader(
         dataset_eval,
         batch_size=chosen_setting.batch_size * 2,

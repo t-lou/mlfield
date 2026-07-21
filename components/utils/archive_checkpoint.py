@@ -5,6 +5,8 @@ from datetime import datetime
 
 import torch
 
+from components.utils.logger import logger
+
 
 def ensure_dir(path: str):
     os.makedirs(path, exist_ok=True)
@@ -40,7 +42,7 @@ def find_latest_epoch_checkpoint(ckpt_dir: str) -> tuple[int, str] | None:
 def save_checkpoint(model, path: str):
     ensure_dir(os.path.dirname(path))
     torch.save(model.state_dict(), path)
-    print(f"[Checkpoint] Saved: {path}")
+    logger.info(f"[Checkpoint] Saved: {path}")
 
 
 def archive_existing_model(path: str):
@@ -56,4 +58,4 @@ def archive_existing_model(path: str):
         archived_path = os.path.join(archive_dir, f"{timestamp}_{base}")
 
         shutil.copy2(path, archived_path)
-        print(f"[Archive] Previous model archived at: {archived_path}")
+        logger.info(f"[Archive] Previous model archived at: {archived_path}")

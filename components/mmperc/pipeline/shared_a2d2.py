@@ -8,9 +8,9 @@ import torch
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-import common.debug_ploter as debug_ploter
-import common.loss_logger as loss_logger
-from losses.detection_losses import focal_loss, l1_loss, sem_loss_fn
+import components.mmperc.common.debug_ploter as debug_ploter
+import components.mmperc.common.loss_logger as loss_logger
+from components.mmperc.losses.detection_losses import focal_loss, l1_loss, sem_loss_fn
 
 
 # ================================================================

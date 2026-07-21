@@ -1,6 +1,7 @@
 from dataclasses import dataclass, field
 
 from components.definitions.bev import BevParams
+from components.definitions.train import TrainConfig
 
 
 @dataclass
@@ -30,3 +31,5 @@ class MmpercParams:
     use_camera: bool = True
     pred_bbox: bool = True
     pred_semantics: bool = True
+
+    train_config: TrainConfig = field(default_factory=TrainConfig)

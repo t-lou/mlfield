@@ -7,14 +7,14 @@ import shutil
 import torch
 from torch.utils.data import DataLoader
 
-import common.debug_ploter as debug_ploter
-from common.archive import (
+import components.mmperc.common.debug_ploter as debug_ploter
+from components.mmperc.pipeline.shared_a2d2 import run_one_epoch
+from components.utils.archive_checkpoint import (
     archive_existing_model,
     ensure_dir,
     find_latest_epoch_checkpoint,
     save_checkpoint,
 )
-from pipeline.shared_a2d2 import run_one_epoch
 
 # ================================================================
 # Continuous Training Loop

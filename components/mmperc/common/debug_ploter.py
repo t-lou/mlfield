@@ -3,22 +3,15 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 
-import common.params as params
-
 
 def init_plot():
-    if not params.DEBUG_PLOT_ON:
-        return
+
     path = Path("debug_plots")
     if not path.exists():
         path.mkdir(parents=True, exist_ok=True)
 
 
 def export_bbox_heatmap_debug(pred, gt, id_epoch=0, id_sample=0) -> None:
-    if not params.DEBUG_PLOT_ON:
-        return
-
-    # assert False, (gt.shape, pred.shape)
 
     pred_np = pred.detach().cpu().numpy()
     gt_np = gt.detach().cpu().numpy()
@@ -44,8 +37,6 @@ def export_bbox_heatmap_debug(pred, gt, id_epoch=0, id_sample=0) -> None:
 
 
 def export_semantic_debug(pred_logits, gt_sem, class_to_color, id_epoch=0, id_sample=0):
-    if not params.DEBUG_PLOT_ON:
-        return
 
     # ---------------------------------------------------------
     # Convert tensors → numpy

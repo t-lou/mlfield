@@ -2,11 +2,10 @@ from __future__ import annotations
 
 from typing import Any, Dict
 
+import common.params as params
 import torch
 from torch import Tensor
 from torch.utils.data import DataLoader
-
-import common.params as params
 
 
 def move_to_device(batch: Dict[str, Tensor], device: str) -> Dict[str, Tensor]:
@@ -109,9 +108,8 @@ def get_parameter_size(model: torch.nn.Module) -> int:
 
 
 if __name__ == "__main__":
-    from datasets.a2d2_dataset import A2D2Dataset
-
     from common.device import get_best_device
+    from datasets.a2d2_dataset import A2D2Dataset
     from model.simple_model import SimpleModel
 
     device: str = get_best_device()
