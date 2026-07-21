@@ -51,8 +51,7 @@ def main(params: MmpercParams):
         dataloader_eval,
         optimizer,
         device,
-        num_epochs=train_config.batch_size,
-        ckpt_dir="checkpoints",
+        num_epochs=train_config.num_epoch,
     )
 
 

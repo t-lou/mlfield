@@ -11,3 +11,4 @@ class TrainConfig:
     persistent_workers: bool = False
     shuffle: bool = True
     num_epoch: int = 10
+    dir_ckpts: str = "./checkpoints"
