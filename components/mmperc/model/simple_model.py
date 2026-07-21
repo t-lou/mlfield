@@ -27,20 +27,20 @@ class SimpleModel(nn.Module):
         # 1. Lidar encoder → BEV feature map
         # ---------------------------------------------------------
         if params.use_lidar:
-            self.lidar_encoder = PointPillarBEV()  # (B, C, H, W)
+            self.lidar_encoder = PointPillarBEV(params=params)  # (B, C, H, W)
 
         # ---------------------------------------------------------
         # 2. Camera encoder → token embeddings
         # ---------------------------------------------------------
         if params.use_camera:
-            self.cam_encoder = TinyCameraEncoder()  # (B, N_cam, C)
+            self.cam_encoder = TinyCameraEncoder(params=params)  # (B, N_cam, C)
 
         # ---------------------------------------------------------
         # 3. Fusion block (BEV <-> camera tokens)
         # ---------------------------------------------------------
         self._use_fusion = params.use_lidar and params.use_camera
         if self._use_fusion:
-            self.fusion = FuTrFusionBlock()
+            self.fusion = FuTrFusionBlock(params=params)
 
         # ---------------------------------------------------------
         # 4. Detection heads

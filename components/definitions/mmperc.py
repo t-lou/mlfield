@@ -33,3 +33,5 @@ class MmpercParams:
     pred_semantics: bool = True
 
     train_config: TrainConfig = field(default_factory=TrainConfig)
+
+    path_data: str = "/repo/data/..."

@@ -1,6 +1,7 @@
 import io
 import json
 import tarfile
+from enum import Enum
 from pathlib import Path, PurePosixPath
 from typing import Any, Dict, List, Tuple
 
@@ -14,7 +15,13 @@ from components.mmperc.label.bev_labels import generate_bev_labels_bbox2d
 from components.utils.image_utils import rescale_image
 
 
-def bev_collate(batch):
+class Split(Enum):
+    TRAIN = "train"
+    VAL = "val"
+    FULL = "full"
+
+
+def bev_collate(batch, params: MmpercParams):
     """
     Collate function for A2D2Dataset with fixed-size padded A2D2 tar data.
     """
@@ -28,7 +35,7 @@ def bev_collate(batch):
     semantics_mapping_name = [item["semantics_mapping_name"] for item in batch]
 
     gt_boxes_list = [gt_boxes[i] for i in range(gt_boxes.shape[0])]
-    heatmap_gt, reg_gt, mask_gt = generate_bev_labels_bbox2d(gt_boxes_list)
+    heatmap_gt, reg_gt, mask_gt = generate_bev_labels_bbox2d(gt_boxes_list, mmperc_params=params)
 
     return {
         "points": points,
@@ -52,7 +59,7 @@ class A2D2Dataset(Dataset):
     closes the temporary reader.
     """
 
-    def __init__(self, path_tar: Path, params: MmpercParams = MmpercParams()):
+    def __init__(self, path_tar: Path, params: MmpercParams, split: Split = Split.FULL):
         self.path_tar = path_tar
         self.params = params
         self._name = "cam_front_center"
@@ -66,10 +73,10 @@ class A2D2Dataset(Dataset):
         if not self.path_tar.exists():
             raise RuntimeError(f"A2D2 tar archive not found: {self.path_tar}")
 
-        self._init_archive()
+        self._init_archive(split)
         self.color_key_to_class = {(r << 16) + (g << 8) + b: cid for (r, g, b), cid in self.color_to_class.items()}
 
-    def _init_archive(self) -> None:
+    def _init_archive(self, split: Split) -> None:
         with tarfile.open(self.path_tar, mode="r") as tar:
             self._members = [member.name for member in tar.getmembers()]
             self.color_to_class, self.class_to_color, self.class_to_name = self._load_semantic_mapping(tar)
@@ -97,16 +104,28 @@ class A2D2Dataset(Dataset):
 
         # Check for completeness and make a list of indices
         # Skip train/val/test splitting as the target is not yet clear
-        self.indexing = []
+        indexing = []
         for timestamp0 in self.clustered_paths:
             for frame_id in self.clustered_paths[timestamp0]:
                 assert all(k in self.clustered_paths[timestamp0][frame_id] for k in expected_extensions.keys()), (
                     f"not all keys available in {timestamp0}/{frame_id}: {self.clustered_paths[timestamp0][frame_id]}"
                 )
-                self.indexing.append((timestamp0, frame_id))
+                indexing.append((timestamp0, frame_id))
         # Shuffle the indexing randomly to avoid bias from sequential data, with a fixed seed for reproducibility
         random = np.random.RandomState(seed=42)
-        random.shuffle(self.indexing)
+        random.shuffle(indexing)
+
+        # Split
+        assert split in (Split.TRAIN, Split.VAL, Split.FULL), f"Unknown split: {split}"
+        n = len(indexing)
+        train_ratio = 0.8
+        train_size = int(train_ratio * n)
+        if split == Split.TRAIN:
+            self.indexing = indexing[:train_size]
+        elif split == Split.VAL:
+            self.indexing = indexing[train_size:]
+        else:  # FULL
+            self.indexing = indexing[:]
 
     def _get_tar(self) -> tarfile.TarFile:
         if self._tar is None:

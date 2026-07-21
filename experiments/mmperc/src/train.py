@@ -1,66 +1,48 @@
-import sys
+import argparse
+from functools import partial
+from pathlib import Path
 
 import torch.optim as optim
-from components.definitions.train import TrainConfig
+from components.dataset.a2d2_dataset import A2D2Dataset, Split, bev_collate
+from components.definitions.mmperc import MmpercParams
 from components.mmperc.model.simple_model import SimpleModel
 from components.mmperc.pipeline.train_a2d2 import train_model
+from components.utils.config import load_yaml
 from components.utils.device import get_device
-from datasets.a2d2_dataset import A2D2Dataset, bev_collate
+from components.utils.logger import configure_logger
 from torch.utils.data import DataLoader
 
 
-def main(config_name: str = "lite"):
-    path_data = ""
+def main(params: MmpercParams):
+
+    train_config = params.train_config
     device = get_device()
-    settings = {
-        "lite": TrainConfig(
-            batch_size=2,
-            num_workers=1,
-            prefetch_factor=2,
-            pin_memory=False,
-            persistent_workers=False,
-            shuffle=True,
-            num_epoch=1,
-        ),
-        "normal": TrainConfig(
-            batch_size=16,
-            num_workers=4,
-            prefetch_factor=2,
-            pin_memory=True,
-            persistent_workers=True,
-            shuffle=True,
-            num_epoch=10,
-        ),
-    }
-    assert config_name in settings, f"Config {config_name} not found."
 
-    chosen_setting = settings[config_name]
-
-    dataset_train = A2D2Dataset(root=path_data)
+    dataset_train = A2D2Dataset(path_tar=Path(params.path_data), params=params, split=Split.TRAIN)
     dataloader_train = DataLoader(
         dataset_train,
-        batch_size=chosen_setting.batch_size,
+        batch_size=train_config.batch_size,
         shuffle=True,
-        collate_fn=bev_collate,
-        num_workers=chosen_setting.num_workers,
-        pin_memory=chosen_setting.pin_memory,
-        persistent_workers=chosen_setting.persistent_workers,
-        prefetch_factor=chosen_setting.prefetch_factor,
+        collate_fn=partial(bev_collate, params=params),
+        num_workers=train_config.num_workers,
+        pin_memory=train_config.pin_memory,
+        persistent_workers=train_config.persistent_workers,
+        prefetch_factor=train_config.prefetch_factor,
     )
 
-    dataset_eval = A2D2Dataset(root=path_data)
+    dataset_eval = A2D2Dataset(path_tar=Path(params.path_data), params=params, split=Split.VAL)
     dataloader_eval = DataLoader(
         dataset_eval,
-        batch_size=chosen_setting.batch_size * 2,
+        batch_size=train_config.batch_size * 2,
         shuffle=True,
-        collate_fn=bev_collate,
-        num_workers=chosen_setting.num_workers,
-        pin_memory=chosen_setting.pin_memory,
-        persistent_workers=chosen_setting.persistent_workers,
-        prefetch_factor=chosen_setting.prefetch_factor,
+        collate_fn=partial(bev_collate, params=params),
+        num_workers=train_config.num_workers,
+        pin_memory=train_config.pin_memory,
+        persistent_workers=train_config.persistent_workers,
+        prefetch_factor=train_config.prefetch_factor,
     )
 
-    model = SimpleModel().to(device)
+    model = SimpleModel(params=params).to(device)
     optimizer = optim.Adam(model.parameters(), lr=1e-4)
 
     train_model(
@@ -69,11 +51,23 @@ def main(config_name: str = "lite"):
         dataloader_eval,
         optimizer,
         device,
-        num_epochs=chosen_setting.batch_size,
+        num_epochs=train_config.batch_size,
         ckpt_dir="checkpoints",
     )
 
 
 if __name__ == "__main__":
-    config_name = sys.argv[1] if len(sys.argv) > 1 else "normal"
-    main(config_name)
+    configure_logger("mmperc")
+
+    parser = argparse.ArgumentParser(description="MMPERC training (patched from proposal scaffold)")
+    parser.add_argument(
+        "--path-config",
+        type=str,
+        default="./experiments/mmperc/mmperc_config.yaml",
+        help="Path to MMPERC config YAML",
+    )
+
+    args = parser.parse_args()
+
+    cfg = load_yaml(Path(args.path_config), MmpercParams)
+    main(cfg)

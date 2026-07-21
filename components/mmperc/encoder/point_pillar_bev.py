@@ -24,13 +24,13 @@ class PointPillarBEV(nn.Module):
         super().__init__()
 
         # Raw point cloud → pillars
-        self.voxelizer = PointpillarLite()
+        self.voxelizer = PointpillarLite(params=params)
 
         # Pillar Feature Network (per-pillar feature extraction)
         self.pfn = SimplePFN(in_channels=4, out_channels=64)
 
         # BEV backbone (expands 64 → params.BEV_CHANNELS)
-        self.backbone = TinyBEVBackbone(out_channels=params.bev_params.bev_channels)
+        self.backbone = TinyBEVBackbone(params=params, out_channels=params.bev_params.bev_channels)
 
         # Precomputed BEV grid resolution
         self.bev_h = params.bev_params.bev_h

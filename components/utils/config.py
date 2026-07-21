@@ -1,4 +1,4 @@
-from dataclasses import asdict, fields
+from dataclasses import MISSING, asdict, fields
 from enum import Enum
 from pathlib import Path
 from typing import Type, TypeVar
@@ -35,7 +35,16 @@ def dump_yaml(obj: T, path: Path) -> None:
 
 def create_default(cls: Type[T], path: Path) -> None:
     """Create a default instance of a dataclass and dump it to a YAML file."""
-    obj = cls(**{f.name: f.default if f.default is not None else None for f in fields(cls)})
+    defaults = {}
+    for f in fields(cls):
+        if f.default is not MISSING:
+            defaults[f.name] = f.default
+        elif f.default_factory is not MISSING:
+            defaults[f.name] = f.default_factory()
+        else:
+            defaults[f.name] = None
+
+    obj = cls(**defaults)
     dump_yaml(obj, path)
 
 
@@ -48,7 +57,31 @@ def load_yaml(path: Path, cls: Type[T]) -> T:
     with path.open(encoding="utf-8") as f:
         data = yaml.safe_load(f) or {}
 
-    allowed = {f.name for f in fields(cls)}
-    filtered = {k: v for k, v in data.items() if k in allowed}
+    allowed = {f.name: f.type for f in fields(cls)}
+    filtered = {}
+    for k, v in data.items():
+        if k in allowed:
+            field_type = allowed[k]
+            # Check if the field type is a dataclass and v is a dict
+            if v is not None and hasattr(field_type, "__dataclass_fields__") and isinstance(v, dict):
+                filtered[k] = load_yaml_recursive(v, field_type)
+            else:
+                filtered[k] = v
+
+    return cls(**filtered)
+
+
+def load_yaml_recursive(data: dict, cls: Type[T]) -> T:
+    """Recursively convert a dict to a dataclass, handling nested dataclasses."""
+    allowed = {f.name: f.type for f in fields(cls)}
+    filtered = {}
+    for k, v in data.items():
+        if k in allowed:
+            field_type = allowed[k]
+            # Check if the field type is a dataclass and v is a dict
+            if v is not None and hasattr(field_type, "__dataclass_fields__") and isinstance(v, dict):
+                filtered[k] = load_yaml_recursive(v, field_type)
+            else:
+                filtered[k] = v
 
     return cls(**filtered)

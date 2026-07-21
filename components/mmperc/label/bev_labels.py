@@ -52,7 +52,7 @@ def draw_gaussian(heatmap: torch.Tensor, cx: int, cy: int, radius: int) -> None:
 
 def generate_bev_labels_bbox2d(
     gt_boxes: List[torch.Tensor],
-    mmperc_params: MmpercParams = MmpercParams(),
+    mmperc_params: MmpercParams,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """
     gt_boxes: list of tensors, each (N, 7) with [x, y, z, w, l_, h, yaw]
@@ -82,7 +82,7 @@ def generate_bev_labels_bbox2d(
             # -------------------------------
             # 1. World → BEV grid
             # -------------------------------
-            ix, iy = xy_to_grid(x, y)
+            ix, iy = xy_to_grid(x, y, mmperc_params=mmperc_params)
 
             if ix < 0 or ix >= bev_w or iy < 0 or iy >= bev_h:
                 continue
@@ -96,9 +96,9 @@ def generate_bev_labels_bbox2d(
             # -------------------------------
             # 3. Regression targets
             # -------------------------------
-            res_x, res_y = get_res()
+            res_x, res_y = get_res(mmperc_params=mmperc_params)
 
-            cell_x, cell_y = grid_to_xy(ix, iy)
+            cell_x, cell_y = grid_to_xy(ix, iy, mmperc_params=mmperc_params)
 
             dx = (x - cell_x) / res_x
             dy = (y - cell_y) / res_y

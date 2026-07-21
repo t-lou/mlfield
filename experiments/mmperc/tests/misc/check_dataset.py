@@ -1,14 +1,17 @@
 from pathlib import Path
 
-from components.dataset.a2d2_dataset import A2D2Dataset
+from components.dataset.a2d2_dataset import A2D2Dataset, Split
+from components.definitions.mmperc import MmpercParams
 
 path_tar = Path("/repo/data/camera_lidar_semantic_bboxes.tar")
 
 if __name__ == "__main__":
-    dataset = A2D2Dataset(path_tar)
+    split = Split.FULL
+    params = MmpercParams()
+    dataset = A2D2Dataset(path_tar, params, split)
     print(f"The size of the dataset is: {len(dataset)}")
 
-    num_demo_samples = 20
+    num_demo_samples = max(20, len(dataset))
     for i in range(num_demo_samples):
         sample = dataset[i]
         print(f"\nSample {i}:")

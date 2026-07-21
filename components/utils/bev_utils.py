@@ -14,8 +14,9 @@ def get_res(mmperc_params: MmpercParams) -> Tuple[float, float]:
     res_x: meters per pixel along X (width)
     res_y: meters per pixel along Y (height)
     """
-    res_x = (mmperc_params.x_range[1] - mmperc_params.x_range[0]) / mmperc_params.bev_params.bev_w
-    res_y = (mmperc_params.y_range[1] - mmperc_params.y_range[0]) / mmperc_params.bev_params.bev_h
+    bev_params = mmperc_params.bev_params
+    res_x = (bev_params.x_range[1] - bev_params.x_range[0]) / bev_params.bev_w
+    res_y = (bev_params.y_range[1] - bev_params.y_range[0]) / bev_params.bev_h
     return res_x, res_y
 
 
@@ -34,11 +35,11 @@ def xy_to_grid(x: float, y: float, mmperc_params: MmpercParams) -> Tuple[int, in
     Returns:
         (ix, iy) as integer grid indices.
     """
-    res_x, res_y = get_res()
+    res_x, res_y = get_res(mmperc_params=mmperc_params)
 
     # Convert meters → pixel index
-    gx = (x - mmperc_params.x_range[0]) / res_x
-    gy = (y - mmperc_params.y_range[0]) / res_y
+    gx = (x - mmperc_params.bev_params.x_range[0]) / res_x
+    gy = (y - mmperc_params.bev_params.y_range[0]) / res_y
 
     ix = int(gx)
     iy = int(gy)
@@ -90,8 +91,8 @@ def grid_to_xy(ix: int, iy: int, mmperc_params: MmpercParams) -> Tuple[float, fl
     """
     res_x, res_y = get_res(mmperc_params)
 
-    x = mmperc_params.x_range[0] + ix * res_x
-    y = mmperc_params.y_range[0] + iy * res_y
+    x = mmperc_params.bev_params.x_range[0] + ix * res_x
+    y = mmperc_params.bev_params.y_range[0] + iy * res_y
 
     return x, y
 
