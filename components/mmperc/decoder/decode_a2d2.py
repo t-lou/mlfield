@@ -2,17 +2,18 @@ from __future__ import annotations
 
 import math
 import os
+from pathlib import Path
 from typing import Tuple
 
 import numpy as np
 import torch
 from torch.utils.data import DataLoader
 
-from components.dataset.a2d2_dataset import A2D2Dataset, bev_collate
+from components.dataset.a2d2_dataset import A2D2Dataset, Split, bev_collate
 from components.definitions.mmperc import MmpercParams
 from components.mmperc.model.simple_model import SimpleModel
 from components.utils.bev_utils import get_res, grid_to_xy
-from components.utils.device import get_device
+from components.utils.logger import logger
 
 # ================================================================
 # 1. Heatmap Top-K Extraction
@@ -175,28 +176,26 @@ def decode_box2d(
 
 
 class ModelInferenceWrapper:
-    def __init__(self, ckpt_dir="checkpoints"):
+    def __init__(self, ckpt, device):
         # 1. Build model on CPU
         self.model = SimpleModel().to("cpu")
 
-        # 2. Load checkpoint safely
-        latest_path = os.path.join(ckpt_dir, "simple_model_latest.pt")
-        state = torch.load(latest_path, map_location="cpu")
+        # 2. Load checkpoint
+        state = torch.load(ckpt, map_location="cpu")
         self.model.load_state_dict(state)
         self.model.eval()
 
         # 3. Move model to best device
-        self.device = get_device()
         self.model = self.model.to(self.device)
 
-    def infer_a2d2_dataset(self, path_dataset: str, path_output: str, K: int = 50):
+    def infer_a2d2_dataset(self, params, path_output: str, K: int = 50):
         assert path_output.endswith(".npz"), "path_output must be an .npz file"
         out_dir = os.path.dirname(path_output)
         os.makedirs(out_dir, exist_ok=True)
 
-        dataset = A2D2Dataset(root=path_dataset)
+        dataset_eval = A2D2Dataset(path_tar=Path(params.path_data), params=params, split=Split.VAL)
         dataloader = DataLoader(
-            dataset,
+            dataset_eval,
             batch_size=4,
             shuffle=True,
             collate_fn=bev_collate,
@@ -246,4 +245,4 @@ class ModelInferenceWrapper:
                 semantics_mapping_name=batch["semantics_mapping_name"],
             )
 
-        print(f"Saved inference results to: {out_dir}")
+        logger.info(f"Saved inference results to: {out_dir}")

@@ -57,7 +57,7 @@ def main(params: MmpercParams):
 
 
 if __name__ == "__main__":
-    configure_logger("mmperc")
+    configure_logger("mmperc_train")
 
     parser = argparse.ArgumentParser(description="MMPERC training (patched from proposal scaffold)")
     parser.add_argument(
