@@ -6,12 +6,13 @@ from typing import Tuple
 
 import numpy as np
 import torch
-from common.bev_utils import get_res, grid_to_xy
-from datasets.a2d2_dataset import A2D2Dataset, bev_collate
 from torch.utils.data import DataLoader
 
-from common.device import get_best_device
-from model.simple_model import SimpleModel
+from components.dataset.a2d2_dataset import A2D2Dataset, bev_collate
+from components.definitions.mmperc import MmpercParams
+from components.mmperc.model.simple_model import SimpleModel
+from components.utils.bev_utils import get_res, grid_to_xy
+from components.utils.device import get_device
 
 # ================================================================
 # 1. Heatmap Top-K Extraction
@@ -84,7 +85,7 @@ def gather_regression(reg_pred: torch.Tensor, xs: torch.Tensor, ys: torch.Tensor
 # ================================================================
 
 
-def restore_box2d(xs: torch.Tensor, ys: torch.Tensor, reg_vals: torch.Tensor):
+def restore_box2d(xs: torch.Tensor, ys: torch.Tensor, reg_vals: torch.Tensor, params: MmpercParams):
     """
     xs:       (B, C, K) integer grid x indices
     ys:       (B, C, K) integer grid y indices
@@ -96,7 +97,7 @@ def restore_box2d(xs: torch.Tensor, ys: torch.Tensor, reg_vals: torch.Tensor):
                [x, y, w, l, yaw]
     """
     B, C, K = xs.shap
-    res_x, res_y = get_res()
+    res_x, res_y = get_res(params)
 
     boxes = []
 
@@ -111,7 +112,7 @@ def restore_box2d(xs: torch.Tensor, ys: torch.Tensor, reg_vals: torch.Tensor):
                 dx, dy, log_w, log_l, sin_yaw, cos_yaw = reg_vals[b, c, k].tolist()
 
                 # 1. Grid → world cell origin
-                cell_x, cell_y = grid_to_xy(ix, iy)
+                cell_x, cell_y = grid_to_xy(ix, iy, params)
 
                 # 2. Decode center
                 x = cell_x + dx * res_x
@@ -185,7 +186,7 @@ class ModelInferenceWrapper:
         self.model.eval()
 
         # 3. Move model to best device
-        self.device = get_best_device()
+        self.device = get_device()
         self.model = self.model.to(self.device)
 
     def infer_a2d2_dataset(self, path_dataset: str, path_output: str, K: int = 50):

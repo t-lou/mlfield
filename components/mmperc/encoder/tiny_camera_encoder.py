@@ -1,7 +1,7 @@
 import torch.nn as nn
 from torch import Tensor
 
-import common.params as params
+from components.definitions.mmperc import MmpercParams
 
 
 class TinyCameraEncoder(nn.Module):
@@ -21,10 +21,10 @@ class TinyCameraEncoder(nn.Module):
         - C = out_channels (default 128)
     """
 
-    def __init__(self) -> None:
+    def __init__(self, params: MmpercParams) -> None:
         super().__init__()
 
-        self.out_channels = params.BEV_CHANNELS
+        self.out_channels = params.bev_params.bev_channels
 
         # A small CNN backbone that downsamples the image 3 times.
         # Each stride=2 halves spatial resolution.

@@ -1,13 +1,12 @@
 import torch.nn as nn
 from torch import Tensor
 
-import common.params as params
-from common.model_config import model_config
-from encoder.point_pillar_bev import PointPillarBEV
-from encoder.tiny_camera_encoder import TinyCameraEncoder
-from fusion.futr_fusion import FuTrFusionBlock
-from head.bbox2d_head import BBox2dHead
-from head.semantics_head import FullResSemHead
+from components.definitions.mmperc import MmpercParams
+from components.mmperc.encoder.point_pillar_bev import PointPillarBEV
+from components.mmperc.encoder.tiny_camera_encoder import TinyCameraEncoder
+from components.mmperc.fusion.futr_fusion import FuTrFusionBlock
+from components.mmperc.head.bbox2d_head import BBox2dHead
+from components.mmperc.head.semantics_head import FullResSemHead
 
 
 class SimpleModel(nn.Module):
@@ -19,27 +18,27 @@ class SimpleModel(nn.Module):
     - BEV detection heads (heatmap + regression)
     """
 
-    def __init__(self, bev_channels: int = params.BEV_CHANNELS) -> None:
+    def __init__(self, params: MmpercParams) -> None:
         super().__init__()
 
-        assert model_config["use_lidar"] or model_config["use_camera"], "Hey, both lidar and camera off."
+        assert params.use_lidar or params.use_camera, "Hey, both lidar and camera off."
 
         # ---------------------------------------------------------
         # 1. Lidar encoder → BEV feature map
         # ---------------------------------------------------------
-        if model_config["use_lidar"]:
+        if params.use_lidar:
             self.lidar_encoder = PointPillarBEV()  # (B, C, H, W)
 
         # ---------------------------------------------------------
         # 2. Camera encoder → token embeddings
         # ---------------------------------------------------------
-        if model_config["use_camera"]:
+        if params.use_camera:
             self.cam_encoder = TinyCameraEncoder()  # (B, N_cam, C)
 
         # ---------------------------------------------------------
         # 3. Fusion block (BEV <-> camera tokens)
         # ---------------------------------------------------------
-        self._use_fusion = model_config["use_lidar"] and model_config["use_camera"]
+        self._use_fusion = params.use_lidar and params.use_camera
         if self._use_fusion:
             self.fusion = FuTrFusionBlock()
 
@@ -54,14 +53,16 @@ class SimpleModel(nn.Module):
         # Predicts: dx, dy, log(w), log(l), sin(yaw), cos(yaw)
         # Shape: (B, 6, H, W)
 
-        if model_config["heads"].get("bbox", False):
-            self.bbox_head = BBox2dHead(bev_channels)
+        if params.pred_bbox:
+            self.bbox_head = BBox2dHead(params.bev_params.bev_channels)
 
         # Semantic segmentation head
-        if model_config["heads"].get("semantics", False):
+        if params.pred_semantics:
             self.sem_head = FullResSemHead(
-                in_channels=self.cam_encoder.out_channels, num_classes=params.NUM_SEM_CLASSES
+                in_channels=self.cam_encoder.out_channels, num_classes=params.num_sem_classes
             )
+
+        self._params = params
 
     def forward(self, points: Tensor, images: Tensor) -> dict:
         """
@@ -106,13 +107,13 @@ class SimpleModel(nn.Module):
         # ---------------------------------------------------------
         # 1. Lidar → BEV feature map
         # ---------------------------------------------------------
-        if model_config["use_lidar"]:
+        if self._params.use_lidar:
             lidar_token: Tensor = self.lidar_encoder(points)  # (B, C, H, W)
 
         # ---------------------------------------------------------
         # 2. Camera → tokens
         # ---------------------------------------------------------
-        if model_config["use_camera"]:
+        if self._params.use_camera:
             camera_tokens, cam_feat = self.cam_encoder(images)
 
         # ---------------------------------------------------------
@@ -120,8 +121,8 @@ class SimpleModel(nn.Module):
         # ---------------------------------------------------------
         if self._use_fusion:
             bev_fused: Tensor = self.fusion(lidar_token, camera_tokens)  # (B, C, H, W)
-        elif model_config["use_lidar"]:
-            bev_fused = lidar_token if model_config["use_lidar"] else camera_tokens
+        elif self._params.use_lidar:
+            bev_fused = lidar_token if self._params.use_lidar else camera_tokens
 
         # Prepare output
         outputs = {}

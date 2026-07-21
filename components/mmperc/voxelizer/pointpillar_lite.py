@@ -3,7 +3,7 @@ from typing import Dict, Tuple
 import torch
 from torch import Tensor
 
-import common.params as params
+from components.definitions.mmperc import MmpercParams
 
 
 class PointpillarLite:
@@ -18,13 +18,16 @@ class PointpillarLite:
 
     def __init__(
         self,
-        x_range: Tuple[float, float] = params.X_RANGE,
-        y_range: Tuple[float, float] = params.Y_RANGE,
-        z_range: Tuple[float, float] = params.Z_RANGE,
-        voxel_size: Tuple[float, float, float] = params.VOXEL_SIZE,
+        params: MmpercParams,
         max_points_per_pillar: int = 20,
         max_pillars: int = 12000,
     ) -> None:
+
+        x_range: Tuple[float, float] = params.bev_params.x_range
+        y_range: Tuple[float, float] = params.bev_params.y_range
+        z_range: Tuple[float, float] = params.bev_params.z_range
+        voxel_size: Tuple[float, float, float] = params.bev_params.voxel_size
+
         # Spatial bounds
         self.x_min, self.x_max = x_range
         self.y_min, self.y_max = y_range

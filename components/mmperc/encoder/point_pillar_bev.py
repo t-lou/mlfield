@@ -1,12 +1,11 @@
-import logging
-
 from torch import Tensor, nn
 
-import common.params as params
-from backbone.tiny_bev_backbone import TinyBEVBackbone
-from encoder.simple_pfn import SimplePFN
-from scatter.scatter import scatter_to_bev
-from voxelizer.pointpillar_lite import PointpillarLite
+from components.definitions.mmperc import MmpercParams
+from components.mmperc.backbone.tiny_bev_backbone import TinyBEVBackbone
+from components.mmperc.encoder.simple_pfn import SimplePFN
+from components.mmperc.scatter.scatter import scatter_to_bev
+from components.mmperc.voxelizer.pointpillar_lite import PointpillarLite
+from components.utils.logger import logger
 
 
 class PointPillarBEV(nn.Module):
@@ -21,7 +20,7 @@ class PointPillarBEV(nn.Module):
         (B, params.BEV_CHANNELS, BEV_H/2, BEV_W/2)
     """
 
-    def __init__(self) -> None:
+    def __init__(self, params: MmpercParams) -> None:
         super().__init__()
 
         # Raw point cloud → pillars
@@ -31,11 +30,11 @@ class PointPillarBEV(nn.Module):
         self.pfn = SimplePFN(in_channels=4, out_channels=64)
 
         # BEV backbone (expands 64 → params.BEV_CHANNELS)
-        self.backbone = TinyBEVBackbone(out_channels=params.BEV_CHANNELS)
+        self.backbone = TinyBEVBackbone(out_channels=params.bev_params.bev_channels)
 
         # Precomputed BEV grid resolution
-        self.bev_h = params.BEV_H
-        self.bev_w = params.BEV_W
+        self.bev_h = params.bev_params.bev_h
+        self.bev_w = params.bev_params.bev_w
 
     def forward(self, points: Tensor) -> Tensor:
         """
@@ -51,11 +50,11 @@ class PointPillarBEV(nn.Module):
         vox = self.voxelizer(points)
         pillars = vox["pillars"]  # (B, P, M, C_in)
         pillar_coords = vox["pillar_coords"]  # (B, P, 2)
-        logging.debug(f"pillars.shape: {pillars.shape}, pillar_coords.shape: {pillar_coords.shape}")
+        logger.debug(f"pillars.shape: {pillars.shape}, pillar_coords.shape: {pillar_coords.shape}")
 
         # 2. PFN → per-pillar features
         pillar_feats = self.pfn(pillars)  # (B, P, 64)
-        logging.debug(f"pillar_feats.shape: {pillar_feats.shape}")
+        logger.debug(f"pillar_feats.shape: {pillar_feats.shape}")
 
         # 3. Scatter to BEV grid
         bev = scatter_to_bev(
@@ -64,10 +63,10 @@ class PointPillarBEV(nn.Module):
             bev_h=self.bev_h,
             bev_w=self.bev_w,
         )  # (B, 64, H, W)
-        logging.debug(f"bev.shape: {bev.shape}")
+        logger.debug(f"bev.shape: {bev.shape}")
 
         # 4. BEV backbone, downsampling H/2, W/2
         bev_backbone = self.backbone(bev)
-        logging.debug(f"bev_backbone.shape: {bev_backbone.shape}")
+        logger.debug(f"bev_backbone.shape: {bev_backbone.shape}")
 
         return bev_backbone

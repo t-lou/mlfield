@@ -1,7 +1,7 @@
 import torch.nn as nn
 from torch import Tensor
 
-import common.params as params
+from components.definitions.mmperc import MmpercParams
 
 
 class FuTrFusionBlock(nn.Module):
@@ -12,10 +12,10 @@ class FuTrFusionBlock(nn.Module):
     - Broadcasts back into BEV space
     """
 
-    def __init__(self, num_heads: int = 4, dropout: float = 0.1):
+    def __init__(self, params: MmpercParams, num_heads: int = 4, dropout: float = 0.1):
         super().__init__()
 
-        C = params.BEV_CHANNELS
+        C = params.bev_params.bev_channels
 
         # Project BEV tokens (C) → (C)
         self.bev_proj = nn.Linear(C, C)

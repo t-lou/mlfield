@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 
-import common.params as params
+from components.definitions.mmperc import MmpercParams
 
 
 # Note: This Head is dummy and probably not doable with the available data.
@@ -12,12 +12,12 @@ class DrivableAreaHead(nn.Module):
     Output: (B, 1, H, W)  sigmoid mask
     """
 
-    def __init__(self, mid_channels=64):
+    def __init__(self, params: MmpercParams, mid_channels=64):
         super().__init__()
 
         # First refinement block
         self.block1 = nn.Sequential(
-            nn.Conv2d(params.BEV_CHANNELS, mid_channels, kernel_size=3, padding=1),
+            nn.Conv2d(params.bev_params.bev_channels, mid_channels, kernel_size=3, padding=1),
             nn.BatchNorm2d(mid_channels),
             nn.ReLU(inplace=True),
         )

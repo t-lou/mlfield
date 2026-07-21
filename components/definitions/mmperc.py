@@ -25,3 +25,8 @@ class MmpercParams:
     # Downsampling factor for camera images
     # -----------------------------
     image_scale: float = 0.25
+
+    use_lidar: bool = True
+    use_camera: bool = True
+    pred_bbox: bool = True
+    pred_semantics: bool = True

@@ -1,7 +1,7 @@
 import torch.nn as nn
 from torch import Tensor
 
-import common.params as params
+from components.definitions.mmperc import MmpercParams
 
 
 class TinyBEVBackbone(nn.Module):
@@ -22,6 +22,7 @@ class TinyBEVBackbone(nn.Module):
 
     def __init__(
         self,
+        params: MmpercParams,
         in_channels: int = 64,
         mid_channels: int = 64,
         out_channels: int = 128,
@@ -50,7 +51,7 @@ class TinyBEVBackbone(nn.Module):
 
         # Spatial downsampling + channel expansion
         self.down = nn.Sequential(
-            nn.Conv2d(mid_channels, out_channels, kernel_size=3, stride=params.BACKBONE_STRIDE, padding=1),
+            nn.Conv2d(mid_channels, out_channels, kernel_size=3, stride=params.bev_params.backbone_stride, padding=1),
             nn.BatchNorm2d(out_channels),
             nn.ReLU(inplace=True),
         )
