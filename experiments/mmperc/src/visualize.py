@@ -1,33 +1,38 @@
-import common.params as params
+import argparse
+from functools import partial
+from pathlib import Path
+
 import torch
-from datasets.a2d2_dataset import A2D2Dataset, bev_collate
-from model.simple_model import SimpleModel
+from components.dataset.a2d2_dataset import A2D2Dataset, Split, bev_collate
+from components.definitions.mmperc import MmpercParams
+from components.mmperc.model.simple_model import SimpleModel
+from components.utils.config import load_yaml
+from components.utils.device import get_device
 from torch.utils.data import DataLoader
 from torchviz import make_dot
 
 
-def main():
+def main(params: MmpercParams):
     # ------------------------------------------------------------
     # 1. Build dataset + dataloader
     # ------------------------------------------------------------
-    path_dataset = params.PATH_TRAIN
-    dataset = A2D2Dataset(root=path_dataset)
+    dataset = A2D2Dataset(path_tar=Path(params.path_data), params=params, split=Split.TRAIN)
 
-    dataloader = DataLoader(dataset, batch_size=1, collate_fn=bev_collate)
+    dataloader = DataLoader(dataset, batch_size=1, collate_fn=partial(bev_collate, params=params))
 
     # ------------------------------------------------------------
     # 2. Get one batch
     # ------------------------------------------------------------
     batch = next(iter(dataloader))
 
-    points = batch["points"]  # (B, P, C)
+    points = batch["points"]  # (B, N, C)
     camera = batch["camera"]  # (B, 3, H, W)
 
     # ------------------------------------------------------------
     # 3. Build model
     # ------------------------------------------------------------
-    device = "cpu"
-    model = SimpleModel().to(device)
+    device = get_device()
+    model = SimpleModel(params=params).to(device)
     points = points.to(device)
     camera = camera.to(device)
 
@@ -66,4 +71,15 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description="MMPERC model graph visualizer")
+    parser.add_argument(
+        "--path-config",
+        type=str,
+        default="./experiments/mmperc/mmperc_config.yaml",
+        help="Path to MMPERC config YAML",
+    )
+
+    args = parser.parse_args()
+
+    cfg = load_yaml(Path(args.path_config), MmpercParams)
+    main(cfg)

@@ -5,7 +5,7 @@ from components.definitions.mmperc import MmpercParams
 from components.mmperc.encoder.point_pillar_bev import PointPillarBEV
 from components.mmperc.encoder.tiny_camera_encoder import TinyCameraEncoder
 from components.mmperc.fusion.futr_fusion import FuTrFusionBlock
-from components.mmperc.head.bbox2d_head import BBox2dHead
+from components.mmperc.head.bbox2d_head import BBox3dHead
 from components.mmperc.head.semantics_head import FullResSemHead
 
 
@@ -54,7 +54,7 @@ class SimpleModel(nn.Module):
         # Shape: (B, 6, H, W)
 
         if params.pred_bbox:
-            self.bbox_head = BBox2dHead(params.bev_params.bev_channels)
+            self.bbox_head = BBox3dHead(params.bev_params.bev_channels)
 
         # Semantic segmentation head
         if params.pred_semantics:

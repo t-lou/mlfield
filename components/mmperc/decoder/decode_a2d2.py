@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import os
+from functools import partial
 from pathlib import Path
 from typing import Tuple
 
@@ -58,25 +59,25 @@ def gather_regression(reg_pred: torch.Tensor, xs: torch.Tensor, ys: torch.Tensor
     Gather regression values at the top-K heatmap peak positions.
 
     Args:
-        reg_pred: (B, 7, H, W)
+        reg_pred: (B, 8, H, W)
         xs:       (B, C, K)
         ys:       (B, C, K)
 
     Returns:
-        reg_vals: (B, C, K, 7)
+        reg_vals: (B, C, K, 8)
     """
     B, C, K = xs.shape
     _, num_reg, H, W = reg_pred.shape
-    assert num_reg == 7, "Regression head must output 7 channels (dx, dy, dz, w, l, h, yaw)"
+    assert num_reg == 8, "Regression head must output 8 channels (dx, dy, dz, log_w, log_l, log_h, sin_yaw, cos_yaw)"
 
-    reg_out = torch.zeros((B, C, K, 7), device=reg_pred.device, dtype=reg_pred.dtype)
+    reg_out = torch.zeros((B, C, K, 8), device=reg_pred.device, dtype=reg_pred.dtype)
 
     # Vectorized gather (much faster than nested Python loops)
     for b in range(B):
         for c in range(C):
             x = xs[b, c]  # (K,)
             y = ys[b, c]  # (K,)
-            reg_out[b, c] = reg_pred[b, :, y, x].T  # (K, 7)
+            reg_out[b, c] = reg_pred[b, :, y, x].T  # (K, 8)
 
     return reg_out
 
@@ -86,19 +87,21 @@ def gather_regression(reg_pred: torch.Tensor, xs: torch.Tensor, ys: torch.Tensor
 # ================================================================
 
 
-def restore_box2d(xs: torch.Tensor, ys: torch.Tensor, reg_vals: torch.Tensor, params: MmpercParams):
+def restore_box3d(xs: torch.Tensor, ys: torch.Tensor, reg_vals: torch.Tensor, params: MmpercParams):
     """
     xs:       (B, C, K) integer grid x indices
     ys:       (B, C, K) integer grid y indices
-    reg_vals: (B, C, K, 6) regression values:
-              [dx, dy, log_w, log_l, sin_yaw, cos_yaw]
+    reg_vals: (B, C, K, 8) regression values:
+              [dx, dy, dz, log_w, log_l, log_h, sin_yaw, cos_yaw]
 
     Returns:
         boxes: list of B lists, each containing:
-               [x, y, w, l, yaw]
+               [x, y, z, w, l, h, yaw]
     """
-    B, C, K = xs.shap
+    B, C, K = xs.shape
     res_x, res_y = get_res(params)
+    z_min, z_max = params.bev_params.z_range
+    z_ref = (z_min + z_max) / 2.0
 
     boxes = []
 
@@ -110,7 +113,7 @@ def restore_box2d(xs: torch.Tensor, ys: torch.Tensor, reg_vals: torch.Tensor, pa
                 ix = int(xs[b, c, k].item())
                 iy = int(ys[b, c, k].item())
 
-                dx, dy, log_w, log_l, sin_yaw, cos_yaw = reg_vals[b, c, k].tolist()
+                dx, dy, dz, log_w, log_l, log_h, sin_yaw, cos_yaw = reg_vals[b, c, k].tolist()
 
                 # 1. Grid → world cell origin
                 cell_x, cell_y = grid_to_xy(ix, iy, params)
@@ -118,16 +121,18 @@ def restore_box2d(xs: torch.Tensor, ys: torch.Tensor, reg_vals: torch.Tensor, pa
                 # 2. Decode center
                 x = cell_x + dx * res_x
                 y = cell_y + dy * res_y
+                z = z_ref + dz
 
                 # 3. Decode size
                 w = math.exp(log_w)
                 l_ = math.exp(log_l)
+                h = math.exp(log_h)
 
                 # 4. Decode yaw
                 norm = math.sqrt(sin_yaw * sin_yaw + cos_yaw * cos_yaw) + 1e-6
                 yaw = math.atan2(sin_yaw / norm, cos_yaw / norm)
 
-                boxes_b.append([x, y, w, l_, yaw])
+                boxes_b.append([x, y, z, w, l_, h, yaw])
 
         boxes.append(boxes_b)
 
@@ -139,21 +144,23 @@ def restore_box2d(xs: torch.Tensor, ys: torch.Tensor, reg_vals: torch.Tensor, pa
 # ================================================================
 
 
-def decode_box2d(
-    heatmap=torch.Tensor,
-    reg=torch.Tensor,
+def decode_box3d(
+    heatmap: torch.Tensor,
+    reg: torch.Tensor,
+    params: MmpercParams,
     K: int = 50,
 ):
     """
-    Run inference on a batch and decode bounding boxes.
+    Run inference on a batch and decode 3D bounding boxes.
 
     Args:
         heatmap:  Existence heatmap (B, 1, H_bev, W_bev)
-        reg:      BBox parameters   (B, 6, H_bev, W_bev)
+        reg:      BBox parameters   (B, 8, H_bev, W_bev)
+                  [dx, dy, dz, log_w, log_l, log_h, sin_yaw, cos_yaw]
         K:        number of top-K peaks per class
 
     Returns:
-        boxes:  list of decoded boxes per batch
+        boxes:  list of B lists, each item [x, y, z, w, l, h, yaw]
         scores: (B, C, K) heatmap scores
     """
 
@@ -170,22 +177,25 @@ def decode_box2d(
     # ---------------------------------------------------------
     # Decode boxes into world coordinates
     # ---------------------------------------------------------
-    boxes = restore_box2d(xs, ys, reg_vals)
+    boxes = restore_box3d(xs, ys, reg_vals, params)
 
     return boxes, scores
 
 
 class ModelInferenceWrapper:
-    def __init__(self, ckpt, device):
+    def __init__(self, ckpt: Path, params: MmpercParams, device: torch.device):
+        self.device = device
+        self.params = params
+
         # 1. Build model on CPU
-        self.model = SimpleModel().to("cpu")
+        self.model = SimpleModel(params=params).to("cpu")
 
         # 2. Load checkpoint
         state = torch.load(ckpt, map_location="cpu")
         self.model.load_state_dict(state)
         self.model.eval()
 
-        # 3. Move model to best device
+        # 3. Move model to target device
         self.model = self.model.to(self.device)
 
     def infer_a2d2_dataset(self, params, path_output: str, K: int = 50):
@@ -193,12 +203,13 @@ class ModelInferenceWrapper:
         out_dir = os.path.dirname(path_output)
         os.makedirs(out_dir, exist_ok=True)
 
+        params = self.params
         dataset_eval = A2D2Dataset(path_tar=Path(params.path_data), params=params, split=Split.VAL)
         dataloader = DataLoader(
             dataset_eval,
             batch_size=4,
-            shuffle=True,
-            collate_fn=bev_collate,
+            shuffle=False,
+            collate_fn=partial(bev_collate, params=params),
             num_workers=8,
             pin_memory=True,
             persistent_workers=True,
@@ -213,7 +224,7 @@ class ModelInferenceWrapper:
             # 2. Forward pass again to get semantic logits
             with torch.no_grad():
                 pred = self.model(points, images)
-                boxes, scores = decode_box2d(pred["heatmap"], pred["reg"], K=K)
+                boxes, scores = decode_box3d(pred["bbox_heatmap"], pred["bbox_reg"], params=params, K=K)
                 sem_logits = pred["sem_logits"][0].cpu()  # (C, H, W)
                 sem_pred = sem_logits.argmax(dim=0).numpy()  # (H, W)
 

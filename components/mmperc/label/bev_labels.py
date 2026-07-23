@@ -59,7 +59,7 @@ def generate_bev_labels_bbox2d(
 
     Returns:
         heatmap: (B, 1, H_out, W_out)
-        reg:     (B, 6, H_out, W_out)
+        reg:     (B, 8, H_out, W_out)  [dx, dy, dz, log_w, log_l, log_h, sin_yaw, cos_yaw]
         mask:    (B, 1, H_out, W_out)
     """
     bev_h = mmperc_params.bev_params.bev_h
@@ -67,8 +67,12 @@ def generate_bev_labels_bbox2d(
 
     B = len(gt_boxes)
     heatmap = torch.zeros((B, 1, bev_h, bev_w), dtype=torch.float16)
-    reg = torch.zeros((B, 6, bev_h, bev_w), dtype=torch.float32)
+    reg = torch.zeros((B, 8, bev_h, bev_w), dtype=torch.float32)
     mask = torch.zeros((B, 1, bev_h, bev_w), dtype=torch.uint8)
+
+    # z reference: center of the z range for stable dz targets
+    z_min, z_max = mmperc_params.bev_params.z_range
+    z_ref = (z_min + z_max) / 2.0
 
     for b in range(B):
         boxes = gt_boxes[b]  # (N, 7)
@@ -102,13 +106,16 @@ def generate_bev_labels_bbox2d(
 
             dx = (x - cell_x) / res_x
             dy = (y - cell_y) / res_y
+            dz = z - z_ref
 
             reg[b, 0, iy, ix] = dx
             reg[b, 1, iy, ix] = dy
-            reg[b, 2, iy, ix] = math.log(w)
-            reg[b, 3, iy, ix] = math.log(l_)
-            reg[b, 4, iy, ix] = math.sin(yaw)
-            reg[b, 5, iy, ix] = math.cos(yaw)
+            reg[b, 2, iy, ix] = dz
+            reg[b, 3, iy, ix] = math.log(w)
+            reg[b, 4, iy, ix] = math.log(l_)
+            reg[b, 5, iy, ix] = math.log(h)
+            reg[b, 6, iy, ix] = math.sin(yaw)
+            reg[b, 7, iy, ix] = math.cos(yaw)
 
             # -------------------------------
             # 4. Mask
