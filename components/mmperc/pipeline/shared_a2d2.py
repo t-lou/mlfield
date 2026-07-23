@@ -14,7 +14,7 @@ from components.mmperc.losses.detection_losses import focal_loss, l1_loss, sem_l
 
 
 # ================================================================
-# Train or f Epoch
+# Train or Eval Epoch
 # ================================================================
 def run_one_epoch(
     model: torch.nn.Module,
@@ -23,6 +23,7 @@ def run_one_epoch(
     epoch: int = 0,
     num_epochs: int = 1,
     optimizer: torch.optim.Optimizer | None = None,
+    scheduler: torch.optim.lr_scheduler.LRScheduler | None = None,
     train: bool = True,
 ):
     if train:
@@ -44,7 +45,11 @@ def run_one_epoch(
         images: torch.Tensor = batch["camera"].to(device)
 
         # forward
-        pred: Dict[str, torch.Tensor] = model(points, images)
+        if train:
+            pred: Dict[str, torch.Tensor] = model(points, images)
+        else:
+            with torch.no_grad():
+                pred: Dict[str, torch.Tensor] = model(points, images)
         heatmap_pred = pred["bbox_heatmap"]
         reg_pred = pred["bbox_reg"]
         sem_pred = pred["sem_logits"]
@@ -94,5 +99,9 @@ def run_one_epoch(
         progress.set_postfix(loss=f"{current_loss:.2f}", avg20=f"{avg20:.2f}")
 
         id_batch += 1
+
+    # Step scheduler after epoch
+    if train and scheduler is not None:
+        scheduler.step()
 
     logging.info(f"Epoch {epoch}: loss={loss:.4f}")

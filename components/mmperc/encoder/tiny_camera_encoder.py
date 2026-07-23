@@ -29,15 +29,16 @@ class TinyCameraEncoder(nn.Module):
         # A small CNN backbone that downsamples the image 3 times.
         # Each stride=2 halves spatial resolution.
         # Final output: (B, out_channels, H', W')
+        # Using GroupNorm instead of BatchNorm for memory efficiency (no running stats)
         self.conv = nn.Sequential(
             nn.Conv2d(3, 32, kernel_size=3, stride=2, padding=1),
-            nn.BatchNorm2d(32),
+            nn.GroupNorm(8, 32),
             nn.ReLU(inplace=True),
             nn.Conv2d(32, 64, kernel_size=3, stride=2, padding=1),
-            nn.BatchNorm2d(64),
+            nn.GroupNorm(8, 64),
             nn.ReLU(inplace=True),
             nn.Conv2d(64, self.out_channels, kernel_size=3, stride=2, padding=1),
-            nn.BatchNorm2d(self.out_channels),
+            nn.GroupNorm(8, self.out_channels),
             nn.ReLU(inplace=True),
         )
 

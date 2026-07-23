@@ -122,7 +122,9 @@ class SimpleModel(nn.Module):
         if self._use_fusion:
             bev_fused: Tensor = self.fusion(lidar_token, camera_tokens)  # (B, C, H, W)
         elif self._params.use_lidar:
-            bev_fused = lidar_token if self._params.use_lidar else camera_tokens
+            bev_fused = lidar_token
+        else:
+            bev_fused = camera_tokens
 
         # Prepare output
         outputs = {}

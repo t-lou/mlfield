@@ -26,7 +26,8 @@ def train_model(
     dataloader_train: DataLoader,
     dataloader_eval: DataLoader,
     optimizer: torch.optim.Optimizer,
-    device: torch.device,
+    scheduler: torch.optim.lr_scheduler.LRScheduler | None = None,
+    device: torch.device = None,
     num_epochs: int = 1,
     ckpt_dir="checkpoints",
 ):
@@ -66,6 +67,7 @@ def train_model(
                 model=model,
                 dataloader=dataloader_train,
                 optimizer=optimizer,
+                scheduler=scheduler,
                 device=device,
                 epoch=epoch,
                 num_epochs=start_epoch + num_epochs,
@@ -103,6 +105,7 @@ def train_one_epoch(
     dataloader: DataLoader,
     device: torch.device,
     optimizer: torch.optim.Optimizer,
+    scheduler: torch.optim.lr_scheduler.LRScheduler | None = None,
     epoch: int = 0,
     num_epochs: int = 1,
 ):
@@ -110,6 +113,7 @@ def train_one_epoch(
         model=model,
         dataloader=dataloader,
         optimizer=optimizer,
+        scheduler=scheduler,
         device=device,
         epoch=epoch,
         num_epochs=num_epochs,

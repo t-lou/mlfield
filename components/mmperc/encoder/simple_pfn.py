@@ -26,7 +26,9 @@ class SimplePFN(nn.Module):
     def __init__(self, in_channels: int, out_channels: int = 64) -> None:
         super().__init__()
         self.linear = nn.Linear(in_channels, out_channels, bias=False)
-        self.bn = nn.BatchNorm1d(out_channels)
+        # GroupNorm for memory efficiency - normalize over groups instead of batch
+        # Use 1D version with proper reshape
+        self.norm = nn.GroupNorm(num_groups=1, num_channels=out_channels)
 
     def forward(self, pillars: Tensor, pillar_count: Tensor | None = None) -> Tensor:
         B, P, M, C = pillars.shape
@@ -34,13 +36,13 @@ class SimplePFN(nn.Module):
         # Linear projection applied per point
         x = self.linear(pillars)  # (B, P, M, C_out)
 
-        # BatchNorm1d expects (N, C)
-        x = x.reshape(B * P * M, -1)
-        x = self.bn(x)
-        x = F.relu(x)
-        x = x.reshape(B, P, M, -1)
-
-        # Max-pool over points within each pillar
+        # Max-pool over points within each pillar first
         x = x.max(dim=2).values  # (B, P, C_out)
+
+        # Reshape for GroupNorm: (B*P, C_out)
+        x = x.reshape(B * P, -1)
+        x = self.norm(x)
+        x = F.relu(x)
+        x = x.reshape(B, P, -1)
 
         return x

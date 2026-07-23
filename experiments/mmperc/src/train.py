@@ -10,6 +10,7 @@ from components.mmperc.pipeline.train_a2d2 import train_model
 from components.utils.config import load_yaml
 from components.utils.device import get_device
 from components.utils.logger import configure_logger
+from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch.utils.data import DataLoader
 
 
@@ -34,7 +35,7 @@ def main(params: MmpercParams):
     dataloader_eval = DataLoader(
         dataset_eval,
         batch_size=train_config.batch_size * 2,
-        shuffle=True,
+        shuffle=False,
         collate_fn=partial(bev_collate, params=params),
         num_workers=train_config.num_workers,
         pin_memory=train_config.pin_memory,
@@ -43,13 +44,17 @@ def main(params: MmpercParams):
     )
 
     model = SimpleModel(params=params).to(device)
-    optimizer = optim.Adam(model.parameters(), lr=1e-4)
+    optimizer = optim.Adam(model.parameters(), lr=1e-4, weight_decay=1e-5)
+
+    # Add learning rate scheduler for better convergence
+    scheduler = CosineAnnealingLR(optimizer, T_max=train_config.num_epoch, eta_min=1e-6)
 
     train_model(
         model,
         dataloader_train,
         dataloader_eval,
         optimizer,
+        scheduler,
         device,
         num_epochs=train_config.num_epoch,
     )
