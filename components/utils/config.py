@@ -1,7 +1,7 @@
 from dataclasses import MISSING, asdict, fields
 from enum import Enum
 from pathlib import Path
-from typing import Type, TypeVar
+from typing import Type, TypeVar, get_type_hints
 
 import yaml
 
@@ -48,6 +48,13 @@ def create_default(cls: Type[T], path: Path) -> None:
     dump_yaml(obj, path)
 
 
+def _get_field_types(cls: Type[T]) -> dict[str, object]:
+    try:
+        return get_type_hints(cls)
+    except Exception:
+        return {f.name: f.type for f in fields(cls)}
+
+
 def load_yaml(path: Path, cls: Type[T]) -> T:
     """Load a YAML file into a dataclass object, ignoring unknown fields."""
     if not path.exists():
@@ -57,7 +64,7 @@ def load_yaml(path: Path, cls: Type[T]) -> T:
     with path.open(encoding="utf-8") as f:
         data = yaml.safe_load(f) or {}
 
-    allowed = {f.name: f.type for f in fields(cls)}
+    allowed = _get_field_types(cls)
     filtered = {}
     for k, v in data.items():
         if k in allowed:
@@ -73,7 +80,7 @@ def load_yaml(path: Path, cls: Type[T]) -> T:
 
 def load_yaml_recursive(data: dict, cls: Type[T]) -> T:
     """Recursively convert a dict to a dataclass, handling nested dataclasses."""
-    allowed = {f.name: f.type for f in fields(cls)}
+    allowed = _get_field_types(cls)
     filtered = {}
     for k, v in data.items():
         if k in allowed:

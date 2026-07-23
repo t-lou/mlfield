@@ -6,7 +6,7 @@ import torch
 from components.utils.logger import logger
 
 
-def get_device():
+def get_device() -> torch.device:
     """Return the best available device (GPU, MPS, or CPU) for PyTorch."""
     if torch.cuda.is_available():
         device = torch.device("cuda")

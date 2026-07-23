@@ -7,7 +7,6 @@ from torch.utils.data import DataLoader
 
 from components.dataset.image_only_dataset import ImageOnlyDataset
 from components.utils.config import load_yaml
-from components.utils.device import get_device, resolve_num_workers
 from components.utils.fps_logger import FpsLogger
 from components.utils.logger import configure_logger, logger
 from components.vit.dino_defs import DINOConfig
@@ -15,39 +14,30 @@ from components.vit.dino_session import DINOSession
 from components.vit.dino_transform import DINOTransform, dino_collate_fn
 
 
-def train(
-    config: DINOConfig,
-    num_epochs=100,
-    start_epoch=-1,
-    use_amp=True,
-    num_workers=8,
-    prefetch_factor=4,
-    persistent_workers=True,
-):
-    """Train the DINO model on ImageNet 256x256 dataset with multi-crop augmentation."""
+def train(config: DINOConfig, start_epoch: int = -1):
+    """Train the DINO model with multi-crop augmentation."""
 
-    dir_ckpt = Path("./dino_checkpoints")
-    if not dir_ckpt.exists():
-        dir_ckpt.mkdir(parents=True, exist_ok=True)
+    dir_ckpt = Path(config.train_config.dir_ckpts)
+    dir_ckpt.mkdir(parents=True, exist_ok=True)
 
-    device = get_device()
+    device = config.train_config.get_device()
     dino_transform = DINOTransform(config)
     dataset = ImageOnlyDataset(
         root_dirs=config.data_dirs,
         transform=lambda x: dino_transform(x),
     )
-    num_workers = resolve_num_workers(num_workers)
+    num_workers = config.train_config.num_workers
     loader_kwargs = {
         "dataset": dataset,
-        "batch_size": config.batch_size,
-        "shuffle": True,
+        "batch_size": config.train_config.batch_size,
+        "shuffle": config.train_config.shuffle,
         "num_workers": num_workers,
         "collate_fn": dino_collate_fn,
         "pin_memory": (device.type == "cuda"),
     }
     if num_workers > 0:
-        loader_kwargs["prefetch_factor"] = prefetch_factor
-        loader_kwargs["persistent_workers"] = persistent_workers
+        loader_kwargs["prefetch_factor"] = config.train_config.prefetch_factor
+        loader_kwargs["persistent_workers"] = config.train_config.persistent_workers
     loader = DataLoader(**loader_kwargs)
 
     dino_session = DINOSession(config, device=device)
@@ -65,7 +55,7 @@ def train(
     criterion = dino_session.loss_fn
     optimizer = torch.optim.AdamW(student.parameters(), lr=1e-4, weight_decay=0.04)
 
-    if device.type == "cuda" and use_amp:
+    if device.type == "cuda":
         amp_context = torch.autocast(device_type="cuda", dtype=torch.float16)
         scaler = torch.cuda.amp.GradScaler(enabled=True)
     else:
@@ -77,8 +67,8 @@ def train(
         f"amp={'enabled' if scaler is not None else 'disabled'}"
     )
 
-    stop_epoch = next_epoch + num_epochs
-    fps_logger = FpsLogger(batch_size=config.batch_size)
+    stop_epoch = next_epoch + config.train_config.num_epoch
+    fps_logger = FpsLogger(batch_size=config.train_config.batch_size)
     for epoch in range(next_epoch, stop_epoch):
         for imgs in loader:
             imgs = [img.to(device, non_blocking=True) for img in imgs]
@@ -115,42 +105,10 @@ if __name__ == "__main__":
     argument_parser.add_argument(
         "--path-config", type=str, default="./experiments/image_dino/dino_config.yaml", help="Path for the configs"
     )
-    argument_parser.add_argument(
-        "--num-epochs",
-        type=int,
-        default=100,
-        help="Number of epochs to run in this invocation",
-    )
     argument_parser.add_argument("--start-epoch", type=int, default=-1, help="Starting epoch for training")
-    argument_parser.add_argument("--disable-amp", action="store_true", help="Disable mixed precision training")
-    argument_parser.add_argument(
-        "--num-workers",
-        type=int,
-        default=None,
-        help="Number of DataLoader workers. Defaults to automatic CPU-count based selection.",
-    )
-    argument_parser.add_argument(
-        "--prefetch-factor",
-        type=int,
-        default=4,
-        help="Number of batches prefetched per worker when num_workers > 0",
-    )
-    argument_parser.add_argument(
-        "--disable-persistent-workers",
-        action="store_true",
-        help="Disable persistent DataLoader workers",
-    )
     args = argument_parser.parse_args()
 
     path_config = Path(args.path_config)
     config = load_yaml(path_config, DINOConfig)
 
-    train(
-        config,
-        args.num_epochs,
-        start_epoch=args.start_epoch,
-        use_amp=not args.disable_amp,
-        num_workers=args.num_workers,
-        prefetch_factor=args.prefetch_factor,
-        persistent_workers=not args.disable_persistent_workers,
-    )
+    train(config, start_epoch=args.start_epoch)

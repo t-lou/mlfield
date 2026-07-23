@@ -12,7 +12,6 @@ from torchvision import transforms
 from components.dataset.image_only_dataset import ImageOnlyDataset
 from components.dataset.mask_prefetch import collate_fn_with_masks
 from components.utils.config import load_yaml
-from components.utils.device import get_device, resolve_num_workers
 from components.utils.fps_logger import FpsLogger
 from components.utils.logger import configure_logger, logger
 from components.vit.i_jepa import I_JEPA
@@ -88,12 +87,8 @@ def _load_checkpoint(path: Path, model: I_JEPA, optimizer: torch.optim.Optimizer
 
 def train(
     config: IJEPAConfig,
-    num_epochs: int = 100,
     start_epoch: int = -1,
     use_amp: bool = True,
-    num_workers: int | None = 8,
-    prefetch_factor: int = 4,
-    persistent_workers: bool = True,
     ema_momentum: float = 0.996,
     use_mask_prefetch: bool = False,
 ) -> None:
@@ -105,12 +100,11 @@ def train(
     """
 
     # SHARED FROM dino.py: checkpoint folder handling.
-    dir_ckpt = Path("./i_jepa_checkpoints")
+    dir_ckpt = Path(config.train_config.dir_ckpts)
     dir_ckpt.mkdir(parents=True, exist_ok=True)
 
     # SHARED FROM dino.py: device selection and worker resolution.
-    device = get_device()
-    resolved_num_workers = resolve_num_workers(num_workers)
+    device = config.train_config.get_device()
 
     # REPLACED FROM dino.py: no multi-crop collate, just one transformed image per sample.
     dataset = ImageOnlyDataset(
@@ -120,9 +114,9 @@ def train(
 
     loader_kwargs = {
         "dataset": dataset,
-        "batch_size": config.batch_size,
-        "shuffle": True,
-        "num_workers": resolved_num_workers,
+        "batch_size": config.train_config.batch_size,
+        "shuffle": config.train_config.shuffle,
+        "num_workers": config.train_config.num_workers,
         "pin_memory": (device.type == "cuda"),
         "drop_last": True,
     }
@@ -133,9 +127,9 @@ def train(
             batch, config, device=torch.device("cpu")
         )  # cuda doesn't seem to be a good idea in dataloader
 
-    if resolved_num_workers > 0:
-        loader_kwargs["prefetch_factor"] = prefetch_factor
-        loader_kwargs["persistent_workers"] = persistent_workers
+    if config.train_config.num_workers > 0:
+        loader_kwargs["prefetch_factor"] = config.train_config.prefetch_factor
+        loader_kwargs["persistent_workers"] = config.train_config.persistent_workers
     loader = DataLoader(**loader_kwargs)
 
     model = I_JEPA(config).to(device)
@@ -162,8 +156,8 @@ def train(
         amp_context = nullcontext()
         scaler = None
 
-    stop_epoch = next_epoch + num_epochs
-    fps_logger = FpsLogger(batch_size=config.batch_size)
+    stop_epoch = next_epoch + config.train_config.num_epoch
+    fps_logger = FpsLogger(batch_size=config.train_config.batch_size)
 
     logger.info(f"Mask prefetching: {'ENABLED' if use_mask_prefetch else 'DISABLED'}")
 
@@ -215,26 +209,8 @@ if __name__ == "__main__":
         default="./experiments/image_jepa/i_jepa_config.yaml",
         help="Path to I-JEPA config YAML",
     )
-    parser.add_argument("--num-epochs", type=int, default=100, help="Number of epochs to run in this invocation")
     parser.add_argument("--start-epoch", type=int, default=-1, help="Starting epoch for training")
     parser.add_argument("--disable-amp", action="store_true", help="Disable mixed precision training")
-    parser.add_argument(
-        "--num-workers",
-        type=int,
-        default=None,
-        help="Number of DataLoader workers. Defaults to automatic CPU-count based selection.",
-    )
-    parser.add_argument(
-        "--prefetch-factor",
-        type=int,
-        default=4,
-        help="Number of batches prefetched per worker when num_workers > 0",
-    )
-    parser.add_argument(
-        "--disable-persistent-workers",
-        action="store_true",
-        help="Disable persistent DataLoader workers",
-    )
     parser.add_argument("--ema-momentum", type=float, default=0.996, help="EMA momentum for target encoder")
     parser.add_argument(
         "--use-mask-prefetch",
@@ -246,12 +222,8 @@ if __name__ == "__main__":
     cfg = load_yaml(Path(args.path_config), IJEPAConfig)
     train(
         cfg,
-        num_epochs=args.num_epochs,
         start_epoch=args.start_epoch,
         use_amp=not args.disable_amp,
-        num_workers=args.num_workers,
-        prefetch_factor=args.prefetch_factor,
-        persistent_workers=not args.disable_persistent_workers,
         ema_momentum=args.ema_momentum,
         use_mask_prefetch=args.use_mask_prefetch,
     )

@@ -1,4 +1,6 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+
+from components.definitions.train_config import TrainConfig
 
 #################################################
 # Typical ViT config variants
@@ -47,8 +49,8 @@ class DINOConfig:
     num_heads: int = 6
 
     # Training configs
-    batch_size: int = 32
     data_dirs: tuple[str] = ("./data/kaggle/",)
+    train_config: TrainConfig = field(default_factory=TrainConfig)
 
     def __post_init__(self):
         if self.model_base_res is None:

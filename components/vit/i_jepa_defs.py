@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+
+from components.definitions.train_config import TrainConfig
 
 
 @dataclass
@@ -46,8 +48,8 @@ class IJEPAConfig:
     predictor_mlp_ratio: float = 4.0
 
     # ---- Training data / batch settings ----
-    batch_size: int = 32
     data_dirs: tuple[str, ...] = ("./data/kaggle/",)
+    train_config: TrainConfig = field(default_factory=TrainConfig)
 
     # ---- Multi-block masking strategy (paper defaults) ----
     # Context block: single large block, ~85-100% scale, square aspect ratio.

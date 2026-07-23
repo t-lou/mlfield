@@ -23,43 +23,32 @@ Improvement Opportunities:
 
 import argparse
 from pathlib import Path
-from typing import Dict, Optional
 
 import torch
 from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
 
 from components.dataset.image_only_dataset import ImageOnlyDataset
+from components.definitions.train_config import TrainConfig
 from components.utils.config import load_yaml
-from components.utils.device import get_device, resolve_num_workers
 from components.utils.logger import configure_logger, logger
 from components.vit.mae import MAE
 from components.vit.mae_defs import MAE_MINI_CONFIG, MAEConfig
 
-DEFAULT_KAGGLE_DATASETS: Dict[str, str] = {
-    # Default full ImageNet dataset for MAE pre-training.
-    "imagenet": "dimensi0n/imagenet-256",
-    # Smaller ImageNet-style subset kept available as an explicit alias.
-    "imagenet_mini": "ifigotin/imagenetmini-1000",
-    # COCO 2017 dataset for MAE pre-training (large, ~20GB compressed).
-    "coco": "awsaf49/coco-2017-dataset",
-}
 
-
-def make_dataloader_args(batch_size: int, num_workers: Optional[int] = None):
-    resolved_num_workers = resolve_num_workers(num_workers)
+def make_dataloader_args(train_config: TrainConfig):
     loader_kwargs = {
-        "batch_size": batch_size,
-        "shuffle": True,
+        "batch_size": train_config.batch_size,
+        "shuffle": train_config.shuffle,
         "drop_last": True,
         "pin_memory": True,
     }
-    if resolved_num_workers > 0:
+    if train_config.num_workers > 0:
         loader_kwargs.update(
             {
-                "num_workers": resolved_num_workers,
-                "prefetch_factor": 2,
-                "persistent_workers": True,
+                "num_workers": train_config.num_workers,
+                "prefetch_factor": train_config.prefetch_factor,
+                "persistent_workers": train_config.persistent_workers,
             }
         )
     else:
@@ -68,7 +57,7 @@ def make_dataloader_args(batch_size: int, num_workers: Optional[int] = None):
     return loader_kwargs
 
 
-def make_cifar10_dataloader(root: str, batch_size: int, num_workers: Optional[int] = None) -> DataLoader:
+def make_cifar10_dataloader(root: str, train_config: TrainConfig) -> DataLoader:
     """
     Create CIFAR-10 dataloader for MAE pre-training.
 
@@ -77,8 +66,7 @@ def make_cifar10_dataloader(root: str, batch_size: int, num_workers: Optional[in
 
     Args:
         root: Root directory to store/load CIFAR-10 dataset
-        batch_size: Number of samples per batch
-        num_workers: Number of parallel data loading workers
+        train_config: Training configuration (batch size, num workers, etc.)
 
     Returns:
         DataLoader yielding batches of (32, 32, 3) images
@@ -102,17 +90,60 @@ def make_cifar10_dataloader(root: str, batch_size: int, num_workers: Optional[in
         transform=transform,
     )
 
-    loader_kwargs = make_dataloader_args(batch_size=batch_size, num_workers=num_workers)
+    loader_kwargs = make_dataloader_args(train_config=train_config)
 
     return DataLoader(dataset, **loader_kwargs)
 
 
+def _make_image_transform(image_size: int, dataset_type: str):
+    if dataset_type == "classification":
+        return transforms.Compose(
+            [
+                transforms.Resize(image_size),
+                transforms.CenterCrop(image_size),
+                transforms.ToTensor(),
+                transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+            ]
+        )
+    if dataset_type == "detection":
+        return transforms.Compose(
+            [
+                transforms.RandomResizedCrop(image_size, scale=(0.2, 1.0)),
+                transforms.RandomHorizontalFlip(),
+                transforms.ToTensor(),
+                transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+            ]
+        )
+    raise ValueError(f"Unsupported dataset type: {dataset_type}")
+
+
+def make_dataloader_from_dataset_specs(
+    dataset_specs: list[dict[str, str]],
+    train_config: TrainConfig,
+    image_size: int = 224,
+) -> DataLoader:
+    """Create a concatenated dataloader from multiple dataset specs with their own transforms."""
+    datasets = []
+    for spec in dataset_specs:
+        dataset_path = spec["path"]
+        dataset_type = spec["type"]
+        if not dataset_path or not Path(dataset_path).exists():
+            continue
+        transform = _make_image_transform(image_size=image_size, dataset_type=dataset_type)
+        datasets.append(ImageOnlyDataset([dataset_path], transform=transform))
+
+    if not datasets:
+        raise ValueError("No dataset specs were provided")
+
+    combined_dataset = torch.utils.data.ConcatDataset(datasets)
+    loader_kwargs = make_dataloader_args(train_config=train_config)
+    return DataLoader(combined_dataset, **loader_kwargs)
+
+
 def make_dataloader_from_classification_dataset(
     data_dirs: list[str],
-    batch_size: int,
+    train_config: TrainConfig,
     image_size: int = 224,
-    num_workers: Optional[int] = None,
-    train: bool = True,
 ) -> DataLoader:
     """
     Create dataloader which are designed for classification.
@@ -120,11 +151,9 @@ def make_dataloader_from_classification_dataset(
     Images for classification tend to be similar in size and scale, and needs less cropping.
 
     Args:
-        data_dirs: List of directories containing datasets.
-        batch_size: Number of samples per batch
+        data_dirs: List of directories containing datasets
+        train_config: Training configuration (batch size, num workers, etc.)
         image_size: Size to resize and crop images to
-        num_workers: Number of parallel data loading workers
-        train: If True, load training split; else load validation split
 
     Returns:
         DataLoader yielding batches of (image_size, image_size, 3) images
@@ -151,17 +180,15 @@ def make_dataloader_from_classification_dataset(
 
     dataset = ImageOnlyDataset(data_dirs, transform=transform)
 
-    loader_kwargs = make_dataloader_args(batch_size=batch_size, num_workers=num_workers)
+    loader_kwargs = make_dataloader_args(train_config=train_config)
 
     return DataLoader(dataset, **loader_kwargs)
 
 
 def make_dataloader_from_detection_dataset(
     data_dirs: list[str],
-    batch_size: int,
+    train_config: TrainConfig,
     image_size: int = 224,
-    num_workers: Optional[int] = None,
-    train: bool = True,
 ) -> DataLoader:
     """
     Create dataloader which are designed for detection.
@@ -170,10 +197,8 @@ def make_dataloader_from_detection_dataset(
 
     Args:
         data_dirs: List of directories containing datasets.
-        batch_size: Number of samples per batch
+        train_config: Training configuration (batch size, num workers, etc.)
         image_size: Size to resize and crop images to
-        num_workers: Number of parallel data loading workers
-        train: If True, load training split; else load validation split
 
     Returns:
         DataLoader yielding batches of (image_size, image_size, 3) images
@@ -197,13 +222,13 @@ def make_dataloader_from_detection_dataset(
 
     dataset = ImageOnlyDataset(data_dirs, transform=transform)
 
-    loader_kwargs = make_dataloader_args(batch_size=batch_size, num_workers=num_workers)
+    loader_kwargs = make_dataloader_args(train_config=train_config)
 
     return DataLoader(dataset, **loader_kwargs)
 
 
-def get_checkpoint_path(epoch: int) -> Path:
-    checkpoint_dir = Path("mae_checkpoints")
+def get_checkpoint_path(epoch: int, dir_ckpts: str | Path | None = None) -> Path:
+    checkpoint_dir = Path(dir_ckpts or "mae_checkpoints")
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     return checkpoint_dir / f"checkpoint_{epoch:05d}.pth"
 
@@ -214,8 +239,6 @@ def train(
     steps: int = -1,
     data_root: str = "./data",
     start_epoch: int = 0,
-    num_epochs: int = 1,
-    num_workers: Optional[int] = None,
     mini: bool = False,
 ) -> None:
     """
@@ -227,29 +250,37 @@ def train(
         steps: Max steps per epoch (-1 = full epoch)
         data_root: Root directory for datasets
         start_epoch: Starting epoch number for checkpointing and logs
-        num_epochs: Number of epochs to run
-        num_workers: Number of DataLoader workers
         mini: If True, use CIFAR-10 data loader and smaller model config
     """
-    device = get_device()
+    device = config.train_config.get_device()
     model = model.to(device)
 
     if mini:
-        loader = make_cifar10_dataloader(root=data_root, batch_size=config.batch_size, num_workers=num_workers)
-    else:
-        loader = make_dataloader_from_classification_dataset(
-            data_dirs=[data_root],
-            batch_size=config.batch_size,
-            image_size=config.image_size,
-            num_workers=num_workers,
+        loader = make_cifar10_dataloader(
+            root="./data/cifar10",
+            train_config=config.train_config,
         )
+    else:
+        dataset_specs = getattr(config, "datasets", None) or []
+        if dataset_specs:
+            loader = make_dataloader_from_dataset_specs(
+                dataset_specs=list(dataset_specs),
+                train_config=config.train_config,
+                image_size=config.image_size,
+            )
+        else:
+            loader = make_dataloader_from_classification_dataset(
+                data_dirs=[data_root],
+                train_config=config.train_config,
+                image_size=config.image_size,
+            )
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=config.learning_rate, betas=(0.9, 0.95), weight_decay=0.05)
     use_amp = device.type == "cuda"
     scaler = torch.amp.GradScaler("cuda", enabled=True) if use_amp else None
 
     model.train()
-    for epoch_offset in range(num_epochs):
+    for epoch_offset in range(config.train_config.num_epoch):
         epoch = start_epoch + epoch_offset
         logger.info(f"Starting epoch {epoch}")
 
@@ -280,28 +311,21 @@ def train(
             f"epoch={epoch} step={step} loss={float(loss):.6f} "
             f"pred_shape={tuple(pred.shape)} target_shape={tuple(target.shape)}"
         )
-        checkpoint_path = get_checkpoint_path(epoch)
+        checkpoint_path = get_checkpoint_path(epoch, dir_ckpts=config.train_config.dir_ckpts)
         model.save_checkpoint(checkpoint_path)
         logger.info(f"Saved checkpoint for epoch {epoch}: {checkpoint_path}")
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="MAE debug trainer with CIFAR-10 and ImageNet presets")
+    parser = argparse.ArgumentParser(description="MAE trainer")
     parser.add_argument("--path-config", type=str, default="./experiments/image_mae/mae_config.yaml")
     parser.add_argument("--steps", type=int, default=-1)
-    parser.add_argument("--num-epochs", type=int, default=10)
     parser.add_argument("--start-epoch", type=int, default=-1)
     parser.add_argument(
         "--data-root",
         type=str,
         default="./data",
-        help="Root directory for datasets.",
-    )
-    parser.add_argument(
-        "--num-workers",
-        type=int,
-        default=None,
-        help="Number of DataLoader workers. Defaults to automatic CPU-count based selection.",
+        help="Root directory for datasets when no mixed dataset config is provided.",
     )
     parser.add_argument("--mini", action="store_true", help="Whether to use ciphar10 dataset and smaller model.")
     args = parser.parse_args()
@@ -313,7 +337,7 @@ def main() -> None:
         config = MAE_MINI_CONFIG
 
     model = MAE(config)
-    checkpoint_path = get_checkpoint_path(args.start_epoch)
+    checkpoint_path = get_checkpoint_path(args.start_epoch, dir_ckpts=config.train_config.dir_ckpts)
     if checkpoint_path.exists():
         model.load_checkpoint(checkpoint_path)
         start_epoch = args.start_epoch + 1
@@ -328,8 +352,6 @@ def main() -> None:
         steps=args.steps,
         data_root=args.data_root,
         start_epoch=args.start_epoch,
-        num_epochs=args.num_epochs,
-        num_workers=args.num_workers,
         mini=args.mini,
     )
 
