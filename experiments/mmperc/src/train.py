@@ -8,7 +8,6 @@ from components.definitions.mmperc_params import MmpercParams
 from components.mmperc.model.simple_model import SimpleModel
 from components.mmperc.pipeline.train_a2d2 import train_model
 from components.utils.config import load_yaml
-from components.utils.device import get_device
 from components.utils.logger import configure_logger
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch.utils.data import DataLoader
@@ -17,13 +16,13 @@ from torch.utils.data import DataLoader
 def main(params: MmpercParams):
 
     train_config = params.train_config
-    device = get_device()
+    device = train_config.get_device()
 
     dataset_train = A2D2Dataset(path_tar=Path(params.path_data), params=params, split=Split.TRAIN)
     dataloader_train = DataLoader(
         dataset_train,
         batch_size=train_config.batch_size,
-        shuffle=True,
+        shuffle=train_config.shuffle,
         collate_fn=partial(bev_collate, params=params),
         num_workers=train_config.num_workers,
         pin_memory=train_config.pin_memory,
