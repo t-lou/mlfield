@@ -149,9 +149,11 @@ class Phi3MiniBackend:
 
         self._llm = Llama(
             model_path=str(self.model_path),  # path to GGUF file
-            n_ctx=4096,  # The max sequence length to use - note that longer sequence lengths require much more resources
+            n_ctx=4096,  # The max sequence length to use - note that longer sequence lengths require more resources
             n_threads=8,  # The number of CPU threads to use, tailor to your system and the resulting performance
-            n_gpu_layers=0,  # The number of layers to offload to GPU, if you have GPU acceleration available. Set to 0 if no GPU acceleration is available on your system.
+            # The number of layers to offload to GPU, if you have GPU acceleration available.
+            # Set to 0 if no GPU acceleration is available on your system.
+            n_gpu_layers=0,
         )
 
     # ---------------------------------------------------------
