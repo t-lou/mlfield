@@ -1,7 +1,7 @@
 import torch.nn as nn
 from torch import Tensor
 
-from components.definitions.mmperc import MmpercParams
+from components.definitions.mmperc_params import MmpercParams
 from components.mmperc.encoder.point_pillar_bev import PointPillarBEV
 from components.mmperc.encoder.tiny_camera_encoder import TinyCameraEncoder
 from components.mmperc.fusion.futr_fusion import FuTrFusionBlock

@@ -4,7 +4,7 @@ from pathlib import Path
 
 import torch.optim as optim
 from components.dataset.a2d2_dataset import A2D2Dataset, Split, bev_collate
-from components.definitions.mmperc import MmpercParams
+from components.definitions.mmperc_params import MmpercParams
 from components.mmperc.model.simple_model import SimpleModel
 from components.mmperc.pipeline.train_a2d2 import train_model
 from components.utils.config import load_yaml

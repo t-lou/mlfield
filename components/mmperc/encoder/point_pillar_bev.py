@@ -1,6 +1,6 @@
 from torch import Tensor, nn
 
-from components.definitions.mmperc import MmpercParams
+from components.definitions.mmperc_params import MmpercParams
 from components.mmperc.backbone.tiny_bev_backbone import TinyBEVBackbone
 from components.mmperc.encoder.simple_pfn import SimplePFN
 from components.mmperc.scatter.scatter import scatter_to_bev

@@ -3,7 +3,7 @@ from typing import List
 
 import torch
 
-from components.definitions.mmperc import MmpercParams
+from components.definitions.mmperc_params import MmpercParams
 from components.utils.bev_utils import get_res, grid_to_xy, xy_to_grid
 
 GAUSSIAN_CACHE = {}

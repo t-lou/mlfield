@@ -4,7 +4,7 @@ from pathlib import Path
 
 import torch
 from components.dataset.a2d2_dataset import A2D2Dataset, Split, bev_collate
-from components.definitions.mmperc import MmpercParams
+from components.definitions.mmperc_params import MmpercParams
 from components.mmperc.model.simple_model import SimpleModel
 from components.utils.config import load_yaml
 from components.utils.device import get_device

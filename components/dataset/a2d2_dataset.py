@@ -10,7 +10,7 @@ import torch
 from PIL import Image
 from torch.utils.data import Dataset
 
-from components.definitions.mmperc import MmpercParams
+from components.definitions.mmperc_params import MmpercParams
 from components.mmperc.label.bev_labels import generate_bev_labels_bbox2d
 from components.utils.image_utils import rescale_image
 

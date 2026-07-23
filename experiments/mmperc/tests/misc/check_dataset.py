@@ -1,7 +1,7 @@
 from pathlib import Path
 
 from components.dataset.a2d2_dataset import A2D2Dataset, Split
-from components.definitions.mmperc import MmpercParams
+from components.definitions.mmperc_params import MmpercParams
 
 path_tar = Path("/repo/data/camera_lidar_semantic_bboxes.tar")
 

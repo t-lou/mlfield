@@ -1,7 +1,7 @@
 from dataclasses import dataclass, field
 
-from components.definitions.bev import BevParams
-from components.definitions.train import TrainConfig
+from components.definitions.bev_params import BevParams
+from components.definitions.train_config import TrainConfig
 
 
 @dataclass

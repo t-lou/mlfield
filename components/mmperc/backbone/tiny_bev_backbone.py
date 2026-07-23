@@ -2,7 +2,7 @@ import torch.nn as nn
 from torch import Tensor
 from torch.utils.checkpoint import checkpoint
 
-from components.definitions.mmperc import MmpercParams
+from components.definitions.mmperc_params import MmpercParams
 
 
 class TinyBEVBackbone(nn.Module):

@@ -2,7 +2,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from components.definitions.mmperc import MmpercParams
+from components.definitions.mmperc_params import MmpercParams
 from components.mmperc.decoder.decode_a2d2 import ModelInferenceWrapper
 from components.utils.config import load_yaml
 from components.utils.device import get_device

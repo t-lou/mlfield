@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 
-from components.definitions.mmperc import MmpercParams
+from components.definitions.mmperc_params import MmpercParams
 
 
 # Note: This Head is dummy and probably not doable with the available data.

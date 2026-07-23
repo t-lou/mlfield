@@ -11,7 +11,7 @@ import torch
 from torch.utils.data import DataLoader
 
 from components.dataset.a2d2_dataset import A2D2Dataset, Split, bev_collate
-from components.definitions.mmperc import MmpercParams
+from components.definitions.mmperc_params import MmpercParams
 from components.mmperc.model.simple_model import SimpleModel
 from components.utils.bev_utils import get_res, grid_to_xy
 from components.utils.logger import logger

@@ -1,7 +1,7 @@
 import torch.nn as nn
 from torch import Tensor
 
-from components.definitions.mmperc import MmpercParams
+from components.definitions.mmperc_params import MmpercParams
 
 
 class TinyCameraEncoder(nn.Module):

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Tuple
 
-from components.definitions.mmperc import MmpercParams
+from components.definitions.mmperc_params import MmpercParams
 
 
 # ================================================================
