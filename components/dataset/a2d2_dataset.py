@@ -270,7 +270,7 @@ class A2D2Dataset(Dataset):
 
     def convert_semantic_rgb_to_class(self, rgb_img: np.ndarray) -> np.ndarray:
         H, W, _ = rgb_img.shape
-        class_mask = np.zeros((H, W), dtype=np.uint8)
+        class_mask = np.full((H, W), 255, dtype=np.uint8)
         flat = rgb_img.reshape(-1, 3).astype(np.uint32)
         out = class_mask.reshape(-1)
         keys = (flat[:, 0] << 16) + (flat[:, 1] << 8) + flat[:, 2]
