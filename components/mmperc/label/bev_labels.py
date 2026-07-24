@@ -9,6 +9,10 @@ from components.utils.bev_utils import get_res, grid_to_xy, xy_to_grid
 GAUSSIAN_CACHE = {}
 
 
+def _safe_log(value: float) -> float:
+    return math.log(max(float(value), 1e-6))
+
+
 def get_gaussian(radius: int, device, dtype):
     key = (radius, device, dtype)
     if key not in GAUSSIAN_CACHE:
@@ -111,9 +115,9 @@ def generate_bev_labels_bbox2d(
             reg[b, 0, iy, ix] = dx
             reg[b, 1, iy, ix] = dy
             reg[b, 2, iy, ix] = dz
-            reg[b, 3, iy, ix] = math.log(w)
-            reg[b, 4, iy, ix] = math.log(l_)
-            reg[b, 5, iy, ix] = math.log(h)
+            reg[b, 3, iy, ix] = _safe_log(w)
+            reg[b, 4, iy, ix] = _safe_log(l_)
+            reg[b, 5, iy, ix] = _safe_log(h)
             reg[b, 6, iy, ix] = math.sin(yaw)
             reg[b, 7, iy, ix] = math.cos(yaw)
 
