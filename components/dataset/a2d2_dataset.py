@@ -171,7 +171,8 @@ class A2D2Dataset(Dataset):
         # so no defensive .clone() is needed here.
         semantics = torch.from_numpy(frame["semantics"])
         semantics = rescale_image(semantics, scale_factor=self.params.image_scale, is_label=True)
-        semantics[semantics >= self.params.num_sem_classes] = 255
+        # Map unknown/invalid pixels to the invalid class (num_sem_classes - 1 = 38)
+        semantics[semantics >= self.params.num_sem_classes - 1] = self.params.num_sem_classes - 1
         gt_boxes = torch.from_numpy(frame["gt_boxes"]).float()
 
         return {

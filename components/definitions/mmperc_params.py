@@ -19,8 +19,9 @@ class MmpercParams:
 
     # -----------------------------
     # Number of semantic classes
+    # (38 A2D2 classes + 1 for "invalid/unfilled")
     # -----------------------------
-    num_sem_classes: int = 38
+    num_sem_classes: int = 39
 
     # -----------------------------
     # Downsampling factor for camera images

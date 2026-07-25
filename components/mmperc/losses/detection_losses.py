@@ -47,4 +47,5 @@ def l1_loss(pred, gt, mask):
     return loss / denom
 
 
-sem_loss_fn = nn.CrossEntropyLoss(ignore_index=255)
+# Train on all 39 classes (38 A2D2 + 1 invalid/unfilled)
+sem_loss_fn = nn.CrossEntropyLoss()
