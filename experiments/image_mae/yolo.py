@@ -242,7 +242,7 @@ class YOLOBackbone(nn.Module):
     - Teacher provides "golden reference" for all these levels
     """
 
-    def __init__(self, use_teacher_distillation: bool = False):
+    def __init__(self, use_teacher_distillation: bool = False, teacher_feature_dim: Optional[int] = None):
         super().__init__()
         self.use_teacher_distillation = use_teacher_distillation
 
@@ -279,8 +279,9 @@ class YOLOBackbone(nn.Module):
         # We need to match YOLO's P4 features (512-dim at 1/16 scale)
         # This adapter helps align representations generically
         if self.use_teacher_distillation:
+            assert teacher_feature_dim is not None, "teacher_feature_dim is required when use_teacher_distillation=True"
             self.teacher_adapter = nn.Sequential(
-                nn.Linear(768, 512),  # Project teacher features to YOLO feature dim
+                nn.Linear(teacher_feature_dim, 512),  # Project teacher features to YOLO feature dim
                 nn.ReLU(inplace=True),
                 nn.Linear(512, 512),  # Refine features to match YOLO's P4 representation
             )
@@ -455,11 +456,33 @@ class YOLOv8s(nn.Module):
         """
         super().__init__()
         self.num_classes = num_classes
-        self.teacher_model = teacher_model
 
-        self.backbone = YOLOBackbone(use_teacher_distillation=(teacher_model is not None))
+        teacher_feature_dim = None
+        if teacher_model is not None:
+            # Teacher is frozen and stays in eval() for its entire lifetime: no_grad() alone
+            # does not stop BatchNorm/Dropout from updating in train mode, so without this
+            # the "frozen" teacher's running stats would still drift every epoch.
+            for parameter in teacher_model.parameters():
+                parameter.requires_grad = False
+            teacher_model.eval()
+            teacher_feature_dim = teacher_model.feature_dim
+        # Registered outside the normal submodule tree (via object.__setattr__) so the
+        # teacher's weights are excluded from model.parameters() and model.state_dict().
+        object.__setattr__(self, "teacher_model", teacher_model)
+
+        self.backbone = YOLOBackbone(
+            use_teacher_distillation=(teacher_model is not None),
+            teacher_feature_dim=teacher_feature_dim,
+        )
         self.neck = YOLONeck()
         self.head = YOLOHead(num_classes=num_classes)
+
+    def train(self, mode: bool = True):
+        """Override train() so the frozen teacher never leaves eval mode."""
+        super().train(mode)
+        if self.teacher_model is not None:
+            self.teacher_model.eval()
+        return self
 
     def forward(self, x: torch.Tensor) -> tuple:
         """
@@ -747,6 +770,7 @@ def train(
     distill_weight: float = 0.1,
     max_steps: int = -1,
     num_workers: Optional[int] = None,
+    seed: int = 42,
 ):
     """
     Train YOLOv8-s with optional knowledge distillation.
@@ -769,7 +793,12 @@ def train(
         distill_weight: Weight for the distillation loss term
         max_steps: Maximum number of training steps (default: -1, meaning no limit)
         num_workers: Number of DataLoader workers
+        seed: Random seed for model init and data shuffling. Keep this fixed across
+            teacher_model_name variants so the only difference between runs is the
+            teacher, not random init/shuffling noise.
     """
+
+    torch.manual_seed(seed)
 
     config = YOLOConfig(batch_size=batch_size, epochs=epochs, learning_rate=learning_rate)
     device = get_device()
@@ -799,6 +828,7 @@ def train(
         "shuffle": True,
         "pin_memory": torch.cuda.is_available(),
         "collate_fn": _collate_coco_detection,
+        "generator": torch.Generator().manual_seed(seed),
     }
     val_loader_kwargs = {
         "batch_size": config.batch_size,
@@ -837,7 +867,6 @@ def train(
     optimizer = torch.optim.SGD(
         model.parameters(), lr=config.learning_rate, momentum=0.937, weight_decay=config.weight_decay
     )
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=config.epochs)
 
     logger.info(f"Training YOLOv8-s with distillation: {teacher_model_name}")
     logger.info(f"Device: {device}")
@@ -852,8 +881,19 @@ def train(
     if start_epoch > 0:
         checkpoint_path = Path(save_dir) / f"epoch_{start_epoch:03d}.pth"
         assert checkpoint_path.exists(), f"Checkpoint for start_epoch={start_epoch} not found: {checkpoint_path}"
-        model.load_checkpoint(checkpoint_path, device=device)
+        checkpoint = torch.load(str(checkpoint_path), map_location=device)
+        model.load_state_dict(checkpoint["model_state_dict"], strict=False)
+        if "optimizer_state_dict" in checkpoint:
+            optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+        else:
+            logger.warning("Checkpoint has no optimizer_state_dict - resuming with fresh optimizer state")
         logger.info(f"Resuming training from epoch {start_epoch} using checkpoint: {checkpoint_path}")
+
+    # last_epoch=-1 means "start of schedule"; on resume we advance it to start_epoch - 1
+    # so the cosine schedule continues from where it left off instead of restarting.
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer, T_max=config.epochs, last_epoch=(start_epoch - 1 if start_epoch > 0 else -1)
+    )
 
     for epoch_rel in range(config.epochs):
         epoch = start_epoch + epoch_rel
