@@ -47,7 +47,7 @@ class PointpillarLite:
 
         Returns:
             dict with:
-                pillars:       (B, P, M, 4)
+                pillars:       (B, P, M, 9)
                 pillar_coords: (B, P, 2)
         """
         if points.dim() != 3 or points.shape[-1] < 4:
@@ -70,7 +70,10 @@ class PointpillarLite:
             & (pts[:, 2] < self.z_max)
         )
 
-        pillars = torch.zeros((B, self.max_pillars, self.max_points_per_pillar, C), dtype=dtype, device=device)
+        NUM_FEATURES = 9  # xyzi, pillar mean 3d and pillar 2d center
+        pillars = torch.zeros(
+            (B, self.max_pillars, self.max_points_per_pillar, NUM_FEATURES), dtype=dtype, device=device
+        )
         pillar_coords = torch.zeros(B, self.max_pillars, 2, dtype=torch.long, device=device)
 
         if not valid_mask.any():
@@ -113,10 +116,41 @@ class PointpillarLite:
 
         keep_point = (point_slot < self.max_points_per_pillar) & keep_pillar[sorted_group]
 
+        # --- Feature augmentation: cluster-center + pillar-center offsets ---
+        # Compute cluster mean (x, y, z) per pillar, using only the points that
+        # will actually be kept (post-truncation), so it matches what the
+        # network sees rather than points that get dropped for overflow.
+        kept_pts = sorted_pts[keep_point]  # (K, 4)
+        kept_group = sorted_group[keep_point]  # (K,)
+
+        group_sum = torch.zeros(num_groups, 3, dtype=dtype, device=device)
+        group_sum.index_add_(0, kept_group, kept_pts[:, :3])
+        group_kept_count = torch.zeros(num_groups, dtype=dtype, device=device)
+        group_kept_count.index_add_(0, kept_group, torch.ones_like(kept_group, dtype=dtype))
+        group_mean = group_sum / group_kept_count.clamp(min=1).unsqueeze(-1)  # (num_groups, 3)
+
+        cluster_offset = kept_pts[:, :3] - group_mean[kept_group]  # (K, 3)
+
+        # Pillar geometric center, from grid coords directly (no dependence on points).
+        pillar_center_x = self.x_min + (uix.to(dtype) + 0.5) * self.vx
+        pillar_center_y = self.y_min + (uiy.to(dtype) + 0.5) * self.vy
+        center_offset_x = kept_pts[:, 0] - pillar_center_x[kept_group]
+        center_offset_y = kept_pts[:, 1] - pillar_center_y[kept_group]
+
+        augmented = torch.cat(
+            [
+                kept_pts,  # x, y, z, intensity
+                cluster_offset,  # x_c, y_c, z_c
+                center_offset_x.unsqueeze(-1),  # x_p
+                center_offset_y.unsqueeze(-1),  # y_p
+            ],
+            dim=-1,
+        )  # (K, NUM_FEATURES)
+
         sel_b = ub[sorted_group[keep_point]]
         sel_pid = local_pillar_id[sorted_group[keep_point]]
         sel_slot = point_slot[keep_point]
-        pillars[sel_b, sel_pid, sel_slot] = sorted_pts[keep_point]
+        pillars[sel_b, sel_pid, sel_slot] = augmented
 
         kb = ub[keep_pillar]
         klid = local_pillar_id[keep_pillar]

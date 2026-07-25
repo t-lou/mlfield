@@ -27,7 +27,7 @@ class PointPillarBEV(nn.Module):
         self.voxelizer = PointpillarLite(params=params)
 
         # Pillar Feature Network (per-pillar feature extraction)
-        self.pfn = SimplePFN(in_channels=4, out_channels=64)
+        self.pfn = SimplePFN(in_channels=9, out_channels=64)
 
         # BEV backbone (expands 64 → params.BEV_CHANNELS)
         self.backbone = TinyBEVBackbone(params=params, out_channels=params.bev_params.bev_channels)
