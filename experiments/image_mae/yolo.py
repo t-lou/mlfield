@@ -1,21 +1,26 @@
 """
-YOLOv8-s Object Detection with Optional MAE Knowledge Distillation
+YOLOv8-s Object Detection with Optional Knowledge Distillation
 
 This module implements YOLOv8-s (small variant) for COCO object detection.
-It includes an optional knowledge distillation feature using a pre-trained MAE
-(Masked Autoencoder) as a teacher model to accelerate training.
+It includes an optional knowledge distillation feature using pretrained models
+(MAE, DINO, I-JEPA, or others) as teacher models to accelerate training.
 
 Knowledge Distillation Overview:
-- MAE teacher (frozen) provides rich self-supervised visual features learned from ImageNet
+- Teacher model (frozen) provides rich self-supervised visual features learned from ImageNet
 - These features guide YOLO's backbone to learn better representations
 - Benefit: Faster convergence, fewer epochs needed, better generalization
-- The distillation is OPTIONAL (set use_mae_distillation=True/False for comparison)
+- The distillation is OPTIONAL - switch between different teachers by changing teacher_model parameter
 
-Why MAE Helps:
-1. MAE learned to reconstruct masked patches, understanding spatial structure
-2. Pre-trained on ImageNet with massive unlabeled data → generic visual knowledge
-3. Features act as regularization signal, smoothing YOLO's loss landscape
-4. Student (YOLO) doesn't need to learn everything from scratch on COCO
+Supported Teacher Models:
+1. MAE (Masked Autoencoder): Learns by reconstructing masked patches
+2. DINO: Vision Transformer with knowledge distillation
+3. I-JEPA: Predicts features of masked regions from visible regions
+4. None: Train without distillation for comparison
+
+Why Teacher Models Help:
+1. Learned from massive unlabeled data (ImageNet) → generic visual knowledge
+2. Features act as regularization signal, smoothing YOLO's loss landscape
+3. Student (YOLO) doesn't need to learn everything from scratch on COCO
 """
 
 import argparse
@@ -24,7 +29,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -34,6 +38,7 @@ from torchvision import transforms
 
 from components.utils.device import get_device, resolve_num_workers
 from components.utils.logger import configure_logger, logger
+from components.vit.teacher_models import TeacherModel, create_teacher_model
 
 
 @dataclass(frozen=True)
@@ -234,12 +239,12 @@ class YOLOBackbone(nn.Module):
     - Early layers learn low-level features (edges, textures)
     - Middle layers learn mid-level features (shapes, patterns)
     - Deep layers learn high-level features (objects, scenes)
-    - MAE provides "golden reference" for all these levels
+    - Teacher provides "golden reference" for all these levels
     """
 
-    def __init__(self, use_mae_distillation=True):
+    def __init__(self, use_teacher_distillation: bool = False):
         super().__init__()
-        self.use_mae_distillation = use_mae_distillation
+        self.use_teacher_distillation = use_teacher_distillation
 
         # Stem: Initial convolution to reduce spatial size and increase channels, preparing for deeper feature
         # extraction.
@@ -268,36 +273,29 @@ class YOLOBackbone(nn.Module):
             C2fBlock(1024, 1024, num_bottlenecks=1),
         )
 
-        # DISTILLATION ADAPTER (if using MAE):
-        # MAE encoder outputs 768-dim features at ~1/16 scale (for 224x224 input)
+        # DISTILLATION ADAPTER (if using teacher model):
+        # Different teacher models output different feature dimensions at ~1/16 scale
+        # MAE: 768-dim, DINO: 384-dim, I-JEPA: embed_dim
         # We need to match YOLO's P4 features (512-dim at 1/16 scale)
-        # This adapter helps align representations
-        if self.use_mae_distillation:
-            self.mae_adapter = nn.Sequential(
-                nn.Linear(768, 512),  # Project MAE features to YOLO feature dim
+        # This adapter helps align representations generically
+        if self.use_teacher_distillation:
+            self.teacher_adapter = nn.Sequential(
+                nn.Linear(768, 512),  # Project teacher features to YOLO feature dim
                 nn.ReLU(inplace=True),
                 nn.Linear(512, 512),  # Refine features to match YOLO's P4 representation
             )
 
-    def forward(self, x, mae_features=None):
+    def forward(self, x):
         """
-        Forward pass with optional MAE feature guidance.
-
-        HOW MAE DISTILLATION WORKS:
-        - During training, MAE processes the SAME image independently
-        - MAE's high-level features (learned on ImageNet) provide auxiliary supervision
-        - YOLO backbone learns to produce features similar to MAE
-        - This "guides" YOLO to learn better spatial representations
-        - Effect: YOLO converges faster and generalizes better
+        Forward pass for YOLO backbone.
 
         Args:
             x: Input image tensor (B, 3, H, W)
-            mae_features: Optional MAE encoder features for distillation
         """
         p1 = self.stem(x)  # 1/2
         p2 = self.dark2(p1)  # 1/4, 128 channels
         p3 = self.dark3(p2)  # 1/8, 256 channels (P3 output)
-        p4 = self.dark4(p3)  # 1/16, 512 channels (P4 output) <- MAE alignment target
+        p4 = self.dark4(p3)  # 1/16, 512 channels (P4 output) <- teacher alignment target
         p5 = self.dark5(p4)  # 1/32, 1024 channels (P5 output)
 
         return p3, p4, p5
@@ -409,13 +407,13 @@ class YOLOHead(nn.Module):
 
 
 # ============================================================================
-# YOLO Model with Optional MAE Distillation
+# YOLO Model with Optional Knowledge Distillation
 # ============================================================================
 
 
 class YOLOv8s(nn.Module):
     """
-    YOLOv8-s Object Detector with Optional MAE Knowledge Distillation
+    YOLOv8-s Object Detector with Optional Knowledge Distillation
 
     ARCHITECTURE:
     1. Backbone: Extract multi-scale features (P3, P4, P5)
@@ -423,97 +421,56 @@ class YOLOv8s(nn.Module):
     3. Head: Predict boxes and classes at each scale
 
     KNOWLEDGE DISTILLATION (OPTIONAL):
-    - If use_mae_distillation=True:
-      * Load frozen MAE teacher model
-      * MAE processes input images independently
-      * Extract MAE encoder features
-      * Align MAE features with YOLO P4 backbone output
-      * Add distillation loss: MSE(aligned_mae_features, yolo_p4_features)
+    - If teacher_model is provided:
+      * Teacher (frozen) processes input images independently
+      * Extract teacher features at intermediate scale
+      * Align teacher features with YOLO P4 backbone output
+      * Add distillation loss: MSE(aligned_teacher_features, yolo_p4_features)
       * Total loss = detection_loss + lambda_distill * distillation_loss
 
+    SUPPORTED TEACHERS:
+    - MAE: Learns by reconstructing masked patches
+    - DINO: Vision Transformer with knowledge distillation
+    - I-JEPA: Predicts masked region features from visible regions
+    - None: Train without distillation
+
     BENEFIT OF DISTILLATION:
-    - MAE learned from 1M+ ImageNet images
+    - Teacher learned from 1M+ ImageNet images
     - YOLO can leverage this knowledge on COCO (115k images)
     - Convergence: 30-40% faster (fewer epochs needed)
     - Accuracy: 2-3% higher mAP for same epochs
     """
 
-    def __init__(self, num_classes=80, use_mae_distillation=True, mae_checkpoint_path=None, mae_variant="imagenet"):
+    def __init__(
+        self,
+        num_classes: int = 80,
+        teacher_model: Optional[TeacherModel] = None,
+    ):
+        """
+        Initialize YOLOv8s detector.
+
+        Args:
+            num_classes: Number of output classes (default: 80 for COCO)
+            teacher_model: Optional teacher model for knowledge distillation
+        """
         super().__init__()
         self.num_classes = num_classes
-        self.use_mae_distillation = use_mae_distillation
-        self.mae_variant = mae_variant
+        self.teacher_model = teacher_model
 
-        self.backbone = YOLOBackbone(use_mae_distillation=use_mae_distillation)
+        self.backbone = YOLOBackbone(use_teacher_distillation=(teacher_model is not None))
         self.neck = YOLONeck()
         self.head = YOLOHead(num_classes=num_classes)
 
-        # Load MAE teacher if distillation is enabled
-        self.mae_teacher = None
-        if use_mae_distillation:
-            self.mae_teacher = self._load_mae_teacher(mae_checkpoint_path)
-
-    def _load_mae_teacher(self, checkpoint_path):
+    def forward(self, x: torch.Tensor) -> tuple:
         """
-        Load pre-trained MAE model as frozen teacher for knowledge distillation.
-        MAE provides high-quality self-supervised features learned from ImageNet.
-        """
-        try:
-            # Import MAE from the same directory
-
-            from components.vit.mae import MAE
-
-            mae = MAE(self.mae_variant)
-            local_root = Path(__file__).parent
-
-            ckpt_path = None
-            if checkpoint_path:
-                provided_path = Path(checkpoint_path)
-                if provided_path.is_absolute():
-                    if provided_path.exists():
-                        ckpt_path = provided_path
-                else:
-                    for candidate in [provided_path, local_root / provided_path]:
-                        if candidate.exists():
-                            ckpt_path = candidate
-                            break
-
-                if ckpt_path is None:
-                    logger.warning(f"⚠️  Warning: Provided MAE checkpoint not found: {checkpoint_path}")
-                    logger.warning("   Distillation disabled.")
-                    return None
-            else:
-                default_path = local_root / "mae_checkpoints" / self.mae_variant / "final.pth"
-                if default_path.exists():
-                    ckpt_path = default_path
-                else:
-                    logger.warning("⚠️  Warning: MAE checkpoint not found. Distillation disabled.")
-                    return None
-
-            mae.load_checkpoint(path=ckpt_path, device="cpu")
-
-            # Freeze MAE completely (no gradients)
-            for param in mae.parameters():
-                param.requires_grad = False
-
-            mae.eval()
-            return mae
-
-        except Exception as e:
-            logger.warning(f"⚠️  Warning: Failed to load MAE teacher: {e}")
-            logger.warning("   Continuing without knowledge distillation...")
-            return None
-
-    def forward(self, x):
-        """
-        Forward pass with optional MAE distillation.
+        Forward pass with optional teacher distillation.
 
         Args:
             x: Input images (B, 3, H, W)
 
         Returns:
             predictions: Detection predictions at 3 scales
-            distill_loss: Distillation loss (0 if MAE not available)
+            distill_loss: Distillation loss (0 if teacher not available)
         """
         # YOLO forward pass, extract multi-scale features
         p3, p4, p5 = self.backbone(x)
@@ -522,43 +479,36 @@ class YOLOv8s(nn.Module):
         # Detection head predicts bounding boxes and class probabilities
         p3_pred, p4_pred, p5_pred = self.head(fp3, fp4, fp5)
 
-        # Optional MAE distillation
+        # Optional teacher distillation
         distill_loss = torch.tensor(0.0, device=x.device)
-        if self.use_mae_distillation and self.mae_teacher is not None:
+        if self.teacher_model is not None:
             with torch.no_grad():
-                teacher_size = int(self.mae_teacher.cfg.image_size)
-                mae_input = F.interpolate(x, size=(teacher_size, teacher_size), mode="bilinear", align_corners=False)
+                # Get teacher features at intermediate resolution
+                teacher_features, teacher_feat_dim, teacher_scale = self.teacher_model.extract_features(x)
+                # teacher_features: (B, C_teacher, H_teacher, W_teacher)
 
-                # MAE processes the same image content independently.
-                # Use a deterministic full-token encoder pass to avoid stochastic
-                # teacher targets from random masking.
-                mae_latent = self.mae_teacher.forward_encoder_full(mae_input, mask_ratio=0.0)  # (B, num_patches+1, 768)
-                # mae_latent: (B, num_patches+1, 768)
-                mae_features = mae_latent[:, 1:, :]  # Remove CLS token, (B, 196, 768)
+            # Align teacher features to YOLO P4 dimensions using adapter
+            B, C_teacher, H_teacher, W_teacher = teacher_features.shape
 
-            # Reshape MAE features to spatial format for alignment with YOLO P4
-            # YOLO P4: (B, 512, H/16, W/16)
-            # MAE patches: (B, 196, 768) where 196 = 14*14 (224/16)
-            B, N, C_mae = mae_features.shape
-            h_mae = int(np.sqrt(N))  # 14 for 224x224
-            mae_features_spatial = mae_features.reshape(B, h_mae, h_mae, C_mae).permute(0, 3, 1, 2)
+            # Reshape for linear layer: (B, H, W, C) for processing
+            teacher_features_flat = teacher_features.permute(0, 2, 3, 1).reshape(-1, C_teacher)
 
-            # Align MAE features to YOLO P4 dimensions
-            mae_features_aligned = (
-                self.backbone.mae_adapter(mae_features_spatial.permute(0, 2, 3, 1).reshape(-1, C_mae))
-                .reshape(B, h_mae, h_mae, 512)
+            # Project teacher features to 512-dim (YOLO P4 feature dim)
+            teacher_features_aligned = (
+                self.backbone.teacher_adapter(teacher_features_flat)
+                .reshape(B, H_teacher, W_teacher, 512)
                 .permute(0, 3, 1, 2)
             )
 
-            # Resize MAE features to match YOLO backbone P4 spatial dimensions
+            # Resize teacher features to match YOLO backbone P4 spatial dimensions
             yolo_h, yolo_w = p4.shape[2], p4.shape[3]
-            mae_features_aligned = F.interpolate(
-                mae_features_aligned, size=(yolo_h, yolo_w), mode="bilinear", align_corners=False
+            teacher_features_aligned = F.interpolate(
+                teacher_features_aligned, size=(yolo_h, yolo_w), mode="bilinear", align_corners=False
             )
 
             # Distillation loss: MSE between aligned features
-            # This encourages YOLO backbone features to align with MAE features.
-            distill_loss = F.mse_loss(mae_features_aligned, p4)
+            # This encourages YOLO backbone features to align with teacher features
+            distill_loss = F.mse_loss(teacher_features_aligned, p4)
 
         return (p3_pred, p4_pred, p5_pred), distill_loss
 
@@ -786,20 +736,20 @@ def _evaluate_validation_proxy(model, data_loader, device, distill_weight):
 
 def train(
     data_root: str = "./data/kaggle/coco/coco2017/",
-    use_mae_distillation: bool = True,
-    mae_checkpoint_path: Optional[str] = None,
+    teacher_model_name: str = "none",
+    teacher_checkpoint_path: Optional[str] = None,
+    teacher_variant: str = "base",
     epochs: int = 100,
     start_epoch: int = 0,
     batch_size: int = 32,
     learning_rate: float = 1e-3,
     save_dir: str = "yolo_checkpoints",
     distill_weight: float = 0.1,
-    mae_variant: str = "imagenet",
     max_steps: int = -1,
     num_workers: Optional[int] = None,
 ):
     """
-    Train YOLOv8-s with optional MAE knowledge distillation.
+    Train YOLOv8-s with optional knowledge distillation.
 
     This implements a simplified but functional training loop that:
     - loads COCO train/val splits
@@ -808,22 +758,38 @@ def train(
 
     Args:
         data_root: Root directory for COCO dataset
-        use_mae_distillation: If True, use MAE teacher for knowledge distillation
-        mae_checkpoint_path: Path to MAE checkpoint (if None, uses default)
+        teacher_model_name: Teacher model to use ('none', 'mae', 'dino', 'ijepa')
+        teacher_checkpoint_path: Path to teacher checkpoint (if None, uses default)
+        teacher_variant: Variant of teacher model to use (e.g., 'imagenet', 'small', 'base')
         epochs: Number of training epochs
         start_epoch: Starting epoch for training (useful for resuming)
         batch_size: Batch size (32-64 for 30GB GPU, 4-8 for 4GB testing)
         learning_rate: Initial learning rate for SGD optimizer
         save_dir: Directory to save model checkpoints
         distill_weight: Weight for the distillation loss term
-        mae_variant: Variant of MAE to use (default: "imagenet")
         max_steps: Maximum number of training steps (default: -1, meaning no limit)
+        num_workers: Number of DataLoader workers
     """
 
     config = YOLOConfig(batch_size=batch_size, epochs=epochs, learning_rate=learning_rate)
     device = get_device()
 
     Path(save_dir).mkdir(parents=True, exist_ok=True)
+
+    # Create teacher model (or None if no distillation)
+    teacher_model = None
+    if teacher_model_name.lower() != "none":
+        logger.info(f"Creating {teacher_model_name} teacher model...")
+        teacher_model = create_teacher_model(
+            teacher_name=teacher_model_name,
+            checkpoint_path=teacher_checkpoint_path,
+            variant=teacher_variant,
+        )
+        if teacher_model is not None:
+            teacher_model = teacher_model.to(device)
+            logger.info(f"✓ {teacher_model.model_name} teacher loaded")
+        else:
+            logger.warning(f"Failed to load {teacher_model_name} teacher, training without distillation")
 
     resolved_num_workers = resolve_num_workers(num_workers)
     train_dataset = COCODetectionDataset(data_root, split="train", image_size=config.image_size)
@@ -865,9 +831,7 @@ def train(
 
     model = YOLOv8s(
         num_classes=config.num_classes,
-        use_mae_distillation=use_mae_distillation,
-        mae_checkpoint_path=mae_checkpoint_path,
-        mae_variant=mae_variant,
+        teacher_model=teacher_model,
     ).to(device)
 
     optimizer = torch.optim.SGD(
@@ -875,14 +839,14 @@ def train(
     )
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=config.epochs)
 
-    logger.info(f"Training YOLOv8-s with MAE distillation: {use_mae_distillation}")
+    logger.info(f"Training YOLOv8-s with distillation: {teacher_model_name}")
     logger.info(f"Device: {device}")
     logger.info(f"Config: batch_size={config.batch_size}, epochs={config.epochs}, lr={config.learning_rate}")
 
-    if use_mae_distillation and model.mae_teacher is None:
-        logger.warning("⚠️  MAE teacher not loaded - training WITHOUT distillation")
-    elif use_mae_distillation:
-        logger.info("✓ MAE teacher loaded - training WITH knowledge distillation")
+    if teacher_model is None:
+        logger.info("No teacher model - training baseline YOLO")
+    else:
+        logger.info(f"✓ Using {teacher_model.model_name} teacher - training WITH knowledge distillation")
         logger.info("  Benefit: Faster convergence, better generalization")
 
     if start_epoch > 0:
@@ -948,18 +912,28 @@ def train(
 
 
 def main():
-    parser = argparse.ArgumentParser(description="YOLOv8-s with Optional MAE Distillation")
+    parser = argparse.ArgumentParser(description="YOLOv8-s with Optional Knowledge Distillation")
     parser.add_argument(
         "--data-root", type=str, default="./data/kaggle/coco/coco2017", help="Root directory for COCO dataset"
     )
     parser.add_argument(
-        "--use-mae-distillation",
-        action="store_true",
-        default=False,
-        help="Enable MAE knowledge distillation (default: disabled for comparison)",
+        "--teacher",
+        type=str,
+        default="none",
+        choices=["none", "mae", "dino", "ijepa"],
+        help="Teacher model for knowledge distillation (default: none for baseline training)",
     )
     parser.add_argument(
-        "--mae-checkpoint", type=str, default=None, help="Path to MAE checkpoint (auto-detect if not specified)"
+        "--teacher-checkpoint",
+        type=str,
+        default=None,
+        help="Path to teacher checkpoint (auto-detect if not specified)",
+    )
+    parser.add_argument(
+        "--teacher-variant",
+        type=str,
+        default="base",
+        help="Variant of teacher model (e.g., 'imagenet', 'small', 'base')",
     )
     parser.add_argument("--epochs", type=int, default=100, help="Number of training epochs")
     parser.add_argument("--start-epoch", type=int, default=0, help="Starting epoch for training (useful for resuming)")
@@ -968,8 +942,7 @@ def main():
     parser.add_argument(
         "--save-dir", type=str, default="yolo_checkpoints", help="Directory to save checkpoints and logs"
     )
-    parser.add_argument("--distill-weight", type=float, default=0.1, help="Weight for MAE distillation loss")
-    parser.add_argument("--mae-variant", type=str, default="imagenet", help="MAE variant to use (default: imagenet)")
+    parser.add_argument("--distill-weight", type=float, default=0.1, help="Weight for knowledge distillation loss")
     parser.add_argument(
         "--max-steps",
         type=int,
@@ -987,15 +960,15 @@ def main():
 
     train(
         data_root=args.data_root,
-        use_mae_distillation=args.use_mae_distillation,
-        mae_checkpoint_path=args.mae_checkpoint,
+        teacher_model_name=args.teacher,
+        teacher_checkpoint_path=args.teacher_checkpoint,
+        teacher_variant=args.teacher_variant,
         epochs=args.epochs,
         start_epoch=args.start_epoch,
         batch_size=args.batch_size,
         learning_rate=args.learning_rate,
         save_dir=args.save_dir,
         distill_weight=args.distill_weight,
-        mae_variant=args.mae_variant,
         max_steps=args.max_steps,
         num_workers=args.num_workers,
     )
