@@ -161,3 +161,20 @@ class PointpillarLite:
             "pillars": pillars,
             "pillar_coords": pillar_coords,
         }
+
+
+def _smoke_test():
+    """
+    Smoke test for PointpillarLite.
+    """
+    params = MmpercParams()
+    voxelizer = PointpillarLite(params=params, max_points_per_pillar=5, max_pillars=10)
+
+    # Random input: (B, N, 4)
+    points = torch.rand((2, 20, 4)) * torch.tensor([50.0, 50.0, 5.0, 1.0])  # x,y,z,intensity
+    output = voxelizer(points)
+    print(f"pillars.shape: {output['pillars'].shape}, pillar_coords.shape: {output['pillar_coords'].shape}")
+
+
+if __name__ == "__main__":
+    _smoke_test()

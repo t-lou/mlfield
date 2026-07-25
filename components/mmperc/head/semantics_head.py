@@ -1,3 +1,4 @@
+import torch
 from torch import nn
 
 
@@ -50,3 +51,20 @@ class FullResSemHead(nn.Module):
         x = self.up2(x)
         x = self.up3(x)
         return self.pred(x)
+
+
+def _smoke_test():
+    """
+    Smoke test for FullResSemHead.
+    """
+    B, C_in, H, W = 2, 64, 32, 32
+    num_classes = 10
+    feat = torch.rand(B, C_in, H // 8, W // 8)
+    head = FullResSemHead(in_channels=C_in, num_classes=num_classes)
+    logits = head(feat)
+    assert logits.shape == (B, num_classes, H, W), f"Expected shape (B, {num_classes}, H, W), got {logits.shape}"
+    print("FullResSemHead smoke test passed.")
+
+
+if __name__ == "__main__":
+    _smoke_test()

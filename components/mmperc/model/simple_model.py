@@ -1,5 +1,5 @@
-import torch.nn as nn
-from torch import Tensor
+import torch
+from torch import Tensor, nn
 
 from components.definitions.mmperc_params import MmpercParams
 from components.mmperc.encoder.point_pillar_bev import PointPillarBEV
@@ -146,3 +146,30 @@ class SimpleModel(nn.Module):
             outputs["sem_logits"] = sem_feature
 
         return outputs
+
+
+def _smoke_test():
+    """
+    Smoke test for the SimpleModel.
+    """
+    from components.definitions.mmperc_params import MmpercParams
+
+    params = MmpercParams()
+    model = SimpleModel(params=params)
+
+    # Create dummy inputs
+    B, N, H_img, W_img = 2, 1000, 256, 256
+    points = torch.rand(B, N, 4)  # (B, N, 4)
+    images = torch.rand(B, 3, H_img, W_img)  # (B, 3, H_img, W_img)
+
+    # Forward pass
+    outputs = model(points=points, images=images)
+
+    # Print output shapes
+    for key, value in outputs.items():
+        print(f"{key}: {value.shape}")
+    print("SimpleModel smoke test passed.")
+
+
+if __name__ == "__main__":
+    _smoke_test()

@@ -1,5 +1,5 @@
-import torch.nn as nn
-from torch import Tensor
+import torch
+from torch import Tensor, nn
 
 from components.definitions.mmperc_params import MmpercParams
 
@@ -87,3 +87,26 @@ class FuTrFusionBlock(nn.Module):
         fused_bev = bev * (1 + scale) + shift
 
         return fused_bev
+
+
+def _smoke_test():
+    """
+    Smoke test for FuTrFusionBlock to ensure it runs without errors.
+    """
+    params = MmpercParams()
+    model = FuTrFusionBlock(params=params, num_heads=4, dropout=0.1)
+
+    # Create dummy BEV and camera inputs
+    B, C, H, W = 2, params.bev_params.bev_channels, 128, 128
+    N_cam = 16  # Number of camera tokens
+    bev_input = torch.randn(B, C, H, W)
+    cam_input = torch.randn(B, N_cam, C)
+
+    # Forward pass
+    output = model(bev_input, cam_input)
+    assert output.shape == (B, C, H, W), f"Expected shape (B, C, H, W), got {output.shape}"
+    print("FuTrFusionBlock smoke test passed.")
+
+
+if __name__ == "__main__":
+    _smoke_test()

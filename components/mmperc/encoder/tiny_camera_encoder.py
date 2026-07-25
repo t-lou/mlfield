@@ -1,5 +1,5 @@
-import torch.nn as nn
-from torch import Tensor
+import torch
+from torch import Tensor, nn
 
 from components.definitions.mmperc_params import MmpercParams
 
@@ -67,3 +67,21 @@ class TinyCameraEncoder(nn.Module):
         tokens = self.norm(tokens)
 
         return tokens, feat
+
+
+def _smoke_test():
+    """
+    Smoke test for TinyCameraEncoder.
+    """
+    B, C_in, H, W = 2, 3, 256, 256
+    x = torch.rand(B, C_in, H, W)
+    params = MmpercParams()
+    encoder = TinyCameraEncoder(params=params)
+    tokens, feat = encoder(x)
+    assert tokens.shape[0] == B and tokens.shape[2] == params.bev_params.bev_channels
+    assert feat.shape[0] == B and feat.shape[1] == params.bev_params.bev_channels
+    print("TinyCameraEncoder smoke test passed.")
+
+
+if __name__ == "__main__":
+    _smoke_test()

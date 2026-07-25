@@ -1,5 +1,5 @@
-import torch.nn as nn
-from torch import Tensor
+import torch
+from torch import Tensor, nn
 from torch.utils.checkpoint import checkpoint
 
 from components.definitions.mmperc_params import MmpercParams
@@ -85,3 +85,27 @@ class TinyBEVBackbone(nn.Module):
             x = self.down(x)
             x = self.block3(x)
         return x
+
+
+def _smoke_test():
+    """
+    Smoke test for TinyBEVBackbone to ensure it runs without errors.
+    """
+    params = MmpercParams()
+    model = TinyBEVBackbone(params=params, use_checkpoint=True)
+    model.train()  # Set to training mode to test checkpointing
+
+    # Create a dummy input tensor with shape (B, C, H, W)
+    dummy_input = torch.randn(2, 64, 128, 128)  # Batch size of 2, 64 channels, 128x128 spatial dimensions
+
+    # Forward pass
+    output = model(dummy_input)
+
+    # Check output shape
+    expected_shape = (2, 128, 64, 64)  # After downsampling by a factor of 2
+    assert output.shape == expected_shape, f"Expected output shape {expected_shape}, but got {output.shape}"
+    print("Smoke test passed!")
+
+
+if __name__ == "__main__":
+    _smoke_test()

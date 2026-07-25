@@ -33,3 +33,25 @@ class BBox3dHead(nn.Module):
             nn.ReLU(inplace=True),
             nn.Conv2d(in_channels // 2, out_channels, kernel_size=1),
         )
+
+
+def _smoke_test():
+    """
+    Smoke test for BBox3dHead.
+    """
+    B, C_in, H, W = 2, 64, 32, 32
+    x = torch.rand(B, C_in, H, W)
+    head = BBox3dHead(in_channels=C_in)
+    output = head(x)
+    assert "heatmap" in output and "reg" in output, "Output keys missing"
+    assert output["heatmap"].shape == (B, 1, H * 2, W * 2), (
+        f"Expected heatmap shape (B, 1, H*2, W*2), got {output['heatmap'].shape}"
+    )
+    assert output["reg"].shape == (B, 8, H * 2, W * 2), (
+        f"Expected reg shape (B, 8, H*2, W*2), got {output['reg'].shape}"
+    )
+    print("BBox3dHead smoke test passed.")
+
+
+if __name__ == "__main__":
+    _smoke_test()

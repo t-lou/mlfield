@@ -57,3 +57,26 @@ def scatter_to_bev(
     bev[batch_idx_valid, :, iy_valid, ix_valid] = feats_valid
 
     return bev
+
+
+def _smoke_test():
+    """
+    Smoke test for scatter_to_bev.
+    """
+    B, P, C = 2, 4, 3
+    bev_h, bev_w = 5, 5
+
+    # Create dummy pillar features and coordinates
+    pillar_features = torch.rand(B, P, C)
+    pillar_coords_xy = torch.randint(0, min(bev_h, bev_w), (B, P, 2))
+
+    # Call the function
+    bev = scatter_to_bev(pillar_features, pillar_coords_xy, bev_h=bev_h, bev_w=bev_w)
+
+    # Check output shape
+    assert bev.shape == (B, C, bev_h, bev_w), f"Expected shape (B, C, H, W), got {bev.shape}"
+    print("scatter_to_bev smoke test passed.")
+
+
+if __name__ == "__main__":
+    _smoke_test()

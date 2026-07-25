@@ -1,3 +1,4 @@
+import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
@@ -46,3 +47,19 @@ class SimplePFN(nn.Module):
         x = x.reshape(B, P, -1)
 
         return x
+
+
+def _smoke_test():
+    """
+    Smoke test for SimplePFN.
+    """
+    B, P, M, C_in = 2, 4, 8, 9
+    pillars = torch.rand(B, P, M, C_in)
+    pfn = SimplePFN(in_channels=C_in, out_channels=64)
+    output = pfn(pillars)
+    assert output.shape == (B, P, 64), f"Expected shape (B, P, 64), got {output.shape}"
+    print("SimplePFN smoke test passed.")
+
+
+if __name__ == "__main__":
+    _smoke_test()

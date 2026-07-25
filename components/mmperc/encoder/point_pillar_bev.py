@@ -1,3 +1,4 @@
+import torch
 from torch import Tensor, nn
 
 from components.definitions.mmperc_params import MmpercParams
@@ -70,3 +71,20 @@ class PointPillarBEV(nn.Module):
         logger.debug(f"bev_backbone.shape: {bev_backbone.shape}")
 
         return bev_backbone
+
+
+def _smoke_test():
+    """
+    Smoke test for PointPillarBEV
+    """
+    params = MmpercParams()
+    model = PointPillarBEV(params=params)
+
+    # Random input: (B, N, 5)
+    points = torch.rand((2, 1000, 5))
+    output = model(points)
+    print(f"Output shape: {output.shape}")
+
+
+if __name__ == "__main__":
+    _smoke_test()
