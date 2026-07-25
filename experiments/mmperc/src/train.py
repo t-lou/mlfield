@@ -42,7 +42,7 @@ def main(params: MmpercParams):
         prefetch_factor=train_config.prefetch_factor,
     )
 
-    model = SimpleModel(params=params).to(device).half()
+    model = SimpleModel(params=params).to(device)
     optimizer = optim.Adam(model.parameters(), lr=1e-4, weight_decay=1e-5)
 
     # Add learning rate scheduler for better convergence

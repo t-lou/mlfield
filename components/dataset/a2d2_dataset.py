@@ -165,7 +165,7 @@ class A2D2Dataset(Dataset):
         timestamp0, frame_id = self.indexing[idx]
         frame = self._load_frame(self.clustered_paths[timestamp0][frame_id])
 
-        points = torch.from_numpy(frame["points"]).half()
+        points = torch.from_numpy(frame["points"]).float()
         camera = frame["camera"]
         # frame["semantics"] is a freshly allocated array owned only by this call,
         # so no defensive .clone() is needed here.
@@ -343,7 +343,7 @@ class A2D2Dataset(Dataset):
         lidar_xyzi, lidar_timestamp = self.load_lidar(paths["lidar"])
         camera_img = self.load_img(paths["camera"], mode="RGB")
 
-        camera = torch.from_numpy(camera_img).permute(2, 0, 1).half() / 255.0
+        camera = torch.from_numpy(camera_img).permute(2, 0, 1).float() / 255.0
         camera = rescale_image(camera, scale_factor=self.params.image_scale, is_label=False)
 
         return {

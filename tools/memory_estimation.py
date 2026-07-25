@@ -116,7 +116,7 @@ if __name__ == "__main__":
     print(f"Using device: {device}")
 
     dataset = A2D2Dataset(params.PATH_TRAIN)
-    model = SimpleModel().to(device).half()
+    model = SimpleModel().to(device)
 
     param_mem_mb: float = get_parameter_size(model) / 1024**2
     print(f"Parameter memory: {param_mem_mb:.2f} MB")
