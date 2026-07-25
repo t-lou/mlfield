@@ -40,6 +40,7 @@ class PointpillarLite:
         self.max_points_per_pillar = max_points_per_pillar
         self.max_pillars = max_pillars
 
+    @torch.no_grad()
     def __call__(self, points: Tensor) -> Dict[str, Tensor]:
         """
         Args:
@@ -51,16 +52,16 @@ class PointpillarLite:
                 pillar_coords: (B, P, 2)
                 pillar_count:  (B, P)
         """
-        # Ensure only x, y, z, intensity are used
+        if points.dim() != 3 or points.shape[-1] < 4:
+            raise ValueError(f"Expected points of shape (B, N, >=4), got {tuple(points.shape)}")
+
         points = points[..., :4]
         B, N, C = points.shape
-        assert C == 4, f"Expected 4 channels (x,y,z,intensity), got {C}"
-        device = points.device
+        device, dtype = points.device, points.dtype
 
-        # ------------------------------------------------------------
-        # 1. Flatten for filtering and voxel coordinate computation
-        # ------------------------------------------------------------
+        # Work on a fresh flat copy — never mutate the caller's tensor.
         pts = points.reshape(B * N, C)
+        batch_idx = torch.arange(B, device=device).repeat_interleave(N)
 
         valid_mask = (
             (pts[:, 0] >= self.x_min)
@@ -71,62 +72,63 @@ class PointpillarLite:
             & (pts[:, 2] < self.z_max)
         )
 
-        # Zero out invalid points (keeps indexing simple)
-        pts[~valid_mask] = 0.0
-
-        # Batch index for each point
-        batch_idx = torch.arange(B, device=device).repeat_interleave(N)
-
-        # ------------------------------------------------------------
-        # 2. Compute voxel indices (ix, iy)
-        # ------------------------------------------------------------
-        ix = ((pts[:, 0] - self.x_min) / self.vx).long()
-        iy = ((pts[:, 1] - self.y_min) / self.vy).long()
-
-        coords = torch.stack([batch_idx, ix, iy], dim=1)  # (B*N, 3)
-
-        # ------------------------------------------------------------
-        # 3. Unique pillars (per batch)
-        # ------------------------------------------------------------
-        unique_coords, inverse = torch.unique(coords, dim=0, return_inverse=True)
-        # unique_coords: (P, 3) → [batch, ix, iy]
-
-        # ------------------------------------------------------------
-        # 4. Allocate pillar buffers
-        # ------------------------------------------------------------
-        pillars = torch.zeros(
-            (B, self.max_pillars, self.max_points_per_pillar, C),
-            dtype=torch.float32,
-            device=device,
-        )
+        pillars = torch.zeros((B, self.max_pillars, self.max_points_per_pillar, C), dtype=dtype, device=device)
         pillar_count = torch.zeros(B, self.max_pillars, dtype=torch.long, device=device)
         pillar_coords = torch.zeros(B, self.max_pillars, 2, dtype=torch.long, device=device)
 
-        next_pillar_id = torch.zeros(B, dtype=torch.long, device=device)
+        if not valid_mask.any():
+            return {"pillars": pillars, "pillar_coords": pillar_coords, "pillar_count": pillar_count}
 
-        # ------------------------------------------------------------
-        # 5. Fill pillars
-        # ------------------------------------------------------------
-        for gid, (b, x, y) in enumerate(unique_coords):
-            b = int(b.item())
-            pid = int(next_pillar_id[b].item())
+        # Drop invalid points entirely instead of zeroing them in place.
+        v_pts = pts[valid_mask]
+        v_batch = batch_idx[valid_mask]
+        v_ix = ((v_pts[:, 0] - self.x_min) / self.vx).long()
+        v_iy = ((v_pts[:, 1] - self.y_min) / self.vy).long()
 
-            if pid >= self.max_pillars:
-                continue  # skip overflow
+        coords = torch.stack([v_batch, v_ix, v_iy], dim=1)  # (V, 3)
+        unique_coords, inverse, counts = torch.unique(
+            coords, dim=0, sorted=True, return_inverse=True, return_counts=True
+        )
+        ub, uix, uiy = unique_coords[:, 0], unique_coords[:, 1], unique_coords[:, 2]
+        num_groups = unique_coords.size(0)
 
-            pillar_coords[b, pid] = torch.tensor([x, y], device=device)
+        # Stable sort keeps each pillar's points in their original relative
+        # order, matching the "keep first `count` points" behavior of the
+        # original loop.
+        order = torch.argsort(inverse, stable=True)
+        sorted_pts = v_pts[order]
+        sorted_group = inverse[order]
 
-            mask = inverse == gid
-            pts_in_pillar = pts[mask]  # (K, 4)
+        group_start = torch.zeros(num_groups, dtype=torch.long, device=device)
+        group_start[1:] = torch.cumsum(counts, 0)[:-1]
+        point_slot = torch.arange(sorted_group.size(0), device=device) - group_start[sorted_group]
 
-            count = min(pts_in_pillar.size(0), self.max_points_per_pillar)
-            pillars[b, pid, :count] = pts_in_pillar[:count]
-            pillar_count[b, pid] = count
+        # Local pillar id within each batch (0-based, in ascending (ix,iy) order).
+        batch_pillar_counts = torch.bincount(ub, minlength=B)
+        batch_pillar_offset = torch.zeros(B, dtype=torch.long, device=device)
+        batch_pillar_offset[1:] = torch.cumsum(batch_pillar_counts, 0)[:-1]
+        local_pillar_id = torch.arange(num_groups, device=device) - batch_pillar_offset[ub]
 
-            next_pillar_id[b] += 1
+        keep_pillar = local_pillar_id < self.max_pillars
+        if not bool(keep_pillar.all()):
+            dropped = int((~keep_pillar).sum())
+            print(f"[PointpillarLite] dropping {dropped} pillars beyond max_pillars={self.max_pillars}")
+
+        keep_point = (point_slot < self.max_points_per_pillar) & keep_pillar[sorted_group]
+
+        sel_b = ub[sorted_group[keep_point]]
+        sel_pid = local_pillar_id[sorted_group[keep_point]]
+        sel_slot = point_slot[keep_point]
+        pillars[sel_b, sel_pid, sel_slot] = sorted_pts[keep_point]
+
+        kb = ub[keep_pillar]
+        klid = local_pillar_id[keep_pillar]
+        pillar_count[kb, klid] = counts[keep_pillar].clamp(max=self.max_points_per_pillar)
+        pillar_coords[kb, klid, 0] = uix[keep_pillar]
+        pillar_coords[kb, klid, 1] = uiy[keep_pillar]
 
         return {
-            "pillars": pillars,  # (B, P, M, 4)
-            "pillar_coords": pillar_coords,  # (B, P, 2)
-            "pillar_count": pillar_count,  # (B, P)
+            "pillars": pillars,
+            "pillar_coords": pillar_coords,
+            "pillar_count": pillar_count,
         }

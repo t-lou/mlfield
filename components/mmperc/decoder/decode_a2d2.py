@@ -188,7 +188,7 @@ class ModelInferenceWrapper:
         self.params = params
 
         # 1. Build model on CPU
-        self.model = SimpleModel(params=params).to("cpu")
+        self.model = SimpleModel(params=params).to("cpu").half()
 
         # 2. Load checkpoint
         state = torch.load(ckpt, map_location="cpu")

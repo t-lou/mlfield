@@ -32,7 +32,7 @@ def main(params: MmpercParams):
     # 3. Build model
     # ------------------------------------------------------------
     device = get_device()
-    model = SimpleModel(params=params).to(device)
+    model = SimpleModel(params=params).to(device).half()
     points = points.to(device)
     camera = camera.to(device)
 

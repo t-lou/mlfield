@@ -343,7 +343,7 @@ class A2D2Dataset(Dataset):
         lidar_xyzi, lidar_timestamp = self.load_lidar(paths["lidar"])
         camera_img = self.load_img(paths["camera"], mode="RGB")
 
-        camera = torch.from_numpy(camera_img).permute(2, 0, 1).float() / 255.0
+        camera = torch.from_numpy(camera_img).permute(2, 0, 1).half() / 255.0
         camera = rescale_image(camera, scale_factor=self.params.image_scale, is_label=False)
 
         return {
