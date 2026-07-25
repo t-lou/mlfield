@@ -95,11 +95,11 @@ def run_one_epoch(
         # Only sync GPU->CPU (.item()) when we actually need the value:
         # for logging, for the progress bar refresh, or on the final batch
         # (so the trailing logging.info call below has a real number).
-        if do_log or is_last_batch:
+        if do_log or is_last_batch or mode == "eval":
             current_loss = loss.item()
             last_loss_value = current_loss
 
-            if do_log:
+            if do_log or mode == "eval":
                 record = loss_logger.EpochLoss(
                     epoch_id=epoch,
                     batch_id=id_batch,

@@ -13,7 +13,6 @@ class PointpillarLite:
     Converts raw lidar points (B, N, 4) into:
         - pillars:       (B, P, M, 4)
         - pillar_coords: (B, P, 2)  # (ix, iy)
-        - pillar_count:  (B, P)
     """
 
     def __init__(
@@ -50,7 +49,6 @@ class PointpillarLite:
             dict with:
                 pillars:       (B, P, M, 4)
                 pillar_coords: (B, P, 2)
-                pillar_count:  (B, P)
         """
         if points.dim() != 3 or points.shape[-1] < 4:
             raise ValueError(f"Expected points of shape (B, N, >=4), got {tuple(points.shape)}")
@@ -73,11 +71,10 @@ class PointpillarLite:
         )
 
         pillars = torch.zeros((B, self.max_pillars, self.max_points_per_pillar, C), dtype=dtype, device=device)
-        pillar_count = torch.zeros(B, self.max_pillars, dtype=torch.long, device=device)
         pillar_coords = torch.zeros(B, self.max_pillars, 2, dtype=torch.long, device=device)
 
         if not valid_mask.any():
-            return {"pillars": pillars, "pillar_coords": pillar_coords, "pillar_count": pillar_count}
+            return {"pillars": pillars, "pillar_coords": pillar_coords}
 
         # Drop invalid points entirely instead of zeroing them in place.
         v_pts = pts[valid_mask]
@@ -123,12 +120,10 @@ class PointpillarLite:
 
         kb = ub[keep_pillar]
         klid = local_pillar_id[keep_pillar]
-        pillar_count[kb, klid] = counts[keep_pillar].clamp(max=self.max_points_per_pillar)
         pillar_coords[kb, klid, 0] = uix[keep_pillar]
         pillar_coords[kb, klid, 1] = uiy[keep_pillar]
 
         return {
             "pillars": pillars,
             "pillar_coords": pillar_coords,
-            "pillar_count": pillar_count,
         }

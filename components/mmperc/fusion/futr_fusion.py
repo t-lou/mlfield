@@ -41,9 +41,8 @@ class FuTrFusionBlock(nn.Module):
         self.norm1 = nn.LayerNorm(C)
         self.norm2 = nn.LayerNorm(C)
 
-        # Project fused camera tokens back into BEV modulation
-        self.to_scale = nn.Linear(C, C)
-        self.to_shift = nn.Linear(C, C)
+        # Fused scale+shift projection: one matmul instead of two
+        self.to_film = nn.Linear(C, C * 2)
 
     def forward(self, bev: Tensor, camera: Tensor) -> Tensor:
         """
@@ -59,11 +58,15 @@ class FuTrFusionBlock(nn.Module):
         # Project camera tokens
         cam_tokens = self.cam_proj(camera)  # (B, N_cam, C)
 
-        # Camera queries → BEV keys/values
+        # need_weights=False lets PyTorch dispatch to the fused
+        # scaled_dot_product_attention kernel (flash / mem-efficient attn)
+        # instead of materializing the full (B, heads, N_cam, HW) weight
+        # matrix — this is the main memory/runtime cost of this block.
         attn_out, _ = self.cross_attn(
-            query=cam_tokens,  # (B, N_cam, C)
-            key=bev_tokens,  # (B, HW, C)
+            query=cam_tokens,
+            key=bev_tokens,
             value=bev_tokens,
+            need_weights=False,
         )
 
         # Residual + norm
@@ -76,8 +79,9 @@ class FuTrFusionBlock(nn.Module):
         cam_global = cam_fused.mean(dim=1)  # (B, C)
 
         # Convert to scale/shift for BEV modulation
-        scale = self.to_scale(cam_global).view(B, C, 1, 1)
-        shift = self.to_shift(cam_global).view(B, C, 1, 1)
+        scale, shift = self.to_film(cam_global).chunk(2, dim=-1)
+        scale = scale.view(B, C, 1, 1)
+        shift = shift.view(B, C, 1, 1)
 
         # FiLM-style modulation
         fused_bev = bev * (1 + scale) + shift

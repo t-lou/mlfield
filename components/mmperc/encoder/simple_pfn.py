@@ -30,7 +30,7 @@ class SimplePFN(nn.Module):
         # Use 1D version with proper reshape
         self.norm = nn.GroupNorm(num_groups=1, num_channels=out_channels)
 
-    def forward(self, pillars: Tensor, pillar_count: Tensor | None = None) -> Tensor:
+    def forward(self, pillars: Tensor) -> Tensor:
         B, P, M, C = pillars.shape
 
         # Linear projection applied per point
