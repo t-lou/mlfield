@@ -1,4 +1,3 @@
-import io
 import json
 import tarfile
 from enum import Enum
@@ -65,7 +64,7 @@ class A2D2Dataset(Dataset):
         self._name = "cam_front_center"
         self._root_parsing = "camera"
         self._tar = None
-        self._members: set[str] = set()
+        self._members: frozenset[str] = frozenset()
         self.color_to_class: Dict[Tuple[int, int, int], int] = {}
         self.class_to_color: Dict[int, Tuple[int, int, int]] = {}
         self.class_to_name: Dict[int, str] = {}
@@ -74,46 +73,64 @@ class A2D2Dataset(Dataset):
             raise RuntimeError(f"A2D2 tar archive not found: {self.path_tar}")
 
         self._init_archive(split)
+
+        # Precompute a sorted (key, class) lookup table once, so per-item semantic
+        # decoding can use a vectorized searchsorted instead of one full-image
+        # comparison per class.
         self.color_key_to_class = {(r << 16) + (g << 8) + b: cid for (r, g, b), cid in self.color_to_class.items()}
+        keys = np.array(list(self.color_key_to_class.keys()), dtype=np.uint32)
+        classes = np.array(list(self.color_key_to_class.values()), dtype=np.uint8)
+        order = np.argsort(keys)
+        self._sorted_keys = keys[order]
+        self._sorted_classes = classes[order]
 
     def _init_archive(self, split: Split) -> None:
         with tarfile.open(self.path_tar, mode="r") as tar:
-            self._members = [member.name for member in tar.getmembers()]
-            self.color_to_class, self.class_to_color, self.class_to_name = self._load_semantic_mapping(tar)
+            all_members = [member.name for member in tar.getmembers()]
+            self.color_to_class, self.class_to_color, self.class_to_name = self._load_semantic_mapping(tar, all_members)
 
-        # Statistics about the datatypes
-        for ext in [".json", ".png", ".npz"]:
-            count = sum(1 for p in self._members if p.endswith(ext))
+        assert max(p.count("/") for p in all_members) == 4  # "path/start_time/sensor_type/sensor_name/filename"
+
+        # Single pass: collect extension stats and keep only cam_front_center members.
+        needle = f"/{self._name}/"
+        ext_counts = {".json": 0, ".png": 0, ".npz": 0}
+        filtered_members: List[str] = []
+        for p in all_members:
+            for ext in ext_counts:
+                if p.endswith(ext):
+                    ext_counts[ext] += 1
+                    break
+            if p.count("/") == 4 and needle in p:
+                filtered_members.append(p)
+
+        for ext, count in ext_counts.items():
             print(f"Found {count} files with extension {ext} in {self.path_tar}")
 
-        # Filter the members to files only, to match the name, and cluster to measurement time
-        assert max(p.count("/") for p in self._members) == 4  # "path/start_time/sensor_type/sensor_name/filename"
-        self._members = [p for p in self._members if p.count("/") == 4 and f"/{self._name}/" in p]
+        self._members = frozenset(filtered_members)  # O(1) membership checks in _build_paths
+
+        # Cluster to measurement time / frame in the same pass (avoid re-scanning).
         expected_extensions = {"camera": ".png", "label": ".png", "label3D": ".json", "lidar": "npz"}
-        self.clustered_paths = {}
-        for p in self._members:
+        self.clustered_paths: Dict[str, Dict[str, Dict[str, str]]] = {}
+        for p in filtered_members:
             _, timestamp0, sensor_type, _, filename = p.split("/")
-            if timestamp0 not in self.clustered_paths:
-                self.clustered_paths[timestamp0] = {}
             frame_id = filename.replace("_", ".").split(".")[-2]
-            if frame_id not in self.clustered_paths[timestamp0]:
-                self.clustered_paths[timestamp0][frame_id] = {}
             expected_extension = expected_extensions[sensor_type]
             if p.endswith(expected_extension):  # Avoid loading additional data
-                self.clustered_paths[timestamp0][frame_id][sensor_type] = p
+                self.clustered_paths.setdefault(timestamp0, {}).setdefault(frame_id, {})[sensor_type] = p
 
-        # Check for completeness and make a list of indices
-        # Skip train/val/test splitting as the target is not yet clear
+        # Check for completeness and build the index list.
+        # Skip train/val/test splitting as the target is not yet clear.
         indexing = []
-        for timestamp0 in self.clustered_paths:
-            for frame_id in self.clustered_paths[timestamp0]:
-                assert all(k in self.clustered_paths[timestamp0][frame_id] for k in expected_extensions.keys()), (
-                    f"not all keys available in {timestamp0}/{frame_id}: {self.clustered_paths[timestamp0][frame_id]}"
+        for timestamp0, frames in self.clustered_paths.items():
+            for frame_id, entry in frames.items():
+                assert all(k in entry for k in expected_extensions), (
+                    f"not all keys available in {timestamp0}/{frame_id}: {entry}"
                 )
                 indexing.append((timestamp0, frame_id))
+
         # Shuffle the indexing randomly to avoid bias from sequential data, with a fixed seed for reproducibility
-        random = np.random.RandomState(seed=42)
-        random.shuffle(indexing)
+        rng = np.random.RandomState(seed=42)
+        rng.shuffle(indexing)
 
         # Split
         assert split in (Split.TRAIN, Split.VAL, Split.FULL), f"Unknown split: {split}"
@@ -150,7 +167,9 @@ class A2D2Dataset(Dataset):
 
         points = torch.from_numpy(frame["points"]).half()
         camera = frame["camera"]
-        semantics = torch.from_numpy(frame["semantics"]).clone()
+        # frame["semantics"] is a freshly allocated array owned only by this call,
+        # so no defensive .clone() is needed here.
+        semantics = torch.from_numpy(frame["semantics"])
         semantics = rescale_image(semantics, scale_factor=self.params.image_scale, is_label=True)
         semantics[semantics >= self.params.num_sem_classes] = 255
         gt_boxes = torch.from_numpy(frame["gt_boxes"]).float()
@@ -192,8 +211,11 @@ class A2D2Dataset(Dataset):
         if fileobj is None:
             raise FileNotFoundError(f"Image file {path} not found in tar")
 
+        # tarfile's extractfile() handle is seekable in non-streaming ("r") mode, so
+        # PIL can decode straight from it. .convert() forces the full decode before
+        # we close the handle, so we skip the extra fileobj.read() -> BytesIO copy.
         with fileobj:
-            img = Image.open(io.BytesIO(fileobj.read())).convert(mode)
+            img = Image.open(fileobj).convert(mode)
         return np.array(img)
 
     def load_lidar(self, path: PurePosixPath) -> Tuple[np.ndarray, np.ndarray]:
@@ -202,19 +224,21 @@ class A2D2Dataset(Dataset):
         if fileobj is None:
             raise FileNotFoundError(f"LIDAR file {path} not found in tar")
 
-        with fileobj:
-            data = np.load(io.BytesIO(fileobj.read()))
+        # np.load on an .npz is lazy (zip member arrays are decompressed on access),
+        # so every array we need must be pulled out while both the NpzFile and the
+        # underlying tar member handle are still open.
+        with fileobj, np.load(fileobj) as data:
+            points = data["points"]
+            reflectance = data["reflectance"][:, None]
+            arr = np.concatenate([points, reflectance], axis=1).astype(np.float16)
+            n = min(arr.shape[0], self.params.num_lidar_points)
 
-        points = data["points"]
-        reflectance = data["reflectance"][:, None]
-        arr = np.concatenate([points, reflectance], axis=1).astype(np.float16)
+            padded = np.zeros((self.params.num_lidar_points, arr.shape[1]), dtype=arr.dtype)
+            padded[:n] = arr[:n]
 
-        padded = np.zeros((self.params.num_lidar_points, arr.shape[1]), dtype=arr.dtype)
-        n = min(arr.shape[0], self.params.num_lidar_points)
-        padded[:n] = arr[:n]
+            padded_timestamp = np.zeros((self.params.num_lidar_points,), dtype=np.int64)
+            padded_timestamp[:n] = data["timestamp"][:n]
 
-        padded_timestamp = np.zeros((self.params.num_lidar_points,), dtype=np.int64)
-        padded_timestamp[:n] = data["timestamp"][:n]
         return padded, padded_timestamp
 
     def load_boxes(self, path: PurePosixPath) -> np.ndarray:
@@ -224,14 +248,9 @@ class A2D2Dataset(Dataset):
             raise FileNotFoundError(f"3D box file {path} not found in tar")
 
         with fileobj:
-            data = json.load(io.BytesIO(fileobj.read()))
+            data = json.load(fileobj)  # json.load reads from the handle itself, no BytesIO needed
 
-        boxes: List[List[float]] = []
-        for obj in data.values():
-            center = obj["center"]
-            size = obj["size"]
-            yaw = obj.get("rot_angle", 0.0)
-            boxes.append(center + size + [yaw])
+        boxes: List[List[float]] = [obj["center"] + obj["size"] + [obj.get("rot_angle", 0.0)] for obj in data.values()]
 
         padded = np.zeros((self.params.num_gt_boxes, 7), dtype=np.float32)
         n = min(len(boxes), self.params.num_gt_boxes)
@@ -241,9 +260,9 @@ class A2D2Dataset(Dataset):
         return padded
 
     def _load_semantic_mapping(
-        self, tar: tarfile.TarFile
+        self, tar: tarfile.TarFile, members: List[str]
     ) -> Tuple[Dict[Tuple[int, int, int], int], Dict[int, Tuple[int, int, int]], Dict[int, str]]:
-        json_candidates = [name for name in self._members if name.endswith("class_list.json")]
+        json_candidates = [name for name in members if name.endswith("class_list.json")]
         if len(json_candidates) != 1:
             raise FileNotFoundError("A2D2 class_list.json not found in tar or multiple candidates found.")
 
@@ -253,7 +272,7 @@ class A2D2Dataset(Dataset):
             raise FileNotFoundError(f"Could not extract {json_path}")
 
         with fileobj:
-            data = json.load(io.BytesIO(fileobj.read()))
+            data = json.load(fileobj)
 
         color_to_class: Dict[Tuple[int, int, int], int] = {}
         class_to_color: Dict[int, Tuple[int, int, int]] = {}
@@ -269,16 +288,23 @@ class A2D2Dataset(Dataset):
         return color_to_class, class_to_color, class_to_name
 
     def convert_semantic_rgb_to_class(self, rgb_img: np.ndarray) -> np.ndarray:
+        """
+        Vectorized color -> class-id lookup.
+
+        Instead of looping over every class and comparing against the full image
+        (O(num_classes * H * W)), pack each pixel's RGB into one integer key and
+        binary-search it against a precomputed sorted key table (O(H * W * log(num_classes))).
+        """
         H, W, _ = rgb_img.shape
-        class_mask = np.full((H, W), 255, dtype=np.uint8)
         flat = rgb_img.reshape(-1, 3).astype(np.uint32)
-        out = class_mask.reshape(-1)
         keys = (flat[:, 0] << 16) + (flat[:, 1] << 8) + flat[:, 2]
 
-        for key, cid in self.color_key_to_class.items():
-            out[keys == key] = cid
+        idx = np.searchsorted(self._sorted_keys, keys)
+        idx = np.clip(idx, 0, len(self._sorted_keys) - 1)
+        matched = self._sorted_keys[idx] == keys
+        classes = np.where(matched, self._sorted_classes[idx], 255).astype(np.uint8)
 
-        return class_mask
+        return classes.reshape(H, W)
 
     def _build_paths(self, fc_path: str) -> Dict[str, PurePosixPath]:
         p = PurePosixPath(fc_path)
@@ -301,7 +327,7 @@ class A2D2Dataset(Dataset):
         }
 
         for key, path in paths.items():
-            if str(path) not in self._members:
+            if str(path) not in self._members:  # frozenset membership -> O(1)
                 msg = f"{key} file {path} not found in tar, expected paths:\n\t"
                 msg += "\n\t".join([f"{k}: {v}" for k, v in paths.items()])
                 raise FileNotFoundError(msg)
