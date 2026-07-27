@@ -11,6 +11,7 @@ from torch.utils.data import Dataset
 
 from components.definitions.mmperc_params import MmpercParams
 from components.mmperc.label.bev_labels import generate_bev_labels_bbox2d
+from components.utils.calibration import load_cams_lidars_calibration
 from components.utils.image_utils import rescale_image
 
 
@@ -68,6 +69,11 @@ class A2D2Dataset(Dataset):
         self.color_to_class: Dict[Tuple[int, int, int], int] = {}
         self.class_to_color: Dict[int, Tuple[int, int, int]] = {}
         self.class_to_name: Dict[int, str] = {}
+        self.calibration = load_cams_lidars_calibration(
+            Path(params.path_calibration),
+            camera_name=params.camera_name,
+            lidar_name=params.lidar_name,
+        )
 
         if not self.path_tar.exists():
             raise RuntimeError(f"A2D2 tar archive not found: {self.path_tar}")
@@ -175,6 +181,10 @@ class A2D2Dataset(Dataset):
         semantics[semantics >= self.params.num_sem_classes - 1] = self.params.num_sem_classes - 1
         gt_boxes = torch.from_numpy(frame["gt_boxes"]).float()
 
+        camera_intrinsic = self.calibration.camera.intrinsic.astype(np.float32).copy()
+        if self.params.image_scale != 1.0:
+            camera_intrinsic[:2, :] *= self.params.image_scale
+
         return {
             "points": points,
             "camera": camera,
@@ -182,6 +192,11 @@ class A2D2Dataset(Dataset):
             "semantics_mapping_color": list(self.class_to_color.items()),
             "semantics_mapping_name": list(self.class_to_name.items()),
             "gt_boxes": gt_boxes,
+            "camera_intrinsic": camera_intrinsic,
+            "camera_extrinsic": self.calibration.camera.pose.sensor_from_vehicle.astype(np.float32),
+            "lidar_extrinsic": self.calibration.lidar.pose.sensor_from_vehicle.astype(np.float32),
+            "lidar_to_camera": self.calibration.lidar_to_camera.astype(np.float32),
+            "camera_to_lidar": self.calibration.camera_to_lidar.astype(np.float32),
         }
 
     def __del__(self) -> None:

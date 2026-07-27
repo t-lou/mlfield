@@ -59,3 +59,7 @@ class MmpercParams:
     train_config: TrainConfig = field(default_factory=TrainConfig)
 
     path_data: str = "/repo/data/..."
+    path_calibration: str = "/repo/data/cams_lidars.json"
+    camera_name: str = "front_center"
+    lidar_name: str = "front_center"
+    use_camera_calibration: bool = True

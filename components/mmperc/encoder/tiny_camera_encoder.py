@@ -1,7 +1,10 @@
 import torch
+from pathlib import Path
 from torch import Tensor, nn
 
 from components.definitions.mmperc_params import MmpercParams
+from components.utils.calibration import load_cams_lidars_calibration
+from components.utils.logger import logger
 
 
 class DepthwiseSeparableConv(nn.Module):
@@ -47,6 +50,17 @@ class TinyCameraEncoder(nn.Module):
         super().__init__()
 
         self.out_channels = params.bev_params.bev_channels
+        self.camera_calibration = None
+        if params.use_camera and params.use_camera_calibration:
+            try:
+                self.camera_calibration = load_cams_lidars_calibration(
+                    Path(params.path_calibration),
+                    camera_name=params.camera_name,
+                    lidar_name=params.lidar_name,
+                )
+            except Exception:
+                self.camera_calibration = None
+        logger.info(f"TinyCameraEncoder: camera_calibration={self.camera_calibration}")
 
         # Stage 1: 1/2 resolution
         self.stem = nn.Sequential(
@@ -77,6 +91,8 @@ class TinyCameraEncoder(nn.Module):
 
         # LayerNorm applied after flattening into tokens
         self.norm = nn.LayerNorm(self.out_channels)
+        self.camera_pos_project = nn.Conv2d(2, self.out_channels, kernel_size=1, bias=False)
+        self.camera_pos_scale = nn.Parameter(torch.tensor(1.0))
 
     def forward(self, x: Tensor) -> Tensor:
         """
@@ -96,6 +112,8 @@ class TinyCameraEncoder(nn.Module):
         s4_lat = self.s4_lateral(s4)
         s4_ds = self.s4_to_s8(s4_lat)
         feat: Tensor = self.fuse(s8 + s4_ds)
+        geom = self._camera_geometry(feat.shape[-2:], x.shape[-2:], x.device, x.dtype)
+        feat = feat + self.camera_pos_scale * self.camera_pos_project(geom)
         B, C, H2, W2 = feat.shape
 
         # Flatten spatial dimensions → sequence of tokens
@@ -106,6 +124,33 @@ class TinyCameraEncoder(nn.Module):
         tokens = self.norm(tokens)
 
         return tokens, feat
+
+    def _camera_geometry(
+        self,
+        feat_hw: tuple[int, int],
+        img_hw: tuple[int, int],
+        device: torch.device,
+        dtype: torch.dtype,
+    ) -> Tensor:
+        H2, W2 = feat_hw
+        H_img, W_img = img_hw
+
+        y = torch.linspace(0.5 * H_img / H2, H_img - 0.5 * H_img / H2, H2, device=device, dtype=dtype)
+        x = torch.linspace(0.5 * W_img / W2, W_img - 0.5 * W_img / W2, W2, device=device, dtype=dtype)
+        grid_y, grid_x = torch.meshgrid(y, x, indexing="ij")
+
+        if self.camera_calibration is not None and self.camera_calibration.camera.intrinsic is not None:
+            K = torch.from_numpy(self.camera_calibration.camera.intrinsic).to(device=device, dtype=dtype)
+            fx, fy = K[0, 0], K[1, 1]
+            cx, cy = K[0, 2], K[1, 2]
+            u = (grid_x - cx) / fx
+            v = (grid_y - cy) / fy
+        else:
+            u = (grid_x / (W_img - 1)) * 2.0 - 1.0
+            v = (grid_y / (H_img - 1)) * 2.0 - 1.0
+
+        geom = torch.stack([u, v], dim=0).unsqueeze(0)
+        return geom
 
 
 def _smoke_test():
