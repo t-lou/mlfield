@@ -57,7 +57,7 @@ def train(config: DINOConfig, start_epoch: int = -1):
 
     if device.type == "cuda":
         amp_context = torch.autocast(device_type="cuda", dtype=torch.float16)
-        scaler = torch.cuda.amp.GradScaler(enabled=True)
+        scaler = torch.amp.GradScaler("cuda", enabled=True)
     else:
         amp_context = nullcontext()
         scaler = None

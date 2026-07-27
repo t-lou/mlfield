@@ -66,7 +66,7 @@ def run_one_epoch(
 
     if mode == "train" and device.type == "cuda":
         amp_context = torch.autocast(device_type="cuda", dtype=torch.float16)
-        scaler = torch.cuda.amp.GradScaler(enabled=True)
+        scaler = torch.amp.GradScaler("cuda", enabled=True)
     else:
         amp_context = nullcontext()
         scaler = None
