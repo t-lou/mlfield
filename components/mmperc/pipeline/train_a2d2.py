@@ -30,6 +30,7 @@ def train_model(
     device: torch.device = None,
     num_epochs: int = 1,
     ckpt_dir="checkpoints",
+    skip_eval: bool = False,
 ):
     debug_ploter.init_plot()
     ensure_dir(ckpt_dir)
@@ -81,13 +82,14 @@ def train_model(
             logging.info(f"[Latest] Updated latest checkpoint → {latest_path}")
 
             # Evaluate the last epoch
-            evaluate_one_epoch(
-                model=model,
-                dataloader=dataloader_eval,
-                device=device,
-                epoch=epoch,
-                num_epochs=start_epoch + num_epochs,
-            )
+            if not skip_eval:
+                evaluate_one_epoch(
+                    model=model,
+                    dataloader=dataloader_eval,
+                    device=device,
+                    epoch=epoch,
+                    num_epochs=start_epoch + num_epochs,
+                )
 
     except Exception as e:
         # Crash recovery

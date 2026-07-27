@@ -1,5 +1,6 @@
-import torch
 from pathlib import Path
+
+import torch
 from torch import Tensor, nn
 
 from components.definitions.mmperc_params import MmpercParams

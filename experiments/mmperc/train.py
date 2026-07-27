@@ -13,7 +13,7 @@ from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch.utils.data import DataLoader
 
 
-def main(params: MmpercParams):
+def main(params: MmpercParams, skip_eval: bool = False) -> None:
 
     train_config = params.train_config
     device = train_config.get_device()
@@ -56,6 +56,7 @@ def main(params: MmpercParams):
         scheduler,
         device,
         num_epochs=train_config.num_epoch,
+        skip_eval=skip_eval,
     )
 
 
@@ -69,8 +70,9 @@ if __name__ == "__main__":
         default="./experiments/mmperc/mmperc_config.yaml",
         help="Path to MMPERC config YAML",
     )
+    parser.add_argument("--skip-eval", action="store_true", help="Skip evaluation during training")
 
     args = parser.parse_args()
 
     cfg = load_yaml(Path(args.path_config), MmpercParams)
-    main(cfg)
+    main(cfg, skip_eval=args.skip_eval)
