@@ -38,7 +38,10 @@ class SimplePFN(nn.Module):
         x = self.linear(pillars)  # (B, P, M, C_out)
 
         # Max-pool over points within each pillar first
+        mask = pillars.abs().sum(dim=-1, keepdim=True) > 0  # (B, P, M, 1)
+        x = x.masked_fill(~mask.expand_as(x), float("-inf"))
         x = x.max(dim=2).values  # (B, P, C_out)
+        x = torch.nan_to_num(x, neginf=0.0)  # handle fully-empty pillars
 
         # Reshape for GroupNorm: (B*P, C_out)
         x = x.reshape(B * P, -1)
