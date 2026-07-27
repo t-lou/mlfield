@@ -1,4 +1,5 @@
 import torch
+import torch.nn.functional as F
 from torch import Tensor, nn
 
 from components.definitions.mmperc_params import MmpercParams
@@ -44,19 +45,67 @@ class FuTrFusionBlock(nn.Module):
         # Fused scale+shift projection: one matmul instead of two
         self.to_film = nn.Linear(C, C * 2)
 
-    def forward(self, bev: Tensor, camera: Tensor) -> Tensor:
+        # Learnable scales keep positional bias flexible while adding
+        # effectively no memory overhead.
+        self.bev_pos_scale = nn.Parameter(torch.tensor(1.0))
+        self.cam_pos_scale = nn.Parameter(torch.tensor(1.0))
+
+    @staticmethod
+    def _positional_encoding_1d(length: int, dim: int, device: torch.device, dtype: torch.dtype) -> Tensor:
+        """
+        Generate 1D positional encoding for a sequence of length `length` with embedding dimension `dim`.
+        """
+        half = dim // 2
+        pos = torch.arange(length, device=device, dtype=torch.float32).unsqueeze(1)
+        omega = torch.exp(
+            -torch.log(torch.tensor(10000.0, device=device)) * torch.arange(half, device=device) / max(half, 1)
+        )
+        angles = pos * omega.unsqueeze(0)
+        emb = torch.cat([torch.sin(angles), torch.cos(angles)], dim=1)
+        if emb.shape[1] < dim:
+            emb = F.pad(emb, (0, dim - emb.shape[1]))
+        return emb[:, :dim].to(dtype=dtype)
+
+    @staticmethod
+    def _positional_encoding_2d(h: int, w: int, dim: int, device: torch.device, dtype: torch.dtype) -> Tensor:
+        """
+        Generate 2D positional encoding for a grid of size (h, w) with embedding dimension dim.
+        """
+        half = dim // 2
+        dim_h = half
+        dim_w = dim - half
+
+        emb_h = FuTrFusionBlock._positional_encoding_1d(h, dim_h, device=device, dtype=dtype)[:, None, :]
+        emb_w = FuTrFusionBlock._positional_encoding_1d(w, dim_w, device=device, dtype=dtype)[None, :, :]
+
+        emb_h = emb_h.expand(h, w, dim_h)
+        emb_w = emb_w.expand(h, w, dim_w)
+        emb = torch.cat([emb_h, emb_w], dim=-1)
+        return emb.view(h * w, dim)
+
+    def forward(self, bev: Tensor, camera: Tensor, cam_hw: tuple[int, int] | None = None) -> Tensor:
         """
         bev:    (B, C, H, W)
         camera: (B, N_cam, C)
+        cam_hw: (H_cam, W_cam) or None, the spatial dimensions of the camera feature map.
+            If None, 1D positional encoding is used.
         """
         B, C, H, W = bev.shape
 
         # Flatten BEV → tokens
         bev_tokens = bev.flatten(2).transpose(1, 2)  # (B, HW, C)
         bev_tokens = self.bev_proj(bev_tokens)
+        bev_pos = self._positional_encoding_2d(H, W, C, device=bev.device, dtype=bev.dtype)
+        bev_tokens = bev_tokens + self.bev_pos_scale * bev_pos.unsqueeze(0)
 
         # Project camera tokens
         cam_tokens = self.cam_proj(camera)  # (B, N_cam, C)
+        if cam_hw is not None:
+            assert cam_hw[0] * cam_hw[1] == cam_tokens.shape[1]
+            cam_pos = self._positional_encoding_2d(cam_hw[0], cam_hw[1], C, device=bev.device, dtype=bev.dtype)
+        else:
+            cam_pos = self._positional_encoding_1d(cam_tokens.shape[1], C, device=bev.device, dtype=bev.dtype)
+        cam_tokens = cam_tokens + self.cam_pos_scale * cam_pos.unsqueeze(0)
 
         # need_weights=False lets PyTorch dispatch to the fused
         # scaled_dot_product_attention kernel (flash / mem-efficient attn)

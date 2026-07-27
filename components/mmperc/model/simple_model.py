@@ -120,7 +120,9 @@ class SimpleModel(nn.Module):
         # 3. BEV–camera fusion
         # ---------------------------------------------------------
         if self._use_fusion:
-            bev_fused: Tensor = self.fusion(lidar_token, camera_tokens)  # (B, C, H, W)
+            # cam_hw is the spatial dimensions of the camera feature map, needed for cross-attention.
+            cam_hw = (cam_feat.shape[-2], cam_feat.shape[-1]) if cam_feat is not None else None
+            bev_fused: Tensor = self.fusion(lidar_token, camera_tokens, cam_hw=cam_hw)  # (B, C, H, W)
         elif self._params.use_lidar:
             bev_fused = lidar_token
         else:
