@@ -6,12 +6,40 @@ from contextlib import nullcontext
 from typing import Dict
 
 import torch
+import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 import components.mmperc.common.debug_ploter as debug_ploter
 import components.mmperc.common.loss_logger as loss_logger
-from components.mmperc.losses.detection_losses import focal_loss, l1_loss, sem_loss_fn
+from components.mmperc.losses.detection_losses import (
+    focal_loss,
+    l1_loss,
+    semantic_ce_loss,
+    semantic_invalid_aux_loss,
+)
+
+
+def _build_semantic_class_weights(
+    sem_gt: torch.Tensor,
+    num_classes: int,
+    invalid_class_id: int,
+    invalid_scale: float,
+    w_min: float,
+    w_max: float,
+) -> torch.Tensor:
+    """
+    Build class-balanced CE weights from the current batch histogram.
+    Invalid class stays supervised but can be downscaled to avoid dominance.
+    """
+    counts = torch.bincount(sem_gt.view(-1), minlength=num_classes).float()
+    freq = counts / counts.sum().clamp_min(1.0)
+
+    weights = 1.0 / torch.sqrt(freq + 1e-6)
+    weights = weights / weights.mean().clamp_min(1e-6)
+    weights = weights.clamp(min=w_min, max=w_max)
+    weights[invalid_class_id] = weights[invalid_class_id] * invalid_scale
+    return weights.to(device=sem_gt.device, dtype=torch.float32)
 
 
 # ================================================================
@@ -48,6 +76,26 @@ def run_one_epoch(
 
     logger = loss_logger.JSONLossLLogger(f"logs/{mode}_log.json")
 
+    params = getattr(model, "_params", None)
+    num_sem_classes = params.num_sem_classes
+    invalid_class_id = num_sem_classes - 1
+    weight_sem_loss = params.weight_sem_loss
+    weight_loss_hm = params.weight_loss_hm
+    weight_loss_reg = params.weight_loss_reg
+    sem_invalid_ce_weight = params.sem_invalid_ce_weight
+    sem_use_class_balanced_ce = params.sem_use_class_balanced_ce
+    sem_ce_weight_min = params.sem_ce_weight_min
+    sem_ce_weight_max = params.sem_ce_weight_max
+    sem_invalid_aux_weight = params.sem_invalid_aux_weight
+    sem_invalid_bce_pos_weight = params.sem_invalid_bce_pos_weight
+
+    invalid_tp = 0
+    invalid_fp = 0
+    invalid_fn = 0
+    invalid_gt_pixels = 0
+    invalid_pred_pixels = 0
+    total_sem_pixels = 0
+
     # keep a running sum on-device; only synced to CPU when we actually log
     last_loss_value: float = 0.0
 
@@ -77,12 +125,44 @@ def run_one_epoch(
             sem_gt = batch["semantics"].to(device, non_blocking=True)
 
             H_gt, W_gt = sem_gt.shape[-2], sem_gt.shape[-1]
-            sem_pred = sem_pred[..., :H_gt, :W_gt]
+            if sem_pred.shape[-2:] != (H_gt, W_gt):
+                sem_pred = F.interpolate(sem_pred, size=(H_gt, W_gt), mode="bilinear", align_corners=False)
+
+            class_weights = None
+            if sem_use_class_balanced_ce:
+                class_weights = _build_semantic_class_weights(
+                    sem_gt=sem_gt,
+                    num_classes=num_sem_classes,
+                    invalid_class_id=invalid_class_id,
+                    invalid_scale=sem_invalid_ce_weight,
+                    w_min=sem_ce_weight_min,
+                    w_max=sem_ce_weight_max,
+                )
 
             loss_hm = focal_loss(heatmap_pred, heatmap_gt)
             loss_reg = l1_loss(reg_pred, reg_gt, mask_gt)
-            loss_sem = sem_loss_fn(sem_pred, sem_gt)
-            loss = loss_hm + loss_reg + loss_sem
+            # Semantic loss is a combination of weighted CE and auxiliary invalid BCE. The reason for the auxiliary
+            # BCE is that the invalid class is often dominant, and the CE loss can be dominated by it. The auxiliary
+            # BCE helps the model learn to separate invalid pixels from valid ones.
+            loss_sem_ce = semantic_ce_loss(sem_pred, sem_gt, class_weights=class_weights)
+            loss_sem_invalid = semantic_invalid_aux_loss(
+                logits=sem_pred,
+                target=sem_gt,
+                invalid_class_id=invalid_class_id,
+                pos_weight=sem_invalid_bce_pos_weight,
+            )
+            loss_sem = loss_sem_ce + sem_invalid_aux_weight * loss_sem_invalid
+            loss = weight_loss_hm * loss_hm + weight_loss_reg * loss_reg + weight_sem_loss * loss_sem
+
+            sem_pred_class = sem_pred.argmax(dim=1)
+            gt_invalid = sem_gt == invalid_class_id
+            pred_invalid = sem_pred_class == invalid_class_id
+            invalid_tp += (gt_invalid & pred_invalid).sum().item()
+            invalid_fp += ((~gt_invalid) & pred_invalid).sum().item()
+            invalid_fn += (gt_invalid & (~pred_invalid)).sum().item()
+            invalid_gt_pixels += gt_invalid.sum().item()
+            invalid_pred_pixels += pred_invalid.sum().item()
+            total_sem_pixels += sem_gt.numel()
 
         if train:
             scaler.scale(loss).backward()
@@ -123,5 +203,18 @@ def run_one_epoch(
     # Step scheduler after epoch
     if train and scheduler is not None:
         scheduler.step()
+
+    if mode == "eval" and total_sem_pixels > 0:
+        invalid_precision = invalid_tp / max(invalid_tp + invalid_fp, 1)
+        invalid_recall = invalid_tp / max(invalid_tp + invalid_fn, 1)
+        invalid_iou = invalid_tp / max(invalid_tp + invalid_fp + invalid_fn, 1)
+        gt_invalid_ratio = invalid_gt_pixels / total_sem_pixels
+        pred_invalid_ratio = invalid_pred_pixels / total_sem_pixels
+
+        logging.info(
+            "Eval semantic invalid metrics | "
+            f"iou={invalid_iou:.4f}, precision={invalid_precision:.4f}, recall={invalid_recall:.4f}, "
+            f"gt_ratio={gt_invalid_ratio:.4f}, pred_ratio={pred_invalid_ratio:.4f}"
+        )
 
     logging.info(f"Epoch {epoch}: loss={last_loss_value:.4f}")

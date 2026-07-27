@@ -24,6 +24,29 @@ class MmpercParams:
     num_sem_classes: int = 39
 
     # -----------------------------
+    # Loss weights for multitask optimization
+    # -----------------------------
+    # Global multipliers for bbox detection in multitask optimization.
+    weight_loss_hm: float = 1.0
+    weight_loss_reg: float = 1.0
+    # Global multiplier for semantic loss in multitask optimization.
+    weight_sem_loss: float = 2.0
+
+    # -----------------------------
+    # Semantic loss controls
+    # -----------------------------
+    # Downscale invalid-class contribution in weighted CE to avoid dominance.
+    sem_invalid_ce_weight: float = 0.25
+    # Enable per-batch class-balanced CE weights from semantic GT histograms.
+    sem_use_class_balanced_ce: bool = True
+    # Clamp range for auto-computed CE class weights.
+    sem_ce_weight_min: float = 0.2
+    sem_ce_weight_max: float = 5.0
+    # Auxiliary binary invalid-vs-valid loss (from invalid class logit).
+    sem_invalid_aux_weight: float = 0.5
+    sem_invalid_bce_pos_weight: float = 2.0
+
+    # -----------------------------
     # Downsampling factor for camera images
     # -----------------------------
     image_scale: float = 0.25

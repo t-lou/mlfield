@@ -1,5 +1,4 @@
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
 
 from components.utils.logger import logger
@@ -47,5 +46,35 @@ def l1_loss(pred, gt, mask):
     return loss / denom
 
 
-# Train on all 39 classes (38 A2D2 + 1 invalid/unfilled)
-sem_loss_fn = nn.CrossEntropyLoss()
+def semantic_ce_loss(
+    logits: torch.Tensor, target: torch.Tensor, class_weights: torch.Tensor | None = None
+) -> torch.Tensor:
+    """
+    Multi-class semantic segmentation loss, it uses weighted cross-entropy to handle class imbalance.
+
+    logits: (B, C, H, W)
+    target: (B, H, W)
+    class_weights: (C,) or None
+    """
+    return F.cross_entropy(logits, target.long(), weight=class_weights)
+
+
+def semantic_invalid_aux_loss(
+    logits: torch.Tensor,
+    target: torch.Tensor,
+    invalid_class_id: int,
+    pos_weight: float = 2.0,
+) -> torch.Tensor:
+    """
+    Binary invalid-vs-valid auxiliary loss on top of the invalid-class logit, to help the model learn to separate
+    invalid pixels from valid ones.
+
+    logits: (B, C, H, W)
+    target: (B, H, W)
+    invalid_class_id: int, the class ID of the invalid class
+    pos_weight: float, the positive weight for BCE loss, to upweight the invalid class in the loss.
+    """
+    invalid_logit = logits[:, invalid_class_id, :, :]
+    invalid_target = (target == invalid_class_id).float()
+    pw = torch.tensor(pos_weight, device=logits.device, dtype=logits.dtype)
+    return F.binary_cross_entropy_with_logits(invalid_logit, invalid_target, pos_weight=pw)
