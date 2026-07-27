@@ -59,7 +59,9 @@ class SimpleModel(nn.Module):
         # Semantic segmentation head
         if params.pred_semantics:
             self.sem_head = FullResSemHead(
-                in_channels=self.cam_encoder.out_channels, num_classes=params.num_sem_classes
+                in_channels=self.cam_encoder.out_channels,
+                num_classes=params.num_sem_classes,
+                skip_channels=self.cam_encoder.out_channels,
             )
 
         self._params = params
@@ -114,7 +116,7 @@ class SimpleModel(nn.Module):
         # 2. Camera → tokens
         # ---------------------------------------------------------
         if self._params.use_camera:
-            camera_tokens, cam_feat = self.cam_encoder(images)
+            camera_tokens, cam_feat, cam_skip_feats = self.cam_encoder(images)
 
         # ---------------------------------------------------------
         # 3. BEV–camera fusion
@@ -144,7 +146,7 @@ class SimpleModel(nn.Module):
 
         # Semantic segmentation prediction
         if hasattr(self, "sem_head"):
-            sem_feature = self.sem_head(cam_feat)
+            sem_feature = self.sem_head(cam_feat, cam_skip_feats)
             outputs["sem_logits"] = sem_feature
 
         return outputs

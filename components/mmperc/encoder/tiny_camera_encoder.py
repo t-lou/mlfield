@@ -90,12 +90,15 @@ class TinyCameraEncoder(nn.Module):
             nn.ReLU(inplace=True),
         )
 
+        # project s2 as an additional fine-detail skip for the seg head
+        self.s2_lateral = nn.Conv2d(32, self.out_channels, kernel_size=1, bias=False)
+
         # LayerNorm applied after flattening into tokens
         self.norm = nn.LayerNorm(self.out_channels)
         self.camera_pos_project = nn.Conv2d(2, self.out_channels, kernel_size=1, bias=False)
         self.camera_pos_scale = nn.Parameter(torch.tensor(1.0))
 
-    def forward(self, x: Tensor) -> Tensor:
+    def forward(self, x: Tensor) -> (Tensor, Tensor, dict[str, Tensor]):
         """
         Args:
             x: RGB image tensor of shape (B, 3, H, W)
@@ -124,7 +127,13 @@ class TinyCameraEncoder(nn.Module):
         # Normalize token embeddings
         tokens = self.norm(tokens)
 
-        return tokens, feat
+        # multi-scale skip pyramid for dense prediction heads
+        skip_feats = {
+            "s2": self.s2_lateral(s2),  # (B, C, H/2, W/2) — finest detail
+            "s4": s4_lat,  # (B, C, H/4, W/4) — already computed, just expose it
+        }
+
+        return tokens, feat, skip_feats
 
     def _camera_geometry(
         self,
