@@ -4,6 +4,41 @@ from torch import Tensor, nn
 from components.definitions.mmperc_params import MmpercParams
 
 
+def _gn_groups(num_channels: int, preferred: int = 8) -> int:
+    """
+    Pick a GroupNorm group count that actually divides num_channels, falling
+    back to 1 (equivalent to LayerNorm-over-channels) for small widths.
+    Avoids a hard crash if bev/mid channels are configured below 8 or not
+    divisible by 8.
+    """
+    if num_channels >= preferred and num_channels % preferred == 0:
+        return preferred
+    return 1
+
+
+class DepthwiseSeparableConv(nn.Module):
+    """
+    Depthwise-separable 3x3 conv block: same receptive field as a plain 3x3
+    conv but a fraction of the FLOPs/params, since the spatial conv is
+    depthwise and channel mixing is handled by the following 1x1 conv.
+    """
+
+    def __init__(self, channels: int, stride: int = 1) -> None:
+        super().__init__()
+        groups = _gn_groups(channels)
+        self.block = nn.Sequential(
+            nn.Conv2d(channels, channels, kernel_size=3, stride=stride, padding=1, groups=channels, bias=False),
+            nn.GroupNorm(groups, channels),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(channels, channels, kernel_size=1, bias=False),
+            nn.GroupNorm(groups, channels),
+            nn.ReLU(inplace=True),
+        )
+
+    def forward(self, x: Tensor) -> Tensor:
+        return self.block(x)
+
+
 class TinyBEVBackbone(nn.Module):
     """
     Lightweight BEV backbone for memory‑constrained setups.
@@ -32,58 +67,35 @@ class TinyBEVBackbone(nn.Module):
 
         stride = params.bev_params.backbone_stride
 
+        mid_groups = _gn_groups(mid_channels)
+        out_groups = _gn_groups(out_channels)
+
         # Initial projection
         # Using GroupNorm for memory efficiency (no running stats during training)
         self.stem = nn.Sequential(
             nn.Conv2d(in_channels, mid_channels, kernel_size=1),
-            nn.GroupNorm(8, mid_channels),
+            nn.GroupNorm(mid_groups, mid_channels),
             nn.ReLU(inplace=True),
         )
 
         # Scale 1: full resolution
-        self.block1 = nn.Sequential(
-            nn.Conv2d(mid_channels, mid_channels, kernel_size=3, padding=1),
-            nn.GroupNorm(8, mid_channels),
-            nn.ReLU(inplace=True),
-        )
+        self.block1 = DepthwiseSeparableConv(mid_channels)
 
         # Scale 2: stride-2
         self.down1 = nn.Sequential(
             nn.Conv2d(mid_channels, out_channels, 3, stride=stride, padding=1),
-            nn.GroupNorm(8, out_channels),
+            nn.GroupNorm(out_groups, out_channels),
             nn.ReLU(inplace=True),
         )
-        self.block2 = nn.Sequential(
-            nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1),
-            nn.GroupNorm(8, out_channels),
-            nn.ReLU(inplace=True),
-        )
+        self.block2 = DepthwiseSeparableConv(out_channels)
 
         # Scale 3: stride-4
         self.down2 = nn.Sequential(
             nn.Conv2d(out_channels, out_channels, 3, stride=stride, padding=1),
-            nn.GroupNorm(8, out_channels),
+            nn.GroupNorm(out_groups, out_channels),
             nn.ReLU(inplace=True),
         )
-        self.block3 = nn.Sequential(
-            nn.Conv2d(out_channels, out_channels, 3, padding=1),
-            nn.GroupNorm(8, out_channels),
-            nn.ReLU(inplace=True),
-        )
-
-        # # Upsample scale2/scale3 back to scale1 resolution
-        # self.up2 = nn.ConvTranspose2d(out_channels, out_channels // 2, kernel_size=stride, stride=stride)
-        # self.up3 = nn.ConvTranspose2d(
-        #     out_channels, out_channels // 2, kernel_size=stride * stride, stride=stride * stride
-        # )
-
-        # # Fuse features from scale1, upsampled scale2, and upsampled scale3
-        # fused_channels = mid_channels + (out_channels // 2) * 2
-        # self.fuse = nn.Sequential(
-        #     nn.Conv2d(fused_channels, out_channels, kernel_size=1),
-        #     nn.GroupNorm(8, out_channels),
-        #     nn.ReLU(inplace=True),
-        # )
+        self.block3 = DepthwiseSeparableConv(out_channels)
 
         # Bring p1 (full res) down to scale2 resolution, and p3 (H/4) up to scale2
         # resolution, so everything fuses at the H/2, W/2 scale the backbone is
@@ -92,7 +104,7 @@ class TinyBEVBackbone(nn.Module):
         # of the pipeline — e.g. PointPillarBEV and the detection heads — assumes.)
         self.down_p1 = nn.Sequential(
             nn.Conv2d(mid_channels, mid_channels, kernel_size=3, stride=stride, padding=1),
-            nn.GroupNorm(8, mid_channels),
+            nn.GroupNorm(mid_groups, mid_channels),
             nn.ReLU(inplace=True),
         )
         self.p2_proj = nn.Conv2d(out_channels, out_channels // 2, kernel_size=1)
@@ -102,25 +114,18 @@ class TinyBEVBackbone(nn.Module):
         fused_channels = mid_channels + (out_channels // 2) * 2
         self.fuse = nn.Sequential(
             nn.Conv2d(fused_channels, out_channels, kernel_size=1),
-            nn.GroupNorm(8, out_channels),
+            nn.GroupNorm(out_groups, out_channels),
             nn.ReLU(inplace=True),
         )
 
     def forward(self, x: Tensor) -> Tensor:
-        # x = self.stem(x)
-        # p1 = self.block1(x)  # (B, mid, H, W)      — fine, small objects
-        # p2 = self.block2(self.down1(p1))  # (B, out, H/2, W/2)  — mid
-        # p3 = self.block3(self.down2(p2))  # (B, out, H/4, W/4)  — coarse, large objects
-
-        # p2_up = self.up2(p2)  # → H, W
-        # p3_up = self.up3(p3)  # → H, W
-
-        # fused = torch.cat([p1, p2_up, p3_up], dim=1)
-        # return self.fuse(fused)  # single (B, out_channels, H, W) — but built from 3 real scales
         x = self.stem(x)
-        p1 = self.block1(x)  # (B, mid, H, W)      — fine, small objects
-        p2 = self.block2(self.down1(p1))  # (B, out, H/2, W/2)  — mid
-        p3 = self.block3(self.down2(p2))  # (B, out, H/4, W/4)  — coarse, large objects
+
+        p1 = x + self.block1(x)  # (B, mid, H, W)      — fine, small objects
+        p2_pre = self.down1(p1)
+        p2 = p2_pre + self.block2(p2_pre)  # (B, out, H/2, W/2)  — mid
+        p3_pre = self.down2(p2)
+        p3 = p3_pre + self.block3(p3_pre)  # (B, out, H/4, W/4)  — coarse, large objects
 
         p1_down = self.down_p1(p1)  # → H/2, W/2
         p2_proj = self.p2_proj(p2)  # already H/2, W/2, just channel-reduced
