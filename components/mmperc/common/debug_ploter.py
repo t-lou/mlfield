@@ -21,14 +21,17 @@ def export_bbox_heatmap_debug(pred, gt, id_epoch=0, id_sample=0) -> None:
     plt.subplot(1, 3, 1)
     plt.title("Pred")
     plt.imshow(pred_np, cmap="hot")
+    plt.axis("off")
 
     plt.subplot(1, 3, 2)
     plt.title("GT")
     plt.imshow(gt_np, cmap="hot")
+    plt.axis("off")
 
     plt.subplot(1, 3, 3)
     plt.title("Pred - GT")
     plt.imshow(pred_np - gt_np, cmap="bwr")
+    plt.axis("off")
 
     plt.tight_layout()
     path = Path("debug_plots")
@@ -66,10 +69,12 @@ def export_semantic_debug(pred_logits, gt_sem, class_to_color, id_epoch=0, id_sa
     plt.subplot(1, 2, 1)
     plt.title("Pred (RGB)")
     plt.imshow(pred_rgb)
+    plt.axis("off")
 
     plt.subplot(1, 2, 2)
     plt.title("GT (RGB)")
     plt.imshow(gt_rgb)
+    plt.axis("off")
 
     plt.tight_layout()
     path = Path("debug_plots")

@@ -36,7 +36,7 @@ class MmpercParams:
     # Semantic loss controls
     # -----------------------------
     # Downscale invalid-class contribution in weighted CE to avoid dominance.
-    sem_invalid_ce_weight: float = 0.25
+    sem_invalid_ce_weight: float = 0.5
     # Enable per-batch class-balanced CE weights from semantic GT histograms.
     sem_use_class_balanced_ce: bool = True
     # Clamp range for auto-computed CE class weights.
@@ -58,7 +58,7 @@ class MmpercParams:
 
     train_config: TrainConfig = field(default_factory=TrainConfig)
 
-    path_data: str = "/repo/data/..."
+    path_data: str = "/repo/data/camera_lidar_semantic_bboxes.tar"
     path_calibration: str = "/repo/data/cams_lidars.json"
     camera_name: str = "front_center"
     lidar_name: str = "front_center"

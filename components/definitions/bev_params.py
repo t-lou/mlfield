@@ -20,8 +20,8 @@ class BevParams:
     # -----------------------------
     # Lidar region of interest (meters)
     # -----------------------------
-    x_range: Tuple[float, float] = (0.0, 120.0)  # forward/backward
-    y_range: Tuple[float, float] = (-60.0, 60.0)  # left/right
+    x_range: Tuple[float, float] = (0.0, 128.0)  # forward/backward
+    y_range: Tuple[float, float] = (-48.0, 48.0)  # left/right
     z_range: Tuple[float, float] = (-5.0, 3.0)  # vertical range
 
     # Combined point cloud range (x_min, y_min, z_min, x_max, y_max, z_max)
@@ -37,8 +37,8 @@ class BevParams:
     # -----------------------------
     # Derived BEV grid resolution
     # -----------------------------
-    bev_h: int = 156
-    bev_w: int = 156
+    bev_h: int = 96 * 2
+    bev_w: int = 128 * 2
 
     # backbone downsampling factor
     backbone_stride: int = 2
