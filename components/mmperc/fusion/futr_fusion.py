@@ -1,10 +1,9 @@
-import math
-
 import torch
 import torch.nn.functional as F
 from torch import Tensor, nn
 
 from components.definitions.mmperc_params import MmpercParams
+from components.vit.position_embedding import PosEmbdCache
 
 
 class FuTrFusionBlock(nn.Module):
@@ -60,57 +59,7 @@ class FuTrFusionBlock(nn.Module):
         self.pool_proj_k = nn.Linear(C, C)
         self.pool_proj_v = nn.Linear(C, C)
 
-        self._flat_pos_cache = {}
-        self._bev_pos_cache = {}
-
-    @staticmethod
-    def _positional_encoding_1d(length: int, dim: int, device: torch.device, dtype: torch.dtype) -> Tensor:
-        """
-        Generate 1D positional encoding for a sequence of length `length` with embedding dimension `dim`.
-        """
-        half = dim // 2
-        pos = torch.arange(length, device=device, dtype=torch.float32).unsqueeze(1)
-        omega = torch.exp(-math.log(10000.0) * torch.arange(half, device=device) / max(half, 1))
-        angles = pos * omega.unsqueeze(0)
-        emb = torch.cat([torch.sin(angles), torch.cos(angles)], dim=1)
-        if emb.shape[1] < dim:
-            emb = F.pad(emb, (0, dim - emb.shape[1]))
-        return emb[:, :dim].to(dtype=dtype)
-
-    @staticmethod
-    def _positional_encoding_2d(h: int, w: int, dim: int, device: torch.device, dtype: torch.dtype) -> Tensor:
-        """
-        Generate 2D positional encoding for a grid of size (h, w) with embedding dimension dim.
-        """
-        half = dim // 2
-        dim_h = half
-        dim_w = dim - half
-
-        emb_h = FuTrFusionBlock._positional_encoding_1d(h, dim_h, device=device, dtype=dtype)[:, None, :]
-        emb_w = FuTrFusionBlock._positional_encoding_1d(w, dim_w, device=device, dtype=dtype)[None, :, :]
-
-        emb_h = emb_h.expand(h, w, dim_h)
-        emb_w = emb_w.expand(h, w, dim_w)
-        emb = torch.cat([emb_h, emb_w], dim=-1)
-        return emb.view(h * w, dim)
-
-    def _get_bev_pos(self, H, W, C, device, dtype):
-        """
-        Get or generate 2D positional encoding for BEV features.
-        """
-        key = (H, W, device, dtype)
-        if key not in self._bev_pos_cache:
-            self._bev_pos_cache[key] = self._positional_encoding_2d(H, W, C, device, dtype)
-        return self._bev_pos_cache[key]
-
-    def _get_flat_pos(self, length, C, device, dtype):
-        """
-        Get or generate 1D positional encoding for a sequence of length `length` with embedding dimension `dim`.
-        """
-        key = (length, device, dtype)
-        if key not in self._flat_pos_cache:
-            self._flat_pos_cache[key] = self._positional_encoding_1d(length, C, device, dtype)
-        return self._flat_pos_cache[key]
+        self._pos_embd_cache = PosEmbdCache()
 
     def _cross_attn(self, cam_tokens: Tensor, bev_tokens: Tensor) -> Tensor:
         """
@@ -164,9 +113,9 @@ class FuTrFusionBlock(nn.Module):
         cam_tokens = self.cam_proj(camera)  # (B, N_cam, C)
         if cam_hw is not None:
             assert cam_hw[0] * cam_hw[1] == cam_tokens.shape[1]
-            cam_pos = self._get_bev_pos(cam_hw[0], cam_hw[1], C, device=bev.device, dtype=bev.dtype)
+            cam_pos = self._pos_embd_cache.get_2d(cam_hw[0], cam_hw[1], C, device=bev.device, dtype=bev.dtype)
         else:
-            cam_pos = self._get_flat_pos(cam_tokens.shape[1], C, device=bev.device, dtype=bev.dtype)
+            cam_pos = self._pos_embd_cache.get_1d(cam_tokens.shape[1], C, device=bev.device, dtype=bev.dtype)
         cam_tokens = cam_tokens + self.cam_pos_scale * cam_pos.unsqueeze(0)
 
         # need_weights=False lets PyTorch dispatch to the fused

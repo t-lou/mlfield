@@ -1,4 +1,7 @@
+import math
+
 import torch
+import torch.nn.functional as F
 
 
 def build_2d_sincos_position_embedding(grid_size: int, embed_dim: int, add_cls_token: bool = True) -> torch.Tensor:
@@ -38,19 +41,7 @@ def build_2d_sincos_position_embedding(grid_size: int, embed_dim: int, add_cls_t
     if embed_dim % 4 != 0:
         raise ValueError("embed_dim must be divisible by 4 for 2D sin-cos position embeddings")
 
-    grid_h = torch.arange(grid_size, dtype=torch.float32)
-    grid_w = torch.arange(grid_size, dtype=torch.float32)
-    grid = torch.meshgrid(grid_h, grid_w, indexing="ij")
-    pos_h = grid[0].reshape(-1)
-    pos_w = grid[1].reshape(-1)
-
-    # Compute frequency weights for sinusoidal embeddings, following the transformer convention
-    omega = torch.arange(embed_dim // 4, dtype=torch.float32) / (embed_dim // 4)
-    omega = 1.0 / (10000**omega)  # Frequency scaling for sinusoidal embeddings # TODO different?
-
-    out_h = torch.outer(pos_h, omega)
-    out_w = torch.outer(pos_w, omega)
-    pos_embed = torch.cat([out_h.sin(), out_h.cos(), out_w.sin(), out_w.cos()], dim=1)
+    pos_embed = positional_encoding_2d(grid_size, grid_size, embed_dim, device=torch.device("cpu"), dtype=torch.float32)
 
     if add_cls_token:
         # Prepend a zero vector for the CLS token position embedding
@@ -58,6 +49,58 @@ def build_2d_sincos_position_embedding(grid_size: int, embed_dim: int, add_cls_t
         pos_embed = torch.cat([cls_pos, pos_embed], dim=0)
 
     return pos_embed.unsqueeze(0)
+
+
+def positional_encoding_1d(length: int, dim: int, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
+    """
+    Generate 1D positional encoding for a sequence of length `length` with embedding dimension `dim`.
+    """
+    half = dim // 2
+    pos = torch.arange(length, device=device, dtype=torch.float32).unsqueeze(1)
+    omega = torch.exp(-math.log(10000.0) * torch.arange(half, device=device) / max(half, 1))
+    angles = pos * omega.unsqueeze(0)
+    emb = torch.cat([torch.sin(angles), torch.cos(angles)], dim=1)
+    if emb.shape[1] < dim:
+        emb = F.pad(emb, (0, dim - emb.shape[1]))
+    return emb[:, :dim].to(dtype=dtype)
+
+
+def positional_encoding_2d(h: int, w: int, dim: int, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
+    """
+    Generate 2D positional encoding for a grid of size (h, w) with embedding dimension dim.
+    """
+    half = dim // 2
+    dim_h = half
+    dim_w = dim - half
+
+    emb_h = positional_encoding_1d(h, dim_h, device=device, dtype=dtype)[:, None, :]
+    emb_w = positional_encoding_1d(w, dim_w, device=device, dtype=dtype)[None, :, :]
+
+    emb_h = emb_h.expand(h, w, dim_h)
+    emb_w = emb_w.expand(h, w, dim_w)
+    emb = torch.cat([emb_h, emb_w], dim=-1)
+    return emb.view(h * w, dim)
+
+
+class PosEmbdCache(torch.nn.Module):
+    """Small helper that lazily builds and caches positional encodings by shape/device/dtype."""
+
+    def __init__(self):
+        super().__init__()
+        self._cache_1d = {}
+        self._cache_2d = {}
+
+    def get_1d(self, length: int, dim: int, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
+        key = (length, dim, device, dtype)
+        if key not in self._cache_1d:
+            self._cache_1d[key] = positional_encoding_1d(length, dim, device, dtype)
+        return self._cache_1d[key]
+
+    def get_2d(self, h: int, w: int, dim: int, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
+        key = (h, w, dim, device, dtype)
+        if key not in self._cache_2d:
+            self._cache_2d[key] = positional_encoding_2d(h, w, dim, device, dtype)
+        return self._cache_2d[key]
 
 
 def _smoke_test():
