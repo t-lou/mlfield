@@ -5,6 +5,7 @@ from components.definitions.mmperc_params import MmpercParams
 from components.mmperc.encoder.point_pillar_bev import PointPillarBEV
 from components.mmperc.encoder.tiny_camera_encoder import TinyCameraEncoder
 from components.mmperc.fusion.futr_fusion import FuTrFusionBlock
+from components.mmperc.fusion.perceiver_fusion import PerceiverFusionBlock
 from components.mmperc.head.bbox2d_head import BBox3dHead
 from components.mmperc.head.semantics_head import FullResSemHead
 
@@ -40,7 +41,11 @@ class SimpleModel(nn.Module):
         # ---------------------------------------------------------
         self._use_fusion = params.use_lidar and params.use_camera
         if self._use_fusion:
-            self.fusion = FuTrFusionBlock(params=params)
+            fusion_name = "perceiver"  # TODO add to config
+            if fusion_name == "perceiver":
+                self.fusion = PerceiverFusionBlock(params=params)
+            else:
+                self.fusion = FuTrFusionBlock(params=params)
 
         # ---------------------------------------------------------
         # 4. Detection heads
