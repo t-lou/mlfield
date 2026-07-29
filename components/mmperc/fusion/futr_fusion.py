@@ -106,7 +106,7 @@ class FuTrFusionBlock(nn.Module):
         # Flatten BEV → tokens
         bev_tokens = bev.flatten(2).transpose(1, 2)  # (B, HW, C)
         bev_tokens = self.bev_proj(bev_tokens)
-        bev_pos = self._get_bev_pos(H, W, C, device=bev.device, dtype=bev.dtype)
+        bev_pos = self._pos_embd_cache.get_2d(H, W, C, device=bev.device, dtype=bev.dtype)
         bev_tokens = bev_tokens + self.bev_pos_scale * bev_pos.unsqueeze(0)
 
         # Project camera tokens
