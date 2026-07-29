@@ -153,6 +153,8 @@ def run_one_epoch(
             )
             loss_sem = loss_sem_ce + sem_invalid_aux_weight * loss_sem_invalid
             loss = weight_loss_hm * loss_hm + weight_loss_reg * loss_reg + weight_sem_loss * loss_sem
+            sum_weights = weight_loss_hm + weight_loss_reg + weight_sem_loss
+            loss = loss / sum_weights
 
             sem_pred_class = sem_pred.argmax(dim=1)
             gt_invalid = sem_gt == invalid_class_id
