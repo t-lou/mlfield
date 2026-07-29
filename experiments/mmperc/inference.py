@@ -9,7 +9,7 @@ from components.utils.device import get_device
 from components.utils.logger import configure_logger, logger
 
 
-def main(params: MmpercParams, ckpt: Path):
+def main(params: MmpercParams, ckpt: Path, output: Path):
     device = get_device()
 
     logger.info("Instantiating ModelInferenceWrapper...")
@@ -17,7 +17,7 @@ def main(params: MmpercParams, ckpt: Path):
     model_inference_wrapper = ModelInferenceWrapper(ckpt=ckpt, params=params, device=device)
     logger.info("ModelInferenceWrapper instantiated successfully.")
 
-    results = model_inference_wrapper.infer_a2d2_dataset(params, "./mmperc_inference_out/results.npz")
+    results = model_inference_wrapper.infer_a2d2_dataset(params, output)
     logger.info(results)
 
 
@@ -37,6 +37,7 @@ if __name__ == "__main__":
         default="./mmperc_checkpoints/last.pth",
         help="Path to the checkpoint",
     )
+    parser.add_argument("--output", type=Path, default="./results.npz", help="Path to the output file")
 
     args = parser.parse_args()
 
@@ -44,5 +45,8 @@ if __name__ == "__main__":
         logger.error(f"Checkpoint not found: {args.ckpt}")
         sys.exit(1)
 
+    if not args.output.parent.exists():
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+
     cfg = load_yaml(Path(args.path_config), MmpercParams)
-    main(cfg, args.ckpt)
+    main(cfg, args.ckpt, args.output)

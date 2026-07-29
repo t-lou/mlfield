@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import math
-import os
 from functools import partial
 from pathlib import Path
 from typing import Tuple
@@ -198,10 +197,16 @@ class ModelInferenceWrapper:
         # 3. Move model to target device
         self.model = self.model.to(self.device)
 
-    def infer_a2d2_dataset(self, params, path_output: str, K: int = 50):
-        assert path_output.endswith(".npz"), "path_output must be an .npz file"
-        out_dir = os.path.dirname(path_output)
-        os.makedirs(out_dir, exist_ok=True)
+        # Keep track of the model's dtype so inputs can be cast to match it.
+        # The model is half precision (see above), but the dataloader yields
+        # float32 tensors, so without this cast every forward pass fails with
+        # a "Half vs Float" dtype mismatch.
+        self.dtype = next(self.model.parameters()).dtype
+
+    def infer_a2d2_dataset(self, params, path_output: Path, K: int = 50):
+        assert path_output.suffix == ".npz", "path_output must be an .npz file"
+
+        out_dir = path_output.parent
 
         params = self.params
         dataset_eval = A2D2Dataset(path_tar=Path(params.path_data), params=params, split=Split.VAL)
@@ -218,8 +223,10 @@ class ModelInferenceWrapper:
 
         for idx, batch in enumerate(dataloader):
             # 1. Prepare input
-            points = batch["points"].to(self.device)
-            images = batch["camera"].to(self.device)
+            # Cast to self.dtype (half) to match the model's weights - the
+            # dataloader yields float32 tensors by default.
+            points = batch["points"].to(self.device, dtype=self.dtype)
+            images = batch["camera"].to(self.device, dtype=self.dtype)
 
             # 2. Forward pass again to get semantic logits
             with torch.no_grad():
@@ -241,19 +248,19 @@ class ModelInferenceWrapper:
 
             # 5. Save NPZ
             np.savez_compressed(
-                os.path.join(out_dir, f"sample_{idx:06d}.npz"),
+                out_dir / f"sample_{idx:06d}.npz",
                 points=batch["points"][0].numpy(),
-                points_timestamp=batch["points_timestamp"][0].numpy(),
+                # points_timestamp=batch["points_timestamp"][0].numpy(),
                 pred_boxes=np.array(boxes[0], dtype=np.float32),
-                pred_scores=scores.cpu().numpy(),
+                pred_scores=scores[0].cpu().numpy(),
                 gt_boxes=batch["gt_boxes"][0],
                 # sem_logits=sem_logits.numpy(),  # raw logits
                 # sem_rgb=sem_rgb,  # RGB visualization
                 # sem_rgb_png=png_bytes,  # PNG bytes
                 sem_pred=sem_pred,  # decoded class map
                 # just save the sem prediction and decode to RGB in visualizer
-                semantics_mapping_color=batch["semantics_mapping_color"],
-                semantics_mapping_name=batch["semantics_mapping_name"],
+                # semantics_mapping_color=batch["semantics_mapping_color"][0],
+                # semantics_mapping_name=batch["semantics_mapping_name"][0],
             )
 
         logger.info(f"Saved inference results to: {out_dir}")
