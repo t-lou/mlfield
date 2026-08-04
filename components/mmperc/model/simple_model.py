@@ -41,7 +41,7 @@ class SimpleModel(nn.Module):
         # ---------------------------------------------------------
         self._use_fusion = params.use_lidar and params.use_camera
         if self._use_fusion:
-            fusion_name = "perceiver"  # TODO add to config
+            fusion_name = "futr"  # TODO add to config
             if fusion_name == "perceiver":
                 self.fusion = PerceiverFusionBlock(params=params)
             else:

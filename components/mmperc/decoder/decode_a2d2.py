@@ -203,10 +203,10 @@ class ModelInferenceWrapper:
         # a "Half vs Float" dtype mismatch.
         self.dtype = next(self.model.parameters()).dtype
 
-    def infer_a2d2_dataset(self, params, path_output: Path, K: int = 50):
-        assert path_output.suffix == ".npz", "path_output must be an .npz file"
+    def infer_a2d2_dataset(self, params, out_dir: Path, K: int = 50):
 
-        out_dir = path_output.parent
+        if not out_dir.exists():
+            out_dir.mkdir(parents=True, exist_ok=True)
 
         params = self.params
         dataset_eval = A2D2Dataset(params=params, split=Split.VAL)
