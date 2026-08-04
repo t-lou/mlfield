@@ -209,7 +209,7 @@ class PerceiverFusionBlock(nn.Module):
         num_latents: int = 32,
         num_heads: int = 4,
         depth: int = 2,
-        share_weights: bool = True,
+        share_weights: bool = False,
         dropout: float = 0.1,
     ):
         super().__init__()
