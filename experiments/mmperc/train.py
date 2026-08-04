@@ -18,7 +18,7 @@ def main(params: MmpercParams, skip_eval: bool = False) -> None:
     train_config = params.train_config
     device = train_config.get_device()
 
-    dataset_train = A2D2Dataset(path_tar=Path(params.path_data), params=params, split=Split.TRAIN)
+    dataset_train = A2D2Dataset(params=params, split=Split.TRAIN)
     dataloader_train = DataLoader(
         dataset_train,
         batch_size=train_config.batch_size,
@@ -30,7 +30,7 @@ def main(params: MmpercParams, skip_eval: bool = False) -> None:
         prefetch_factor=train_config.prefetch_factor,
     )
 
-    dataset_eval = A2D2Dataset(path_tar=Path(params.path_data), params=params, split=Split.VAL)
+    dataset_eval = A2D2Dataset(params=params, split=Split.VAL)
     dataloader_eval = DataLoader(
         dataset_eval,
         batch_size=train_config.batch_size * 2,

@@ -209,7 +209,7 @@ class ModelInferenceWrapper:
         out_dir = path_output.parent
 
         params = self.params
-        dataset_eval = A2D2Dataset(path_tar=Path(params.path_data), params=params, split=Split.VAL)
+        dataset_eval = A2D2Dataset(params=params, split=Split.VAL)
         dataloader = DataLoader(
             dataset_eval,
             batch_size=4,

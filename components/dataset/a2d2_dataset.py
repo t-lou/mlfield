@@ -59,9 +59,9 @@ class A2D2Dataset(Dataset):
     closes the temporary reader.
     """
 
-    def __init__(self, path_tar: Path, params: MmpercParams, split: Split = Split.FULL):
-        self.path_tar = path_tar
+    def __init__(self, params: MmpercParams, split: Split = Split.FULL):
         self.params = params
+        self.path_tar = Path(params.path_data)
         self._name = "cam_front_center"
         self._root_parsing = "camera"
         self._tar = None

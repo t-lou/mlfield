@@ -16,7 +16,7 @@ def main(params: MmpercParams):
     # ------------------------------------------------------------
     # 1. Build dataset + dataloader
     # ------------------------------------------------------------
-    dataset = A2D2Dataset(path_tar=Path(params.path_data), params=params, split=Split.TRAIN)
+    dataset = A2D2Dataset(params=params, split=Split.TRAIN)
 
     dataloader = DataLoader(dataset, batch_size=1, collate_fn=partial(bev_collate, params=params))
 
