@@ -91,11 +91,11 @@ def restore_box3d(xs: torch.Tensor, ys: torch.Tensor, reg_vals: torch.Tensor, pa
     xs:       (B, C, K) integer grid x indices
     ys:       (B, C, K) integer grid y indices
     reg_vals: (B, C, K, 8) regression values:
-              [dx, dy, dz, log_w, log_l, log_h, sin_yaw, cos_yaw]
+              [dx, dy, dz, log_l, log_w, log_h, sin_yaw, cos_yaw]
 
     Returns:
         boxes: list of B lists, each containing:
-               [x, y, z, w, l, h, yaw]
+               [x, y, z, l, w, h, yaw]
     """
     B, C, K = xs.shape
     res_x, res_y = get_res(params)
@@ -112,7 +112,7 @@ def restore_box3d(xs: torch.Tensor, ys: torch.Tensor, reg_vals: torch.Tensor, pa
                 ix = int(xs[b, c, k].item())
                 iy = int(ys[b, c, k].item())
 
-                dx, dy, dz, log_w, log_l, log_h, sin_yaw, cos_yaw = reg_vals[b, c, k].tolist()
+                dx, dy, dz, log_l, log_w, log_h, sin_yaw, cos_yaw = reg_vals[b, c, k].tolist()
 
                 # 1. Grid → world cell origin
                 cell_x, cell_y = grid_to_xy(ix, iy, params)
@@ -123,15 +123,15 @@ def restore_box3d(xs: torch.Tensor, ys: torch.Tensor, reg_vals: torch.Tensor, pa
                 z = z_ref + dz
 
                 # 3. Decode size
-                w = math.exp(log_w)
                 l_ = math.exp(log_l)
+                w = math.exp(log_w)
                 h = math.exp(log_h)
 
                 # 4. Decode yaw
                 norm = math.sqrt(sin_yaw * sin_yaw + cos_yaw * cos_yaw) + 1e-6
                 yaw = math.atan2(sin_yaw / norm, cos_yaw / norm)
 
-                boxes_b.append([x, y, z, w, l_, h, yaw])
+                boxes_b.append([x, y, z, l_, w, h, yaw])
 
         boxes.append(boxes_b)
 
@@ -155,11 +155,11 @@ def decode_box3d(
     Args:
         heatmap:  Existence heatmap (B, 1, H_bev, W_bev)
         reg:      BBox parameters   (B, 8, H_bev, W_bev)
-                  [dx, dy, dz, log_w, log_l, log_h, sin_yaw, cos_yaw]
+                  [dx, dy, dz, log_l, log_w, log_h, sin_yaw, cos_yaw]
         K:        number of top-K peaks per class
 
     Returns:
-        boxes:  list of B lists, each item [x, y, z, w, l, h, yaw]
+        boxes:  list of B lists, each item [x, y, z, l, w, h, yaw]
         scores: (B, C, K) heatmap scores
     """
 

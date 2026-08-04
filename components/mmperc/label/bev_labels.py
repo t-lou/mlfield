@@ -59,11 +59,11 @@ def generate_bev_labels_bbox2d(
     mmperc_params: MmpercParams,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """
-    gt_boxes: list of tensors, each (N, 7) with [x, y, z, w, l_, h, yaw]
+    gt_boxes: list of tensors, each (N, 7) with [x, y, z, l_, w, h, yaw]
 
     Returns:
         heatmap: (B, 1, H_out, W_out)
-        reg:     (B, 8, H_out, W_out)  [dx, dy, dz, log_w, log_l, log_h, sin_yaw, cos_yaw]
+        reg:     (B, 8, H_out, W_out)  [dx, dy, dz, log_l, log_w, log_h, sin_yaw, cos_yaw]
         mask:    (B, 1, H_out, W_out)
     """
     bev_h = mmperc_params.bev_params.bev_h
@@ -85,7 +85,7 @@ def generate_bev_labels_bbox2d(
             if box.abs().sum() == 0:
                 continue
 
-            x, y, z, w, l_, h, yaw = box.tolist()
+            x, y, z, l_, w, h, yaw = box.tolist()
 
             # -------------------------------
             # 1. World → BEV grid
@@ -115,8 +115,8 @@ def generate_bev_labels_bbox2d(
             reg[b, 0, iy, ix] = dx
             reg[b, 1, iy, ix] = dy
             reg[b, 2, iy, ix] = dz
-            reg[b, 3, iy, ix] = _safe_log(w)
-            reg[b, 4, iy, ix] = _safe_log(l_)
+            reg[b, 3, iy, ix] = _safe_log(l_)
+            reg[b, 4, iy, ix] = _safe_log(w)
             reg[b, 5, iy, ix] = _safe_log(h)
             reg[b, 6, iy, ix] = math.sin(yaw)
             reg[b, 7, iy, ix] = math.cos(yaw)

@@ -266,7 +266,7 @@ class A2D2Dataset(Dataset):
         with fileobj:
             data = json.load(fileobj)  # json.load reads from the handle itself, no BytesIO needed
 
-        boxes: List[List[float]] = [obj["center"] + obj["size"] + [obj.get("rot_angle", 0.0)] for obj in data.values()]
+        boxes: List[List[float]] = [obj["center"] + obj["size"] + [obj["rot_angle"]] for obj in data.values()]
 
         padded = np.zeros((self.params.num_gt_boxes, 7), dtype=np.float32)
         n = min(len(boxes), self.params.num_gt_boxes)

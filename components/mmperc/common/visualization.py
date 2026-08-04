@@ -20,10 +20,10 @@ it only operates on plain numpy arrays, so every visualizer (and any future
 one) can import it without pulling in unrelated dependencies.
 
 Box column convention (shared across the whole codebase):
-    [x, y, z, w, l, h, yaw]
+    [x, y, z, l, w, h, yaw]
     x, y, z : box center in world coordinates (meters)
-    w       : extent along the box's local Y axis (left/right)
     l       : extent along the box's local X axis (heading direction)
+    w       : extent along the box's local Y axis (left/right)
     h       : extent along Z (height)
     yaw     : rotation around Z, radians
 """
@@ -99,8 +99,8 @@ def camera_chw_to_uint8_hwc(camera_chw: np.ndarray) -> np.ndarray:
 
 
 def get_box_corners_3d(box: np.ndarray) -> np.ndarray:
-    """Return the 8 corners of a single [x, y, z, w, l, h, yaw] box, shape (8, 3)."""
-    x, y, z, w, l_, h, yaw = box[:7]
+    """Return the 8 corners of a single [x, y, z, l, w, h, yaw] box, shape (8, 3)."""
+    x, y, z, l_, h, w, yaw = box[:7]
 
     corners_local = np.array(
         [
