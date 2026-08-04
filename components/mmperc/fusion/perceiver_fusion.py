@@ -14,19 +14,14 @@ from components.vit.position_embedding import PosEmbdCache
 
 
 class CrossAttention(nn.Module):
-    """
-    q attends into (k, v). Always dispatches through SDPA (flash / mem-efficient
-    when available), so this never materializes an O(N_q * N_kv) weight matrix
-    in eager Python — same memory profile as the original FuTr block.
-    """
-
-    def __init__(self, dim: int, num_heads: int, dropout: float = 0.0, kv_dim: int | None = None):
+    def __init__(self, dim, num_heads, dropout=0.0, kv_dim=None, logit_scale_init=1.0):
         super().__init__()
         assert dim % num_heads == 0, "dim must be divisible by num_heads"
         kv_dim = kv_dim if kv_dim is not None else dim
         self.num_heads = num_heads
         self.head_dim = dim // num_heads
         self.dropout_p = dropout
+        self.logit_scale = nn.Parameter(torch.tensor(logit_scale_init))
 
         self.q_proj = nn.Linear(dim, dim)
         self.k_proj = nn.Linear(kv_dim, dim)
@@ -38,9 +33,22 @@ class CrossAttention(nn.Module):
         Nkv = kv_in.shape[1]
         H, Dh = self.num_heads, self.head_dim
 
-        q = self.q_proj(q_in).view(B, Nq, H, Dh).transpose(1, 2)
+        q = self.q_proj(q_in).view(B, Nq, H, Dh).transpose(1, 2) * self.logit_scale
         k = self.k_proj(kv_in).view(B, Nkv, H, Dh).transpose(1, 2)
         v = self.v_proj(kv_in).view(B, Nkv, H, Dh).transpose(1, 2)
+
+        # # Debugging prints
+        # if not torch.jit.is_scripting():
+        #     with torch.no_grad():
+        #         attn_logits = (q @ k.transpose(-2, -1)) / (self.head_dim ** 0.5)
+        #         attn_w = attn_logits.softmax(dim=-1)  # (B, H, Nq, Nkv)
+        #         bev_len = 3072  # from the log
+        #         bev_mass = attn_w[..., :bev_len].sum(-1).mean().item()
+        #         cam_mass = attn_w[..., bev_len:].sum(-1).mean().item()
+        #         print(f"bev_mass={bev_mass:.3f} cam_mass={cam_mass:.3f}")
+        #         attn_logits = (q @ k.transpose(-2, -1)) / (self.head_dim ** 0.5)
+        #         print(f"logit_std={attn_logits.std().item():.4f}")
+        #         print(f"logit_range={(attn_logits.max()-attn_logits.min()).item():.4f}")
 
         out = F.scaled_dot_product_attention(q, k, v, dropout_p=self.dropout_p if training else 0.0)
         out = out.transpose(1, 2).reshape(B, Nq, H * Dh)
@@ -101,6 +109,7 @@ class ModalitySpec:
     # feature map flattened to tokens), pass a fixed shape here, or leave None and
     # supply cam_hw-style spatial hints per-call via forward(spatial_hints=...).
     grid_shape: tuple[int, int] | None = None
+    pool_stride: int = 1
 
 
 class ModalityEncoder(nn.Module):
@@ -123,15 +132,30 @@ class ModalityEncoder(nn.Module):
         spec = self.spec
         if spec.kind == "grid":
             B, C, H, W = x.shape
+            if spec.pool_stride > 1:
+                x = F.avg_pool2d(x, kernel_size=spec.pool_stride, stride=spec.pool_stride)
+                H, W = x.shape[-2], x.shape[-1]
             tokens = x.flatten(2).transpose(1, 2)  # (B, HW, C)
             tokens = self.proj(tokens)
             pos = self._pos_cache.get_2d(H, W, tokens.shape[-1], x.device, x.dtype)
         else:
             B, N, C = x.shape
-            tokens = self.proj(x)
+            # tokens = self.proj(x)
             hw = spatial_hint if spatial_hint is not None else spec.grid_shape
-            if hw is not None:
+            if spec.pool_stride > 1:
+                assert hw is not None, (
+                    f"{spec.name}: pool_stride>1 on a 'seq' modality requires a known "
+                    f"grid_shape or spatial_hint to reshape tokens before pooling"
+                )
                 assert hw[0] * hw[1] == N, f"{spec.name}: grid_shape {hw} does not match N={N}"
+                grid = x.transpose(1, 2).reshape(B, C, hw[0], hw[1])  # (B, N, C) -> (B, C, h, w)
+                grid = F.avg_pool2d(grid, kernel_size=spec.pool_stride, stride=spec.pool_stride)
+                hw = (grid.shape[-2], grid.shape[-1])
+                x = grid.flatten(2).transpose(1, 2)  # (B, N', C)
+                N = x.shape[1]
+            tokens = self.proj(x)
+            if hw is not None:
+                # assert hw[0] * hw[1] == N, f"{spec.name}: grid_shape {hw} does not match N={N}"
                 pos = self._pos_cache.get_2d(hw[0], hw[1], tokens.shape[-1], x.device, x.dtype)
             else:
                 pos = self._pos_cache.get_1d(N, tokens.shape[-1], x.device, x.dtype)
@@ -158,10 +182,12 @@ class OutputQueryHead(nn.Module):
     resolution later, without touching the encoder side at all.
     """
 
-    def __init__(self, dim: int, out_dim: int, num_heads: int, num_queries: int = 1, dropout: float = 0.0):
+    def __init__(
+        self, dim: int, out_dim: int, num_heads: int, num_queries: int = 1, dropout: float = 0.0, logit_scale_init=1.0
+    ):
         super().__init__()
         self.query = nn.Parameter(torch.randn(1, num_queries, dim) * dim**-0.5)
-        self.attn = CrossAttention(dim, num_heads, dropout)
+        self.attn = CrossAttention(dim, num_heads, dropout, logit_scale_init=logit_scale_init)
         self.norm = nn.LayerNorm(dim)
         self.head = nn.Linear(dim, out_dim)
 
@@ -222,8 +248,8 @@ class PerceiverFusionBlock(nn.Module):
         if modalities is None:
             # Default registration matching the original FuTrFusionBlock inputs.
             modalities = [
-                ModalitySpec(name="bev", in_channels=C, kind="grid"),
-                ModalitySpec(name="camera", in_channels=C, kind="seq"),
+                ModalitySpec(name="bev", in_channels=C, kind="grid", pool_stride=1),
+                ModalitySpec(name="camera", in_channels=C, kind="seq", pool_stride=1),
             ]
 
         self._pos_cache = PosEmbdCache()
@@ -240,7 +266,9 @@ class PerceiverFusionBlock(nn.Module):
         # constant in depth.
         n_encode_modules = 1 if share_weights else depth
         self.encode_norm_latent = nn.ModuleList([nn.LayerNorm(C) for _ in range(n_encode_modules)])
-        self.encode_attn = nn.ModuleList([CrossAttention(C, num_heads, dropout) for _ in range(n_encode_modules)])
+        self.encode_attn = nn.ModuleList(
+            [CrossAttention(C, num_heads, dropout, logit_scale_init=4.0) for _ in range(n_encode_modules)]
+        )
         self.encode_norm_ffn = nn.ModuleList([nn.LayerNorm(C) for _ in range(n_encode_modules)])
         self.encode_ffn = nn.ModuleList([FeedForward(C) for _ in range(n_encode_modules)])
 
@@ -254,7 +282,9 @@ class PerceiverFusionBlock(nn.Module):
         # (e.g. `block.output_heads["aux_seg"] = OutputQueryHead(...)`).
         self.output_heads = nn.ModuleDict(
             {
-                "bev_film": OutputQueryHead(C, out_dim=C * 2, num_heads=num_heads, num_queries=1, dropout=dropout),
+                "bev_film": OutputQueryHead(
+                    C, out_dim=C * 2, num_heads=num_heads, num_queries=1, dropout=dropout, logit_scale_init=5.0
+                ),
             }
         )
 
@@ -280,6 +310,8 @@ class PerceiverFusionBlock(nn.Module):
                 continue
             token_chunks.append(encoder(inputs[name], spatial_hint=spatial_hints.get(name)))
         assert token_chunks, "PerceiverFusionBlock.encode: no registered modality found in `inputs`"
+        # for name, chunk in zip(inputs.keys(), token_chunks):
+        #     print(name, chunk.shape[1], chunk.norm(dim=-1).mean().item())
         return torch.cat(token_chunks, dim=1)  # (B, N_total, C)
 
     def forward(

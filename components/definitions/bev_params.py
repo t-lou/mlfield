@@ -37,8 +37,8 @@ class BevParams:
     # -----------------------------
     # Derived BEV grid resolution
     # -----------------------------
-    bev_h: int = 96 * 2
-    bev_w: int = 128 * 2
+    bev_h: int = 96
+    bev_w: int = 128
 
     # backbone downsampling factor
     backbone_stride: int = 2
@@ -52,4 +52,4 @@ class BevParams:
         z_range[1] - z_range[0],  # vz (full height, pillar)
     )
 
-    bev_channels: int = 128  # Number of channels in BEV feature map
+    bev_channels: int = 64  # Number of channels in BEV feature map

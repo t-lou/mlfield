@@ -15,7 +15,7 @@ class MmpercParams:
     # Maximum number of lidar points and GT boxes per frame (for padding)
     # -----------------------------
     num_lidar_points: int = 12000
-    num_gt_boxes: int = 200
+    num_gt_boxes: int = 100
 
     # -----------------------------
     # Number of semantic classes
@@ -49,7 +49,7 @@ class MmpercParams:
     # -----------------------------
     # Downsampling factor for camera images
     # -----------------------------
-    image_scale: float = 0.25
+    image_scale: float = 0.4
 
     use_lidar: bool = True
     use_camera: bool = True
