@@ -28,3 +28,15 @@ Some Perceiver detections:
 ![img](../misc/Screenshot_20260804_215942.png)
 ![img](../misc/Screenshot_20260804_220044.png)
 ![img](../misc/Screenshot_20260804_220110.png)
+
+Heatmap and semseg of FuTr
+![alt text](../misc/debug_heatmaps_3_2400_futr.png)
+![alt text](../misc/debug_heatmaps_7_2400_futr.png)
+![alt text](../misc/debug_sem_3_2400_futr.png)
+![alt text](../misc/debug_sem_7_2400_futr.png)
+
+Heatmap and semseg of Perceiver
+![alt text](../misc/debug_heatmaps_3_2400_perceiver.png)
+![alt text](../misc/debug_heatmaps_7_2400_perceiver.png)
+![alt text](../misc/debug_sem_3_2400_perceiver.png)
+![alt text](../misc/debug_sem_7_2400_perceiver.png)
