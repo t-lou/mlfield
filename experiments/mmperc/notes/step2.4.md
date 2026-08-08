@@ -4,18 +4,18 @@ Below is a design that fits your style: minimal, explicit, modular, and easy to 
 
 ---
 
-# 🎯 Goal  
+# 🎯 Goal
 Add a **semantic segmentation head** that takes **camera features** and outputs a **full‑resolution semantic map**:
 
-- Input: `(B, C_cam, H_cam, W_cam)`  
-- Output: `(B, num_classes, H, W)`  
-- Ground truth: `(B, H, W)`  
+- Input: `(B, C_cam, H_cam, W_cam)`
+- Output: `(B, num_classes, H, W)`
+- Ground truth: `(B, H, W)`
 
 You want something:
-- lightweight  
-- easy to train jointly with BEV tasks  
-- resolution‑preserving  
-- plug‑and‑play  
+- lightweight
+- easy to train jointly with BEV tasks
+- resolution‑preserving
+- plug‑and‑play
 
 ---
 
@@ -75,11 +75,11 @@ class FullResSegHead(nn.Module):
 ```
 
 ### Why this works well
-- Only ~100k parameters  
-- No heavy decoder  
-- Uses bilinear upsampling (fast, stable)  
-- Keeps gradients clean  
-- Easy to fuse with your existing multi‑task loss  
+- Only ~100k parameters
+- No heavy decoder
+- Uses bilinear upsampling (fast, stable)
+- Keeps gradients clean
+- Easy to fuse with your existing multi‑task loss
 
 ---
 
@@ -123,8 +123,8 @@ loss_seg = F.cross_entropy(seg_logits, gt_semantics)
 
 If your semantics are sparse or imbalanced, add:
 
-- class weights  
-- ignore_index for unlabeled pixels  
+- class weights
+- ignore_index for unlabeled pixels
 
 ---
 
@@ -150,17 +150,17 @@ If you want tighter multi‑modal coupling.
 
 You now have a clean, minimal, full‑resolution segmentation head:
 
-- lightweight  
-- easy to train jointly  
-- compatible with your existing architecture  
-- no architectural bloat  
-- preserves your clean, modular design philosophy  
+- lightweight
+- easy to train jointly
+- compatible with your existing architecture
+- no architectural bloat
+- preserves your clean, modular design philosophy
 
 If you want, I can help you:
 
-- integrate skip connections  
-- design a multi‑task loss weighting strategy  
-- visualize segmentation predictions  
-- fuse BEV + image semantics into a shared representation  
+- integrate skip connections
+- design a multi‑task loss weighting strategy
+- visualize segmentation predictions
+- fuse BEV + image semantics into a shared representation
 
 Just tell me which direction you want to explore next.

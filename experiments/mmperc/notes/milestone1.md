@@ -1,6 +1,6 @@
 # Milestone: Multi‑Modal Single‑Task BEV Detector
 
-This milestone introduces a **multi‑modal BEV detection network** built collaboratively with Copilot.  
+This milestone introduces a **multi‑modal BEV detection network** built collaboratively with Copilot.
 The model fuses **LiDAR** and **camera** information to predict **3D bounding boxes** in the A2D2 dataset.
 
 ---
@@ -14,7 +14,7 @@ The model fuses **LiDAR** and **camera** information to predict **3D bounding bo
 
 ## 📤 Output
 
-- **3D bounding box predictions** in A2D2 format  
+- **3D bounding box predictions** in A2D2 format
   (center, size, yaw)
 
 ---
@@ -23,9 +23,9 @@ The model fuses **LiDAR** and **camera** information to predict **3D bounding bo
 
 The system follows a simple but extensible design:
 
-- **LiDAR encoder** → BEV feature map  
-- **Camera encoder** → token embeddings  
-- **Cross‑modal fusion** (FuTr‑style attention)  
+- **LiDAR encoder** → BEV feature map
+- **Camera encoder** → token embeddings
+- **Cross‑modal fusion** (FuTr‑style attention)
 - **Detection heads** → heatmap + regression
 
 ![Start](./imgs/milestone1_futr.png)
@@ -34,7 +34,7 @@ The system follows a simple but extensible design:
 
 ## 🔥 Heatmap Evolution
 
-Training was performed on the **A2D2‑preview** subset (10 frames).  
+Training was performed on the **A2D2‑preview** subset (10 frames).
 Below is a comparison between an early epoch and epoch 50, showing how the predicted heatmap becomes sharper and more aligned with the ground truth.
 
 ![Start](./imgs/milestone1_featuremap.png)

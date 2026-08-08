@@ -2,11 +2,11 @@ Perfect — this is exactly the right moment to drop in a **tiny, GPU‑friendly
 
 What you want here is:
 
-- **small enough** to run on your RTX 2050  
-- **modular enough** to plug into FuTr or AdapterFusion later  
-- **BEV‑native** (2D CNN over H×W)  
-- **simple** (no fancy FPN, no multi‑scale yet)  
-- **fast** (so you can iterate quickly)  
+- **small enough** to run on your RTX 2050
+- **modular enough** to plug into FuTr or AdapterFusion later
+- **BEV‑native** (2D CNN over H×W)
+- **simple** (no fancy FPN, no multi‑scale yet)
+- **fast** (so you can iterate quickly)
 
 Let’s build a backbone that mirrors the *spirit* of PointPillars but is much lighter.
 
@@ -14,14 +14,14 @@ Let’s build a backbone that mirrors the *spirit* of PointPillars but is much l
 
 # 🧱 Design goals for your tiny BEV backbone
 
-### ✔️ Input  
+### ✔️ Input
 A BEV feature map from PFN, shape:
 
 ```
 (B, C_in, H, W)
 ```
 
-### ✔️ Output  
+### ✔️ Output
 A richer BEV feature map:
 
 ```
@@ -30,18 +30,18 @@ A richer BEV feature map:
 
 This downsampling is important because:
 
-- it reduces memory  
-- it increases receptive field  
-- it prepares tokens for transformers later  
+- it reduces memory
+- it increases receptive field
+- it prepares tokens for transformers later
 
-### ✔️ Architecture  
+### ✔️ Architecture
 A simple 3‑stage CNN:
 
-1. **Stem**: 1×1 conv to normalize channels  
-2. **Block 1**: 3×3 conv → BN → ReLU  
-3. **Block 2**: 3×3 conv → BN → ReLU  
-4. **Downsample**: stride‑2 conv  
-5. **Block 3**: 3×3 conv → BN → ReLU  
+1. **Stem**: 1×1 conv to normalize channels
+2. **Block 1**: 3×3 conv → BN → ReLU
+3. **Block 2**: 3×3 conv → BN → ReLU
+4. **Downsample**: stride‑2 conv
+5. **Block 3**: 3×3 conv → BN → ReLU
 
 This is tiny but expressive enough for early experiments.
 
@@ -113,17 +113,17 @@ class TinyBEVBackbone(nn.Module):
 # 🧠 Why this backbone is ideal for your prototype
 
 ### 🟩 1. **Small enough for RTX 2050**
-- ~0.5M parameters  
-- Very low memory footprint  
-- Fast even with batch size 1  
+- ~0.5M parameters
+- Very low memory footprint
+- Fast even with batch size 1
 
 ### 🟩 2. **BEV‑native**
 It operates purely in the BEV plane, which is exactly what you want before:
 
-- 3D detection heads  
-- Drivable area segmentation  
-- BEV transformers  
-- FuTr fusion  
+- 3D detection heads
+- Drivable area segmentation
+- BEV transformers
+- FuTr fusion
 
 ### 🟩 3. **Transformer‑ready**
 The output `(B, C_out, H/2, W/2)` can be reshaped into tokens:
@@ -137,11 +137,11 @@ Perfect for cross‑attention.
 ### 🟩 4. **Easy to scale**
 When you move to a 40GB GPU later, you can:
 
-- add more blocks  
-- add multi‑scale features  
-- add FPN  
-- add deformable attention  
-- replace CNN with a BEV transformer  
+- add more blocks
+- add multi‑scale features
+- add FPN
+- add deformable attention
+- replace CNN with a BEV transformer
 
 The interface stays the same.
 
@@ -163,20 +163,20 @@ if __name__ == "__main__":
 
 You can choose what to build next:
 
-### **A. PFN (Pillar Feature Network)**  
+### **A. PFN (Pillar Feature Network)**
 To generate the BEV input for this backbone.
 
-### **B. Multi‑task heads**  
-- 3D detection  
-- Drivable area segmentation  
+### **B. Multi‑task heads**
+- 3D detection
+- Drivable area segmentation
 
-### **C. BEV → transformer tokenization**  
+### **C. BEV → transformer tokenization**
 Preparing for FuTr or AdapterFusion.
 
-### **D. Camera encoder**  
+### **D. Camera encoder**
 For later fusion.
 
-### **E. FuTr‑style fusion block**  
+### **E. FuTr‑style fusion block**
 Cross‑attention between BEV tokens and camera tokens.
 
 Just tell me which direction you want to go.

@@ -4,18 +4,18 @@ Good question—this is exactly the kind of thing that quietly breaks everything
 
 There are **two coordinate systems** in play, and they shouldn’t be mixed up:
 
-1. **World / metric coordinates:**  
-   - **\(x, y, z\)** in meters (e.g., LiDAR or ego frame)  
+1. **World / metric coordinates:**
+   - **\(x, y, z\)** in meters (e.g., LiDAR or ego frame)
    - Typical convention in autonomous driving:
-     - **\(x\):** forward  
-     - **\(y\):** left (or right, depending on dataset)  
-     - **\(z\):** up  
+     - **\(x\):** forward
+     - **\(y\):** left (or right, depending on dataset)
+     - **\(z\):** up
 
-2. **Tensor / image coordinates:**  
-   - **\((H, W)\)** = **(row, column)** = **(vertical, horizontal)** in the BEV feature map  
-   - Indexing:  
-     - **\(h \in [0, H-1]\)** → row index  
-     - **\(w \in [0, W-1]\)** → column index  
+2. **Tensor / image coordinates:**
+   - **\((H, W)\)** = **(row, column)** = **(vertical, horizontal)** in the BEV feature map
+   - Indexing:
+     - **\(h \in [0, H-1]\)** → row index
+     - **\(w \in [0, W-1]\)** → column index
 
 The key is: **you choose a mapping from \((x, y)\) to \((h, w)\)** and then stay absolutely consistent everywhere.
 
@@ -57,8 +57,8 @@ Most BEV LiDAR pipelines do something like this:
 
   So:
 
-  - **Width axis \(W\)** corresponds to **forward \(x\)**  
-  - **Height axis \(H\)** corresponds to **lateral \(y\)**  
+  - **Width axis \(W\)** corresponds to **forward \(x\)**
+  - **Height axis \(H\)** corresponds to **lateral \(y\)**
 
 This means your BEV tensor is usually shaped:
 
@@ -68,8 +68,8 @@ This means your BEV tensor is usually shaped:
 
 with:
 
-- **\(H\)** = number of bins along **\(y\)**  
-- **\(W\)** = number of bins along **\(x\)**  
+- **\(H\)** = number of bins along **\(y\)**
+- **\(W\)** = number of bins along **\(x\)**
 
 ---
 
@@ -77,12 +77,12 @@ with:
 
 If you visualize the BEV as an image:
 
-- **Right direction (in the image)** → increasing **\(w\)** → increasing **\(x\)** (forward)  
-- **Down direction (in the image)** → increasing **\(h\)** → increasing **\(y\)** (e.g., left)  
+- **Right direction (in the image)** → increasing **\(w\)** → increasing **\(x\)** (forward)
+- **Down direction (in the image)** → increasing **\(h\)** → increasing **\(y\)** (e.g., left)
 
 If you want **“up” in the image to be forward**, you can flip the vertical axis at visualization time, but internally it’s often simpler to keep:
 
-- **Tensor index \(h\)** increasing with **\(y\)**  
+- **Tensor index \(h\)** increasing with **\(y\)**
 - And just remember that “top of the image” might correspond to smaller \(y\).
 
 The important part is: **pick one mapping and never silently change it between preprocessing, model, and postprocessing.**
@@ -122,13 +122,13 @@ And then **all** projection and decoding functions use this.
 ### 5. Direct answer to your question
 
 - **Best order conceptually:**
-  - **World:** \((x, y)\)  
-  - **Tensor:** \((H, W)\)  
+  - **World:** \((x, y)\)
+  - **Tensor:** \((H, W)\)
   - Map **\(x \rightarrow W\)**, **\(y \rightarrow H\)**, and keep that fixed.
 
 - **How HW and XY are used:**
-  - **\(x, y\)** define where a LiDAR point lies in meters.  
-  - You discretize them into **grid indices \((h, w)\)** using your BEV ranges and resolutions.  
+  - **\(x, y\)** define where a LiDAR point lies in meters.
+  - You discretize them into **grid indices \((h, w)\)** using your BEV ranges and resolutions.
   - The BEV feature map is then **\(C \times H(y) \times W(x)\)**.
 
 If you want, we can take your current A2D2 / nuScenes ranges and write out the exact mapping equations and tensor shapes you should standardize on—so your whole pipeline (packaging, model, visualization) speaks the same BEV language.
@@ -136,10 +136,10 @@ If you want, we can take your current A2D2 / nuScenes ranges and write out the e
 
 The cleanest way to think about it is this:
 
-## 🧭 Two coordinate systems, one mapping  
+## 🧭 Two coordinate systems, one mapping
 You always have:
 
-- **XY** → real‑world metric coordinates (meters)  
+- **XY** → real‑world metric coordinates (meters)
 - **HW** → tensor/image coordinates (indices)
 
 The relation is simply a **deterministic projection** from continuous world space into a discrete grid.
@@ -149,13 +149,13 @@ The relation is simply a **deterministic projection** from continuous world spac
 ## 📐 The standard mapping used in BEV LiDAR ML
 
 ### **World coordinates (meters)**
-- \(x\): forward  
-- \(y\): left/right  
-- \(z\): up  
+- \(x\): forward
+- \(y\): left/right
+- \(z\): up
 
 ### **BEV tensor coordinates**
-- \(h\): row index (vertical axis)  
-- \(w\): column index (horizontal axis)  
+- \(h\): row index (vertical axis)
+- \(w\): column index (horizontal axis)
 
 ### **Mapping**
 You define a BEV region:
@@ -181,7 +181,7 @@ h = \left\lfloor \frac{y - y_{\min}}{\text{res}_y} \right\rfloor
 \]
 
 ### **Interpretation**
-- **W axis corresponds to X** (forward direction)  
+- **W axis corresponds to X** (forward direction)
 - **H axis corresponds to Y** (lateral direction)
 
 So the BEV tensor shape:
@@ -192,23 +192,23 @@ C \times H \times W
 
 means:
 
-- **H** = number of bins along **Y**  
+- **H** = number of bins along **Y**
 - **W** = number of bins along **X**
 
 ---
 
-## 🧠 Intuition  
+## 🧠 Intuition
 Think of BEV as a top‑down image:
 
-- Moving **right** in the BEV image → increasing **x** (forward)  
-- Moving **down** in the BEV image → increasing **y** (left or right depending on dataset)  
+- Moving **right** in the BEV image → increasing **x** (forward)
+- Moving **down** in the BEV image → increasing **y** (left or right depending on dataset)
 
-This is why BEV is often visualized with the ego car at the bottom center:  
+This is why BEV is often visualized with the ego car at the bottom center:
 the **top of the image corresponds to smaller y**, but internally the tensor still uses the same mapping.
 
 ---
 
-## 🧩 Summary in one sentence  
+## 🧩 Summary in one sentence
 **XY are real‑world metric coordinates, and HW are the discretized grid indices obtained by dividing XY by the BEV resolution and shifting by the BEV range.**
 
 ---
@@ -220,13 +220,13 @@ Here’s the crisp, industry‑standard answer without any fluff.
 
 ## ✅ The usual convention in LiDAR BEV ML
 
-### **X → W**  
+### **X → W**
 ### **Y → H**
 
 Meaning:
 
-- **X (forward)** maps to **W (width / columns)**  
-- **Y (left–right)** maps to **H (height / rows)**  
+- **X (forward)** maps to **W (width / columns)**
+- **Y (left–right)** maps to **H (height / rows)**
 
 So the BEV tensor is:
 
@@ -240,7 +240,7 @@ So the BEV tensor is:
 
 Given a point \((x, y)\):
 
-- **w index** = discretized **x**  
+- **w index** = discretized **x**
 - **h index** = discretized **y**
 
 So indexing is:
@@ -262,8 +262,8 @@ bev[c, h, w] = ...
 
 Because:
 
-- **Width (W)** naturally corresponds to the **forward axis** in most BEV visualizations  
-- **Height (H)** corresponds to the **lateral axis**  
+- **Width (W)** naturally corresponds to the **forward axis** in most BEV visualizations
+- **Height (H)** corresponds to the **lateral axis**
 - It matches nuScenes, Waymo, OpenPCDet, BEVFusion, CenterPoint, etc.
 
 ---

@@ -1,17 +1,17 @@
 You’re absolutely right to pause here — **your current training loop only computes losses** (heatmap + regression), but it never **decodes** the model’s output back into **actual bounding boxes**.
 
-That’s normal.  
+That’s normal.
 Most detection models have *two phases*:
 
-1. **Training**  
-   - Predict heatmap + regression  
-   - Compute loss  
+1. **Training**
+   - Predict heatmap + regression
+   - Compute loss
    - No decoding needed
 
-2. **Inference / Evaluation**  
-   - Predict heatmap + regression  
-   - **Decode** into real bounding boxes  
-   - Apply NMS  
+2. **Inference / Evaluation**
+   - Predict heatmap + regression
+   - **Decode** into real bounding boxes
+   - Apply NMS
    - Return final detections
 
 Right now, you only implemented **phase 1**.
@@ -32,13 +32,13 @@ reg_pred     = pred["reg"]       # shape: (B, 7, H, W)
 
 This is a **CenterNet‑style representation**:
 
-- heatmap → object centers  
+- heatmap → object centers
 - regression → (x_offset, y_offset, z, dx, dy, dz, yaw)
 
 To get actual boxes, you need to:
 
-1. **Find peaks in the heatmap**  
-2. **Extract regression values at those peaks**  
+1. **Find peaks in the heatmap**
+2. **Extract regression values at those peaks**
 3. **Convert them into world‑space boxes**
 
 Let’s build that.
@@ -176,9 +176,9 @@ Your training loop is correct — it should *not* output boxes.
 
 To output bounding boxes, you need:
 
-- heatmap peak detection  
-- regression gathering  
-- decoding into world coordinates  
+- heatmap peak detection
+- regression gathering
+- decoding into world coordinates
 
 I gave you a clean, modular implementation of all three.
 
@@ -186,10 +186,10 @@ I gave you a clean, modular implementation of all three.
 
 If you want, I can also help you:
 
-- integrate NMS  
-- visualize predicted boxes in Open3D  
-- overlay predictions on camera images  
-- export predictions to KITTI format  
-- evaluate mAP  
+- integrate NMS
+- visualize predicted boxes in Open3D
+- overlay predictions on camera images
+- export predictions to KITTI format
+- evaluate mAP
 
 Just tell me where you want to go next.

@@ -4,8 +4,8 @@ Let’s walk through it in a clean, intuitive way.
 
 ---
 
-# 🧱 Why you need **two steps** after voxelization  
-### 1) **PFN (Pillar Feature Network)**  
+# 🧱 Why you need **two steps** after voxelization
+### 1) **PFN (Pillar Feature Network)**
 ### 2) **Scatter to BEV grid**
 
 Both are necessary, but for different reasons.
@@ -22,8 +22,8 @@ pillars: (B, P, M, C)
 
 Where:
 
-- **P** = number of pillars  
-- **M** = max points per pillar  
+- **P** = number of pillars
+- **M** = max points per pillar
 - **C** = point features (x, y, z, intensity, …)
 
 A pillar is basically a *bag of points*.
@@ -94,9 +94,9 @@ a 2D feature map with spatial structure
 
 Without scatter, the backbone has no idea:
 
-- where each pillar is located  
-- which pillar is left/right/front/back  
-- how to apply convolutions meaningfully  
+- where each pillar is located
+- which pillar is left/right/front/back
+- how to apply convolutions meaningfully
 
 Scatter restores the **geometry**.
 
@@ -120,8 +120,8 @@ directly into the backbone.
 
 The backbone thinks:
 
-- **12000 = channels**  
-- **20 = height**  
+- **12000 = channels**
+- **20 = height**
 - **3 = width**
 
 Which is nonsense for a BEV CNN.
@@ -138,7 +138,7 @@ Scatter fixes this by producing:
 
 Think of it like this:
 
-### PFN = “encode each pixel”  
+### PFN = “encode each pixel”
 ### Scatter = “place pixels into the image”
 
 Together they turn LiDAR into a **2D image** that a CNN can process.
@@ -147,8 +147,8 @@ Together they turn LiDAR into a **2D image** that a CNN can process.
 
 # 🧭 If you want, I can now give you:
 
-### ✔ A clean PFN implementation  
-### ✔ A clean scatter-to-BEV implementation  
+### ✔ A clean PFN implementation
+### ✔ A clean scatter-to-BEV implementation
 ### ✔ A full forward pipeline:
 
 ```
@@ -159,8 +159,8 @@ Just tell me and I’ll assemble the whole thing for you.
 
 
 
-Not quite — and this is where a lot of people misunderstand PointPillars the first time.  
-Scatter **is not** just a “1D → 2D reshape”.  
+Not quite — and this is where a lot of people misunderstand PointPillars the first time.
+Scatter **is not** just a “1D → 2D reshape”.
 Scatter is a **geometric placement operation** that restores the spatial structure of the LiDAR scene.
 
 Let me break it down in a way that makes the whole architecture click.
@@ -175,7 +175,7 @@ pillar_features: (B, P, C)
 pillar_coords:   (B, P, 2)   # (ix, iy)
 ```
 
-This is **not an image**.  
+This is **not an image**.
 It’s just a list of P feature vectors, each with a coordinate.
 
 Think of it like:
@@ -194,9 +194,9 @@ This is **sparse** and **unordered**.
 # 🎯 What scatter actually does
 Scatter takes:
 
-- a list of pillar features  
-- their (ix, iy) coordinates  
-- an empty BEV grid  
+- a list of pillar features
+- their (ix, iy) coordinates
+- an empty BEV grid
 
 and **places each feature into the correct pixel**.
 
@@ -219,13 +219,13 @@ This is a **dense 2D feature map**, exactly what a CNN expects.
 
 # 🔥 Why scatter is essential (not optional)
 
-### ✔ PFN output is *not* spatial  
+### ✔ PFN output is *not* spatial
 It’s just a list of features.
 
-### ✔ CNNs require spatial structure  
+### ✔ CNNs require spatial structure
 Convolutions only make sense if the input is arranged in a grid.
 
-### ✔ Scatter restores geometry  
+### ✔ Scatter restores geometry
 It tells the CNN where each pillar belongs in the BEV map.
 
 Without scatter, the backbone sees:
@@ -236,9 +236,9 @@ Without scatter, the backbone sees:
 
 and interprets:
 
-- P as channels  
-- M as height  
-- C as width  
+- P as channels
+- M as height
+- C as width
 
 which is why you got:
 
@@ -250,11 +250,11 @@ expected 64 channels, got 12000
 
 # 🧩 So what does scatter do conceptually?
 
-### It converts **sparse pillar features**  
+### It converts **sparse pillar features**
 into a **dense BEV image**.
 
-Not a reshape.  
-Not a flatten.  
+Not a reshape.
+Not a flatten.
 Not a 1D → 2D conversion.
 
 It is a **geometric placement**.
@@ -295,23 +295,23 @@ Everything else stays zero.
 
 Scatter is:
 
-- **not** a reshape  
-- **not** a dimensionality trick  
-- **not** a 1D → 2D conversion  
+- **not** a reshape
+- **not** a dimensionality trick
+- **not** a 1D → 2D conversion
 
 Scatter is:
 
-### ⭐ A spatial placement operation  
-### ⭐ Required to convert pillar features into a BEV image  
-### ⭐ The key step that makes CNNs work on LiDAR  
+### ⭐ A spatial placement operation
+### ⭐ Required to convert pillar features into a BEV image
+### ⭐ The key step that makes CNNs work on LiDAR
 
 ---
 
 If you want, I can now give you:
 
-- a clean PFN implementation  
-- a clean scatter implementation  
-- a full forward pipeline  
+- a clean PFN implementation
+- a clean scatter implementation
+- a full forward pipeline
 - or help you debug your current shapes step by step
 
 Just tell me what you want to explore next.

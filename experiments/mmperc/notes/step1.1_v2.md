@@ -1,11 +1,11 @@
 Using **PyTorch directly** is absolutely the better long‑term choice — especially for you, because:
 
-- you’ll eventually push the voxelizer onto the GPU,  
-- you want to integrate it into a full training pipeline,  
-- you want to experiment with transformers and adapters,  
+- you’ll eventually push the voxelizer onto the GPU,
+- you want to integrate it into a full training pipeline,
+- you want to experiment with transformers and adapters,
 - and you’re already comfortable with efficient, memory‑safe pipelines.
 
-I only used NumPy earlier because it’s easier to read for a first conceptual sketch.  
+I only used NumPy earlier because it’s easier to read for a first conceptual sketch.
 But for a *real* ADAS perception model, **you should implement the voxelizer in PyTorch**.
 
 Let’s break down why — and then I’ll give you a clean PyTorch version.
@@ -17,18 +17,18 @@ Let’s break down why — and then I’ll give you a clean PyTorch version.
 ## 1. **You avoid CPU→GPU copies**
 NumPy forces you to:
 
-- voxelize on CPU  
-- convert to torch tensors  
-- send to GPU  
+- voxelize on CPU
+- convert to torch tensors
+- send to GPU
 
 This adds overhead and slows training.
 
 With PyTorch:
 
-- everything stays in torch tensors  
-- you can move the entire voxelization to GPU  
-- no conversion overhead  
-- faster dataloaders  
+- everything stays in torch tensors
+- you can move the entire voxelization to GPU
+- no conversion overhead
+- faster dataloaders
 - smoother multi‑task training
 
 ---
@@ -36,10 +36,10 @@ With PyTorch:
 ## 2. **You can JIT or TorchScript the voxelizer**
 This matters for:
 
-- deployment  
-- speed  
-- reproducibility  
-- multi‑modal fusion pipelines  
+- deployment
+- speed
+- reproducibility
+- multi‑modal fusion pipelines
 
 NumPy cannot be scripted.
 
@@ -48,8 +48,8 @@ NumPy cannot be scripted.
 ## 3. **You can use torch operations for batching**
 If you want to batch multiple point clouds:
 
-- NumPy requires Python loops  
-- PyTorch can vectorize everything  
+- NumPy requires Python loops
+- PyTorch can vectorize everything
 - You can use `scatter_`, `index_put_`, `unique`, etc.
 
 This is essential for multi‑task training.
@@ -61,9 +61,9 @@ This is the real win.
 
 On your RTX 2050:
 
-- CPU voxelization is slow  
-- GPU voxelization is 10–30× faster  
-- You can keep the entire LiDAR pipeline on GPU  
+- CPU voxelization is slow
+- GPU voxelization is 10–30× faster
+- You can keep the entire LiDAR pipeline on GPU
 - Perfect for transformer‑based fusion (FuTr, BEVFormer, etc.)
 
 ---
@@ -151,7 +151,7 @@ class TorchPillarVoxelizer:
 
 # 🟧 Why this PyTorch version is better
 
-### ✔️ Runs on CPU or GPU  
+### ✔️ Runs on CPU or GPU
 Just do:
 
 ```python
@@ -160,33 +160,33 @@ voxelizer = TorchPillarVoxelizer().cuda()
 out = voxelizer(points)
 ```
 
-### ✔️ No NumPy conversion  
+### ✔️ No NumPy conversion
 Everything stays in torch.
 
-### ✔️ Ready for batching  
+### ✔️ Ready for batching
 You can extend this to batch multiple point clouds.
 
-### ✔️ Ready for JIT  
+### ✔️ Ready for JIT
 You can TorchScript it later.
 
-### ✔️ Ready for transformer fusion  
+### ✔️ Ready for transformer fusion
 The output is already a torch tensor, so you can feed it directly into:
 
-- PFN  
-- BEV CNN  
-- BEV transformer  
-- FuTr fusion  
-- AdapterFusion  
+- PFN
+- BEV CNN
+- BEV transformer
+- FuTr fusion
+- AdapterFusion
 
 ---
 
 # 🧭 If you want, next we can build:
 
-- **PFN (Pillar Feature Network)** in torch  
-- **BEV backbone** (tiny CNN)  
-- **BEV transformer** (FuTr‑style)  
-- **Multi‑task heads** (3D detection + drivable area)  
-- **Camera encoder** for later fusion  
-- **AdapterFusion modules**  
+- **PFN (Pillar Feature Network)** in torch
+- **BEV backbone** (tiny CNN)
+- **BEV transformer** (FuTr‑style)
+- **Multi‑task heads** (3D detection + drivable area)
+- **Camera encoder** for later fusion
+- **AdapterFusion modules**
 
 Just tell me which component you want to implement next.

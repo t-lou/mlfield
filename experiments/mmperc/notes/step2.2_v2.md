@@ -4,17 +4,17 @@ Let’s make it crystal clear.
 
 ---
 
-# 🎯 You **cannot** train a BEV semantic head  
+# 🎯 You **cannot** train a BEV semantic head
 because:
 
-- A2D2 provides **image‑space semantic masks**  
-- It does **not** provide BEV‑space semantic labels  
-- You cannot supervise a BEV semantic head without BEV GT  
+- A2D2 provides **image‑space semantic masks**
+- It does **not** provide BEV‑space semantic labels
+- You cannot supervise a BEV semantic head without BEV GT
 - Projecting image semantics into BEV is possible, but it’s a **full research project** (camera calibration, depth, occlusion, frustum carving)
 
 So yes:
 
-👉 **You can only train a semantic head that predicts image‑space semantics.**  
+👉 **You can only train a semantic head that predicts image‑space semantics.**
 👉 **And that requires an FPN‑style decoder.**
 
 Your intuition is correct.
@@ -23,28 +23,28 @@ Your intuition is correct.
 
 # ⭐ So your architecture should evolve like this
 
-## ✔ Keep your BEV detection pipeline exactly as it is  
-- Lidar → BEV  
-- Camera → tokens  
-- Fusion → BEV  
-- BEV heads → heatmap + regression  
+## ✔ Keep your BEV detection pipeline exactly as it is
+- Lidar → BEV
+- Camera → tokens
+- Fusion → BEV
+- BEV heads → heatmap + regression
 
 This part stays untouched.
 
-## ✔ Add a **camera‑side semantic segmentation head**  
+## ✔ Add a **camera‑side semantic segmentation head**
 This head predicts **image‑space semantics**, not BEV semantics.
 
 To do that, you need:
 
-### 1. A camera encoder (you already have TinyCameraEncoder)  
-### 2. A decoder (FPN or UNet‑style)  
+### 1. A camera encoder (you already have TinyCameraEncoder)
+### 2. A decoder (FPN or UNet‑style)
 ### 3. A segmentation head (Conv → logits)
 
 ---
 
 # ⭐ Minimal architecture change (recommended starting point)
 
-### Step 1 — Modify your camera encoder to return multi‑scale features  
+### Step 1 — Modify your camera encoder to return multi‑scale features
 Even a tiny FPN needs at least 2–3 scales.
 
 If your TinyCameraEncoder currently outputs only a single token sequence, you’ll need to adjust it to output:
@@ -102,50 +102,50 @@ loss = loss_det + λ * loss_semseg
 
 # ⭐ Why this is the correct approach
 
-### ✔ You have GT in image space  
+### ✔ You have GT in image space
 So you must predict in image space.
 
-### ✔ FPN is the standard way to decode image features  
+### ✔ FPN is the standard way to decode image features
 Every modern segmentation model uses:
 
-- UNet  
-- FPN  
-- DeepLab decoder  
-- SegFormer MLP decoder  
+- UNet
+- FPN
+- DeepLab decoder
+- SegFormer MLP decoder
 
-### ✔ You keep your BEV detection pipeline untouched  
+### ✔ You keep your BEV detection pipeline untouched
 No need to fuse semantics into BEV yet.
 
-### ✔ You can later fuse semantic features into BEV  
+### ✔ You can later fuse semantic features into BEV
 Once you have a working camera‑side semseg head, you can:
 
-- extract semantic tokens  
-- fuse them with BEV  
+- extract semantic tokens
+- fuse them with BEV
 - or project semantics into BEV using depth (future work)
 
 ---
 
 # ⭐ Recommended roadmap for you
 
-### **Phase 1 — Add camera‑side FPN + semseg head**  
+### **Phase 1 — Add camera‑side FPN + semseg head**
 Train semseg + BEV detection jointly.
 
-### **Phase 2 — Use semseg features to improve BEV detection**  
+### **Phase 2 — Use semseg features to improve BEV detection**
 Fuse semantic tokens into BEV fusion block.
 
-### **Phase 3 — Project semantics into BEV (optional, advanced)**  
+### **Phase 3 — Project semantics into BEV (optional, advanced)**
 Requires depth estimation or lidar‑camera calibration.
 
-### **Phase 4 — Add spherical lidar encoder (future)**  
+### **Phase 4 — Add spherical lidar encoder (future)**
 For lidar‑based semantics.
 
 ---
 
-# ⭐ If you want, I can write for you:  
-- A minimal TinyFPN implementation  
-- A modified TinyCameraEncoder that outputs multi‑scale features  
-- The updated SimpleModel with semseg head  
-- The updated training loop with multi‑task loss  
-- A visualization script for semseg predictions  
+# ⭐ If you want, I can write for you:
+- A minimal TinyFPN implementation
+- A modified TinyCameraEncoder that outputs multi‑scale features
+- The updated SimpleModel with semseg head
+- The updated training loop with multi‑task loss
+- A visualization script for semseg predictions
 
 Just tell me which part you want next.

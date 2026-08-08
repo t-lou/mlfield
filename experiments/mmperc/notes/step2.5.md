@@ -50,18 +50,18 @@ class BBox2dHead(nn.Module):
 ## 1. **Add a 3×3 conv + ReLU before the 1×1 conv**
 This is the same trick used in:
 
-- CenterNet  
-- BEVDet  
-- BEVFusion  
-- FCOS  
-- YOLOX  
+- CenterNet
+- BEVDet
+- BEVFusion
+- FCOS
+- YOLOX
 
-A single 1×1 conv is *too shallow* for stable heatmap prediction.  
+A single 1×1 conv is *too shallow* for stable heatmap prediction.
 A tiny 3×3 block:
 
-- improves spatial reasoning  
-- reduces noisy activations  
-- improves convergence  
+- improves spatial reasoning
+- reduces noisy activations
+- improves convergence
 - costs almost nothing (one extra conv)
 
 This is the biggest improvement.
@@ -69,13 +69,13 @@ This is the biggest improvement.
 ---
 
 ## 2. **Keep sigmoid only on heatmap**
-You already do this correctly.  
+You already do this correctly.
 Regression head should stay raw.
 
 ---
 
 ## 3. **No redundant operations**
-Your original code had no waste, but it was *too minimal* for a detection head.  
+Your original code had no waste, but it was *too minimal* for a detection head.
 The optimized version is still tiny but more expressive.
 
 ---
@@ -104,10 +104,10 @@ This is functionally identical to your original, just cleaner.
 
 # 🧩 Which version should you use?
 
-### If you want **best accuracy**  
+### If you want **best accuracy**
 → Use the optimized version with the 3×3 conv.
 
-### If you want **fastest inference**  
+### If you want **fastest inference**
 → Use the minimal version.
 
 Given your BEV fusion model, I’d recommend the **optimized version** — it stabilizes heatmap learning, which is usually the hardest part of CenterNet‑style heads.
@@ -116,10 +116,10 @@ Given your BEV fusion model, I’d recommend the **optimized version** — it st
 
 If you want, I can also help you:
 
-- add uncertainty prediction  
-- add IoU‑aware regression  
-- add direction classification  
-- add multi‑scale heads  
-- integrate this head with your loss functions  
+- add uncertainty prediction
+- add IoU‑aware regression
+- add direction classification
+- add multi‑scale heads
+- integrate this head with your loss functions
 
 Just tell me where you want to take it.

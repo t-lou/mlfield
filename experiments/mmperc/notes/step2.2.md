@@ -1,13 +1,13 @@
-You’re in a **very good position** to add semantic segmentation to your model — and you don’t need to redesign everything.  
+You’re in a **very good position** to add semantic segmentation to your model — and you don’t need to redesign everything.
 Let me walk you through a clean, incremental way to integrate **2D semantic segmentation** into your multimodal BEV detector.
 
 I’ll give you:
 
-- a **roadmap** (what to do first, second, third)  
-- a **minimal working architecture change**  
-- how to **train jointly**  
-- how to **handle the 1‑channel semantic input**  
-- how to **prepare for future spherical encoders**  
+- a **roadmap** (what to do first, second, third)
+- a **minimal working architecture change**
+- how to **train jointly**
+- how to **handle the 1‑channel semantic input**
+- how to **prepare for future spherical encoders**
 
 This keeps your system stable while letting you experiment.
 
@@ -35,13 +35,13 @@ This is a classic multi‑task setup.
 
 # 🌟 2. What you should do FIRST (minimal change)
 
-### ✔ Add a **semantic segmentation head**  
+### ✔ Add a **semantic segmentation head**
 This head predicts a 2D segmentation map from the BEV fused features.
 
 Even though semseg is in image space, you can still train a head on BEV features — it will learn something, and it’s a good first step.
 
-### ✔ Keep the inputs unchanged  
-Don’t modify the encoders yet.  
+### ✔ Keep the inputs unchanged
+Don’t modify the encoders yet.
 Just add a new head and a new loss.
 
 This gives you a stable baseline.
@@ -118,7 +118,7 @@ You have two options:
 
 ---
 
-## ✔ Option A — Replace the camera RGB input with the semseg map  
+## ✔ Option A — Replace the camera RGB input with the semseg map
 This is the simplest:
 
 ```python
@@ -133,7 +133,7 @@ self.cam_encoder = TinyCameraEncoder(in_channels=1)
 
 ---
 
-## ✔ Option B — Fuse RGB + semseg  
+## ✔ Option B — Fuse RGB + semseg
 Concatenate:
 
 ```python
@@ -150,7 +150,7 @@ This is more powerful.
 
 ---
 
-# 🌟 7. Future: spherical encoder for lidar semantics  
+# 🌟 7. Future: spherical encoder for lidar semantics
 You mentioned:
 
 > perhaps later a spherical encoder
@@ -159,11 +159,11 @@ Yes — that’s the right direction.
 
 Later, you can:
 
-- project lidar into spherical range image  
-- fuse spherical semseg with BEV  
-- use a dual‑stream fusion block  
+- project lidar into spherical range image
+- fuse spherical semseg with BEV
+- use a dual‑stream fusion block
 
-But don’t start there.  
+But don’t start there.
 Start with the simple BEV head.
 
 ---
@@ -176,27 +176,27 @@ Start with the simple BEV head.
 - Train multi‑task model
 
 ### **Phase 2 — Use semseg as input**
-- Replace RGB with semseg  
-or  
+- Replace RGB with semseg
+or
 - Concatenate RGB + semseg
 
 ### **Phase 3 — Improve camera encoder**
-- Add positional encodings  
-- Add patch embedding  
-- Add multi‑scale features  
+- Add positional encodings
+- Add patch embedding
+- Add multi‑scale features
 
 ### **Phase 4 — Add spherical lidar encoder**
-- Project lidar to spherical  
-- Fuse spherical + BEV + camera  
+- Project lidar to spherical
+- Fuse spherical + BEV + camera
 
 ---
 
 # 🌟 9. If you want, I can write:
 
-- the full updated `SimpleModel` class  
-- the updated training loop with semseg loss  
-- the updated dataset loader  
-- the updated inference wrapper  
-- visualization utilities for semseg + BEV  
+- the full updated `SimpleModel` class
+- the updated training loop with semseg loss
+- the updated dataset loader
+- the updated inference wrapper
+- visualization utilities for semseg + BEV
 
 Just tell me which part you want next.

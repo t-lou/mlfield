@@ -56,13 +56,13 @@ class DrivableAreaHead(nn.Module):
 
 # 🧠 Why this design works so well
 
-### ✔️ BEV‑native  
+### ✔️ BEV‑native
 No upsampling or downsampling — it predicts directly in BEV space.
 
-### ✔️ Lightweight  
+### ✔️ Lightweight
 Only a few conv layers, perfect for your RTX 2050.
 
-### ✔️ Modular  
+### ✔️ Modular
 You can attach it after:
 
 ```
@@ -71,13 +71,13 @@ backbone → fusion → DrivableAreaHead
 
 without touching any other part of the pipeline.
 
-### ✔️ Easy to extend  
+### ✔️ Easy to extend
 Later you can add:
 
-- multi‑scale BEV features  
-- skip connections  
-- dilated convolutions  
-- auxiliary losses  
+- multi‑scale BEV features
+- skip connections
+- dilated convolutions
+- auxiliary losses
 
 But this minimal version is already strong enough for A2D2‑style drivable area.
 
@@ -99,13 +99,13 @@ if __name__ == "__main__":
 
 You can choose what to build next:
 
-### **A. Tests for the drivable‑area head**  
+### **A. Tests for the drivable‑area head**
 Shape, gradient, determinism, device consistency.
 
-### **B. A tiny 3D detection head**  
+### **B. A tiny 3D detection head**
 CenterPoint‑style, BEV‑native.
 
-### **C. A unified `MultiTaskHead` wrapper**  
+### **C. A unified `MultiTaskHead` wrapper**
 Returns a dict like:
 
 ```python
@@ -115,7 +115,7 @@ Returns a dict like:
 }
 ```
 
-### **D. End‑to‑end pipeline wiring**  
+### **D. End‑to‑end pipeline wiring**
 Voxelizer → PFN → BEV backbone → fusion → drivable head.
 
 Just tell me which direction you want to go.

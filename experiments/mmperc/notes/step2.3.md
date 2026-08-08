@@ -4,7 +4,7 @@ Let me walk you through the **precise reasons**, grounded in your actual trainin
 
 ---
 
-# 🧨 Why your real training explodes at batch 2  
+# 🧨 Why your real training explodes at batch 2
 (but the estimator says batch 1024 fits)
 
 Your training loop does **MUCH more work** than your estimator simulates.
@@ -50,12 +50,12 @@ heatmap_gt, reg_gt, mask_gt = generate_bev_labels_bbox2d(gt_boxes)
 
 This function:
 
-- allocates large BEV maps  
-- allocates regression maps  
-- allocates masks  
-- allocates temporary tensors  
-- runs Python loops  
-- runs scatter operations  
+- allocates large BEV maps
+- allocates regression maps
+- allocates masks
+- allocates temporary tensors
+- runs Python loops
+- runs scatter operations
 
 Your estimator **never** simulated this.
 
@@ -65,10 +65,10 @@ Your estimator **never** simulated this.
 
 Adam stores:
 
-- parameters  
-- gradients  
-- first moment  
-- second moment  
+- parameters
+- gradients
+- first moment
+- second moment
 
 This is **2–3× model size**.
 
@@ -94,9 +94,9 @@ optimizer.step()
 
 This means:
 
-- gradients accumulate  
-- optimizer state is updated  
-- intermediate buffers persist longer  
+- gradients accumulate
+- optimizer state is updated
+- intermediate buffers persist longer
 
 ---
 
@@ -108,11 +108,11 @@ dataloader = DataLoader(dataset, batch_size=2, shuffle=True)
 
 This adds:
 
-- CPU pinned memory  
-- worker processes  
-- prefetching  
-- collate overhead  
-- CPU→GPU transfer for each batch  
+- CPU pinned memory
+- worker processes
+- prefetching
+- collate overhead
+- CPU→GPU transfer for each batch
 
 Your estimator uses **none** of this.
 
@@ -126,15 +126,15 @@ Your estimator only measured:
 
 But your real training also does:
 
-- BEV label generation  
-- focal loss  
-- L1 loss  
-- mask operations  
-- multiple large tensors on GPU  
+- BEV label generation
+- focal loss
+- L1 loss
+- mask operations
+- multiple large tensors on GPU
 
 ---
 
-# 🧠 Conclusion  
+# 🧠 Conclusion
 Your estimator measured **only the model forward/backward**, not the **full training pipeline**.
 
 Your real training pipeline is **3–10× more memory‑hungry**.
@@ -152,15 +152,15 @@ This is expected.
 
 I can rewrite your estimator so that it:
 
-- uses your real DataLoader  
-- runs `generate_bev_labels_bbox2d`  
-- runs focal loss  
-- runs L1 loss  
-- runs backward  
-- runs optimizer step  
-- uses real variable‑sized samples  
-- uses real collate function  
-- measures true peak memory  
+- uses your real DataLoader
+- runs `generate_bev_labels_bbox2d`
+- runs focal loss
+- runs L1 loss
+- runs backward
+- runs optimizer step
+- uses real variable‑sized samples
+- uses real collate function
+- measures true peak memory
 
 This will give you **accurate, trustworthy batch size limits**.
 
@@ -168,14 +168,14 @@ This will give you **accurate, trustworthy batch size limits**.
 
 # 🔧 If you want, I can produce a drop‑in replacement:
 
-### ✔ `estimate_max_batch_size(model, dataset, optimizer, device)`  
+### ✔ `estimate_max_batch_size(model, dataset, optimizer, device)`
 that:
 
-- builds a DataLoader  
-- samples real batches  
-- runs your full training step  
-- measures peak memory  
-- binary searches for max batch size  
-- prints a full memory breakdown  
+- builds a DataLoader
+- samples real batches
+- runs your full training step
+- measures peak memory
+- binary searches for max batch size
+- prints a full memory breakdown
 
 Just tell me **“rewrite the estimator to match my training loop”**, and I’ll deliver the full implementation.

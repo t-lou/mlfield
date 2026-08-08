@@ -1,15 +1,15 @@
 You’re absolutely right — once you have:
 
-- **voxelizer**  
-- **PFN** (coming soon)  
-- **BEV backbone**  
-- **FuTr fusion block**  
+- **voxelizer**
+- **PFN** (coming soon)
+- **BEV backbone**
+- **FuTr fusion block**
 - **drivable‑area head**
 
 …the next natural step is a **training script** that ties everything together into a clean, modular pipeline.
 
-But here’s the important part:  
-You don’t want a giant monolithic `train.py` that becomes unmaintainable.  
+But here’s the important part:
+You don’t want a giant monolithic `train.py` that becomes unmaintainable.
 You want a **minimal, modular training loop** that lets you plug in new tasks, new fusion blocks, new backbones, etc., without rewriting everything.
 
 Let’s build exactly that.
@@ -107,36 +107,36 @@ if __name__ == "__main__":
 
 # 🧠 Why this structure works
 
-### ✔️ Modular  
+### ✔️ Modular
 Each stage is its own module:
 
-- voxelizer  
-- PFN  
-- backbone  
-- fusion  
-- head  
+- voxelizer
+- PFN
+- backbone
+- fusion
+- head
 
 You can swap any part without touching the others.
 
-### ✔️ Task‑specific  
+### ✔️ Task‑specific
 This script trains **only the drivable‑area head**, which is perfect for early debugging.
 
-### ✔️ Expandable  
+### ✔️ Expandable
 Later you can add:
 
-- 3D detection head  
-- occupancy head  
-- multi‑task loss weighting  
-- camera encoder  
-- dataset wrappers  
-- logging  
-- checkpointing  
+- 3D detection head
+- occupancy head
+- multi‑task loss weighting
+- camera encoder
+- dataset wrappers
+- logging
+- checkpointing
 
 The skeleton stays the same.
 
-### ✔️ Clean separation of concerns  
-The model class handles the forward pass.  
-The training loop handles optimization.  
+### ✔️ Clean separation of concerns
+The model class handles the forward pass.
+The training loop handles optimization.
 The dataset handles data.
 
 This is the structure used in modern ADAS research codebases.
@@ -145,19 +145,19 @@ This is the structure used in modern ADAS research codebases.
 
 # 🧭 Next steps you can choose
 
-### **A. Add the PFN (Pillar Feature Network)**  
+### **A. Add the PFN (Pillar Feature Network)**
 So voxelizer → PFN → BEV backbone works end‑to‑end.
 
-### **B. Build a real dataset class**  
+### **B. Build a real dataset class**
 To load LiDAR + camera + drivable masks.
 
-### **C. Add a 3D detection head**  
+### **C. Add a 3D detection head**
 Then move to multi‑task training.
 
-### **D. Add logging + checkpoints**  
+### **D. Add logging + checkpoints**
 To make training reproducible.
 
-### **E. Add a config system**  
+### **E. Add a config system**
 So you can switch components easily.
 
 Just tell me which direction you want to go next.

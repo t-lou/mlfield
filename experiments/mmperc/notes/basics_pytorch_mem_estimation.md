@@ -1,4 +1,4 @@
-**PyTorch doesn’t provide a single built‑in “automatic model memory estimator,” but it *does* offer tools that let you measure or approximate memory usage for both training and inference.** Several community tools also help automate this. Below is a clear breakdown of what exists and how to build your own estimator.  
+**PyTorch doesn’t provide a single built‑in “automatic model memory estimator,” but it *does* offer tools that let you measure or approximate memory usage for both training and inference.** Several community tools also help automate this. Below is a clear breakdown of what exists and how to build your own estimator.
 
 ---
 
@@ -10,7 +10,7 @@ PyTorch includes a profiler that measures:
 - **Peak memory usage**
 - **Execution time**
 
-This works for both training and inference and is the most accurate way to measure real memory usage.  
+This works for both training and inference and is the most accurate way to measure real memory usage.
 
 
 You can wrap a forward/backward pass in the profiler and extract memory stats.
@@ -24,27 +24,27 @@ PyTorch exposes low‑level CUDA memory APIs:
 - `torch.cuda.memory_reserved()`
 - `torch.cuda.reset_peak_memory_stats()`
 
-These allow you to measure memory usage for arbitrary batch sizes.  
+These allow you to measure memory usage for arbitrary batch sizes.
 
 
 ---
 
 ## 3. **Third‑party tools**
 ### 🔹 **TraceML**
-A CLI tool that automatically traces PyTorch training memory usage.  
+A CLI tool that automatically traces PyTorch training memory usage.
 
 
 ### 🔹 **PyTorch Graph**
-Provides model size estimation, parameter counts, and memory analysis.  
+Provides model size estimation, parameter counts, and memory analysis.
 
 
 ---
 
 # 📏 What PyTorch *does not* support
 PyTorch does **not** provide:
-- A built‑in function like `estimate_memory(model, batch_size)`  
-- A static analyzer that predicts memory usage without running the model  
-- Automatic batch‑size selection based on available GPU memory  
+- A built‑in function like `estimate_memory(model, batch_size)`
+- A static analyzer that predicts memory usage without running the model
+- Automatic batch‑size selection based on available GPU memory
 
 You must either **profile dynamically** or **estimate analytically**.
 
@@ -165,24 +165,24 @@ with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
 print(prof.key_averages().table(sort_by="self_cuda_memory_usage"))
 ```
 
-This gives operator‑level memory usage.  
+This gives operator‑level memory usage.
 
 
 ---
 
 # 🧠 Summary
 
-### ✔ PyTorch does **not** have a built‑in automatic memory estimator  
-### ✔ But it provides **profiling tools** and **CUDA memory APIs**  
-### ✔ You *can* write a script to automatically estimate memory and max batch size  
-### ✔ Third‑party tools like **TraceML** and **PyTorch Graph** help automate this further  
+### ✔ PyTorch does **not** have a built‑in automatic memory estimator
+### ✔ But it provides **profiling tools** and **CUDA memory APIs**
+### ✔ You *can* write a script to automatically estimate memory and max batch size
+### ✔ Third‑party tools like **TraceML** and **PyTorch Graph** help automate this further
 
 ---
 
 If you want, I can help you:
-- Turn this into a reusable CLI tool  
-- Add logging + visualization  
-- Integrate it into your training pipeline  
-- Extend it to multi‑GPU / DDP setups  
+- Turn this into a reusable CLI tool
+- Add logging + visualization
+- Integrate it into your training pipeline
+- Extend it to multi‑GPU / DDP setups
 
 Just tell me what direction you want!
