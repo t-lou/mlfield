@@ -393,3 +393,295 @@ Pick what you want to refine next:
 - Help me build a training loop that supports both
 
 Just choose one and I’ll continue.
+
+
+Here’s a **clean, structured, complete DETR component breakdown** tailored to *your ViT backbone*, with **code + explanations** for every part.
+This gives you a full DETR pipeline you can plug your ViT into.
+
+I’ll cover:
+
+- DETR Backbone (your ViT)
+- DETR Transformer Encoder
+- DETR Transformer Decoder
+- DETR Prediction Heads
+- DETR Hungarian Matcher
+- DETR Loss (SetCriterion)
+- DETR Model wrapper
+
+Every section includes **code + explanation** and **Guided Links** for deeper dives.
+
+---
+
+# 🧩 DETR Components (with explanations)
+
+---
+
+## 1. **Backbone** — your ViT
+DETR expects a backbone that outputs a **feature map** `(B, C, H, W)`.
+
+You already have:
+
+```python
+def forward_detr(self, imgs):
+    assert not self.add_cls_token
+    x = self.forward_full(imgs)  # (B, HW, C)
+    B, N, C = x.shape
+    H_patch = imgs.shape[2] // self._patch_size
+    W_patch = imgs.shape[3] // self._patch_size
+    x = x.reshape(B, H_patch, W_patch, C).permute(0, 3, 1, 2)
+    return x
+```
+
+✔️ Perfect.
+
+DETR will treat this as its backbone.
+
+---
+
+## 2. **Transformer Encoder**
+DETR’s encoder is a stack of self‑attention layers over flattened spatial tokens.
+
+```python
+class DetrEncoder(nn.Module):
+    def __init__(self, embed_dim=384, num_layers=6, num_heads=6):
+        super().__init__()
+        self.layers = nn.ModuleList([
+            nn.TransformerEncoderLayer(
+                d_model=embed_dim,
+                nhead=num_heads,
+                dim_feedforward=embed_dim * 4,
+                dropout=0.1,
+                activation="relu",
+                batch_first=True,
+            )
+            for _ in range(num_layers)
+        ])
+
+    def forward(self, x):
+        for layer in self.layers:
+            x = layer(x)
+        return x
+```
+
+### 🔍 Explanation
+- DETR flattens the feature map into `(B, HW, C)`
+- Encoder performs **global self‑attention** across all patches
+- No CLS token
+- No masking
+- Pure spatial reasoning
+
+---
+
+## 3. **Transformer Decoder**
+DETR uses **object queries** — learnable embeddings that attend to encoder features.
+
+```python
+class DetrDecoder(nn.Module):
+    def __init__(self, embed_dim=384, num_queries=100, num_layers=6, num_heads=6):
+        super().__init__()
+        self.query_embed = nn.Embedding(num_queries, embed_dim)
+
+        self.layers = nn.ModuleList([
+            nn.TransformerDecoderLayer(
+                d_model=embed_dim,
+                nhead=num_heads,
+                dim_feedforward=embed_dim * 4,
+                dropout=0.1,
+                activation="relu",
+                batch_first=True,
+            )
+            for _ in range(num_layers)
+        ])
+
+    def forward(self, memory):
+        B = memory.shape[0]
+        queries = self.query_embed.weight.unsqueeze(0).repeat(B, 1, 1)
+
+        x = queries
+        for layer in self.layers:
+            x = layer(x, memory)
+        return x
+```
+
+### 🔍 Explanation
+- `query_embed` = learnable object queries
+- Decoder attends to encoder output
+- Output shape: `(B, num_queries, C)`
+- Each query predicts one object
+
+---
+
+## 4. **Prediction Heads**
+DETR predicts:
+
+- Class logits
+- Bounding boxes (normalized XYWH)
+
+```python
+class DetrHead(nn.Module):
+    def __init__(self, embed_dim=384, num_classes=91):
+        super().__init__()
+        self.class_head = nn.Linear(embed_dim, num_classes + 1)  # +1 for "no object"
+        self.bbox_head = nn.Sequential(
+            nn.Linear(embed_dim, embed_dim),
+            nn.ReLU(),
+            nn.Linear(embed_dim, 4),
+            nn.Sigmoid(),  # DETR outputs normalized boxes
+        )
+
+    def forward(self, x):
+        return {
+            "pred_logits": self.class_head(x),
+            "pred_boxes": self.bbox_head(x),
+        }
+```
+
+### 🔍 Explanation
+- Class head predicts logits for each query
+- Bbox head predicts normalized XYWH
+- Sigmoid ensures values ∈ [0,1]
+
+---
+
+## 5. **Hungarian Matcher**
+Matches predictions ↔ ground truth using optimal assignment.
+
+```python
+class HungarianMatcher(nn.Module):
+    def __init__(self, class_cost=1, bbox_cost=5, giou_cost=2):
+        super().__init__()
+        self.class_cost = class_cost
+        self.bbox_cost = bbox_cost
+        self.giou_cost = giou_cost
+
+    def forward(self, pred_logits, pred_boxes, targets):
+        # Convert to CPU numpy for scipy
+        bs, num_queries = pred_logits.shape[:2]
+        indices = []
+
+        for b in range(bs):
+            tgt_boxes = targets[b]["boxes"]
+            tgt_labels = targets[b]["labels"]
+
+            out_prob = pred_logits[b].softmax(-1)
+            out_bbox = pred_boxes[b]
+
+            # classification cost
+            class_cost = -out_prob[:, tgt_labels]
+
+            # bbox L1 cost
+            bbox_cost = torch.cdist(out_bbox, tgt_boxes, p=1)
+
+            # giou cost
+            giou_cost = -generalized_box_iou(
+                box_cxcywh_to_xyxy(out_bbox),
+                box_cxcywh_to_xyxy(tgt_boxes),
+            )
+
+            cost = (
+                self.class_cost * class_cost
+                + self.bbox_cost * bbox_cost
+                + self.giou_cost * giou_cost
+            )
+
+            i, j = linear_sum_assignment(cost.cpu())
+            indices.append((torch.as_tensor(i), torch.as_tensor(j)))
+
+        return indices
+```
+
+### 🔍 Explanation
+- Computes cost matrix
+- Uses Hungarian algorithm
+- Finds best prediction ↔ ground truth pairing
+- Essential for DETR’s end‑to‑end training
+
+---
+
+## 6. **SetCriterion (Loss)**
+DETR uses:
+
+- Cross‑entropy for class
+- L1 loss for boxes
+- GIoU loss for boxes
+- Auxiliary losses for intermediate decoder layers
+
+```python
+class SetCriterion(nn.Module):
+    def __init__(self, num_classes, matcher):
+        super().__init__()
+        self.num_classes = num_classes
+        self.matcher = matcher
+        self.ce_loss = nn.CrossEntropyLoss()
+        self.l1_loss = nn.L1Loss()
+        self.giou_loss = generalized_box_iou_loss
+
+    def forward(self, outputs, targets):
+        pred_logits = outputs["pred_logits"]
+        pred_boxes = outputs["pred_boxes"]
+
+        indices = self.matcher(pred_logits, pred_boxes, targets)
+
+        loss_ce = 0
+        loss_bbox = 0
+        loss_giou = 0
+
+        for b, (idx_pred, idx_tgt) in enumerate(indices):
+            tgt = targets[b]
+
+            loss_ce += self.ce_loss(pred_logits[b][idx_pred], tgt["labels"][idx_tgt])
+            loss_bbox += self.l1_loss(pred_boxes[b][idx_pred], tgt["boxes"][idx_tgt])
+            loss_giou += self.giou_loss(pred_boxes[b][idx_pred], tgt["boxes"][idx_tgt])
+
+        return {
+            "loss_ce": loss_ce,
+            "loss_bbox": loss_bbox,
+            "loss_giou": loss_giou,
+        }
+```
+
+### 🔍 Explanation
+This is DETR’s core loss function.
+
+---
+
+## 7. **Full DETR Model Wrapper**
+
+```python
+class DETR(nn.Module):
+    def __init__(self, backbone, encoder, decoder, head):
+        super().__init__()
+        self.backbone = backbone
+        self.encoder = encoder
+        self.decoder = decoder
+        self.head = head
+
+    def forward(self, imgs):
+        feats = self.backbone.forward_detr(imgs)  # (B, C, H, W)
+        B, C, H, W = feats.shape
+        feats = feats.flatten(2).transpose(1, 2)  # (B, HW, C)
+
+        memory = self.encoder(feats)
+        hs = self.decoder(memory)
+        out = self.head(hs)
+        return out
+```
+
+### 🔍 Explanation
+This ties everything together:
+
+1. ViT backbone → feature map
+2. Flatten → encoder
+3. Decoder → object queries
+4. Head → predictions
+
+---
+
+# 🧭 Next steps
+Choose what you want to build next:
+
+- Integrate my ViT into DETR fully
+- Give me a full training loop for DETR + my ViT
+- Explain DETR’s matching and loss deeply
+
+Pick one and I’ll continue.
