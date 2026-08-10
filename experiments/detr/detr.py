@@ -7,7 +7,7 @@ import torch.nn as nn
 from scipy.optimize import linear_sum_assignment
 from torch.utils.data import DataLoader
 
-from components.dataset.coco_like_detection_dataset import COCOLikeDetectionDataset
+from components.dataset.coco_like_detection_dataset import COCOLikeDetectionDataset, Mode
 from components.utils.device import get_device, resolve_num_workers
 from components.utils.logger import configure_logger, logger
 from components.vit.teacher_models import create_teacher_model
@@ -175,7 +175,7 @@ class HungarianMatcher(nn.Module):
 
             cost = self.class_cost * class_cost + self.bbox_cost * bbox_cost + self.giou_cost * giou_cost
 
-            i, j = linear_sum_assignment(cost.cpu())
+            i, j = linear_sum_assignment(cost.detach().cpu())
             indices.append((torch.as_tensor(i), torch.as_tensor(j)))
 
         return indices
@@ -374,8 +374,8 @@ def train(
             logger.warning(f"Failed to load {teacher_model_name} teacher, training without distillation")
 
     resolved_num_workers = resolve_num_workers(num_workers)
-    train_dataset = COCOLikeDetectionDataset(data_root, split="train", image_size=image_size)
-    val_dataset = COCOLikeDetectionDataset(data_root, split="val", image_size=image_size)
+    train_dataset = COCOLikeDetectionDataset(data_root, split="train", image_size=image_size, mode=Mode.DETR)
+    val_dataset = COCOLikeDetectionDataset(data_root, split="val", image_size=image_size, mode=Mode.DETR)
     train_loader_kwargs = {
         "batch_size": batch_size,
         "shuffle": True,

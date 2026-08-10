@@ -62,9 +62,8 @@ class COCOLikeDetectionDataset(Dataset):
         img = Image.open(img_path).convert("RGB")
         orig_w, orig_h = img.size
 
-        # Resize image to the target square size used by the model.
-        if self.mode == Mode.YOLO:
-            img = img.resize((self.image_size, self.image_size), Image.BILINEAR)
+        # TODO double check how to handle DeTr resizing, and will need to update the anno
+        img = img.resize((self.image_size, self.image_size), Image.BILINEAR)
 
         # Get annotations
         ann_ids = self.coco.getAnnIds(imgIds=img_id)
