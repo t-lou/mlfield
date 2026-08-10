@@ -67,7 +67,7 @@ class DetrDecoder(nn.Module):
 
 
 class DetrHead(nn.Module):
-    def __init__(self, embed_dim=384, num_classes=91):
+    def __init__(self, num_classes, embed_dim=384):
         super().__init__()
         self.class_head = nn.Linear(embed_dim, num_classes + 1)  # +1 for "no object"
         self.bbox_head = nn.Sequential(
@@ -352,7 +352,7 @@ def train(
     torch.manual_seed(seed)
 
     image_size = 640
-    num_classes = 91
+    num_classes = 80
     weight_decay = 1e-4
     device = get_device()
 
