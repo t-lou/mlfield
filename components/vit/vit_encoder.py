@@ -22,6 +22,7 @@ class VitEncoder(nn.Module):
         proj_drop=0.0,
         drop_path_rate=0.1,
         qkv_bias=False,
+        add_cls_token=True,
     ):
         super().__init__()
 
@@ -62,6 +63,8 @@ class VitEncoder(nn.Module):
 
         self.norm = nn.LayerNorm(embed_dim)
 
+        self.add_cls_token = add_cls_token
+
     def interpolate_pos_encoding(self, H, W):
         N = self.pos_embed.shape[1] - 1  # exclude CLS
         old_size = int(N**0.5)
@@ -77,7 +80,7 @@ class VitEncoder(nn.Module):
 
         return torch.cat([cls_pos, spatial_pos], dim=1)
 
-    def _tokenize(self, imgs, add_cls_token=True):
+    def _tokenize(self, imgs):
         B = imgs.shape[0]
 
         # Patch embedding
@@ -90,7 +93,7 @@ class VitEncoder(nn.Module):
         # Add positional embeddings
         pos = self.interpolate_pos_encoding(H_patch, W_patch)
 
-        if add_cls_token:
+        if self.add_cls_token:
             cls_ = self.cls_token.repeat(B, 1, 1)  # faster than expand
             x = torch.cat((cls_, x), dim=1)
             x = x + pos
@@ -100,7 +103,7 @@ class VitEncoder(nn.Module):
 
         return x
 
-    def forward_full(self, imgs, patch_keep_mask=None, add_cls_token=True, return_padding_mask=False):
+    def forward_full(self, imgs, patch_keep_mask=None, return_padding_mask=False):
         """
         Encode image tokens and optionally keep only selected patch tokens.
 
@@ -108,20 +111,19 @@ class VitEncoder(nn.Module):
             imgs: Input images, shape (B, 3, H, W)
             patch_keep_mask: Optional boolean mask of shape (B, num_patches),
                 where True means keep this patch token.
-            add_cls_token: If True, prepend CLS token before transformer blocks.
             return_padding_mask: If True, return the padding mask for selected tokens.
 
         Returns:
             Token features after transformer + norm, optionally paired with padding mask.
         """
-        x = self._tokenize(imgs, add_cls_token=add_cls_token)
+        x = self._tokenize(imgs)
 
         padding_mask = None
         if patch_keep_mask is not None:
             if patch_keep_mask.ndim != 2:
                 raise ValueError("patch_keep_mask must have shape (B, num_patches)")
 
-            if add_cls_token:
+            if self.add_cls_token:
                 cls_keep = torch.ones(
                     (patch_keep_mask.shape[0], 1),
                     dtype=torch.bool,
@@ -153,7 +155,7 @@ class VitEncoder(nn.Module):
             return x, padding_mask
         return x
 
-    def forward(self, imgs, patch_keep_mask=None, add_cls_token=True):
+    def forward(self, imgs, patch_keep_mask=None):
         """
         Forward pass for the ViT encoder.
 
@@ -161,12 +163,32 @@ class VitEncoder(nn.Module):
             imgs: Input images, shape (B, 3, H, W)
             patch_keep_mask: Optional boolean mask of shape (B, num_patches),
                 where True means keep this patch token.
-            add_cls_token: If True, prepend CLS token before transformer blocks.
 
         Returns:
             CLS token output.
         """
-        return self.forward_full(imgs, patch_keep_mask, add_cls_token)[:, 0]  # CLS token output, shape: (B, embed_dim)
+        return self.forward_full(imgs, patch_keep_mask)[:, 0]  # CLS token output, shape: (B, embed_dim)
+
+    def forward_detr(self, imgs):
+        """
+        Forward pass for DETR-style output.
+
+        DETR uses the full set of patch tokens (no CLS token) and returns a feature map suitable for object detection.
+
+        Args:
+            imgs: Input images, shape (B, 3, H, W)
+
+        Returns:
+            Transformed features, shape (B, C, H, W).
+        """
+        assert not self.add_cls_token
+
+        x = self.forward_full(imgs)  # (B, HW, C)
+        B, N, C = x.shape
+        H_patch = imgs.shape[2] // self._patch_size
+        W_patch = imgs.shape[3] // self._patch_size
+        x = x.reshape(B, H_patch, W_patch, C).permute(0, 3, 1, 2)  # (B, C, H, W)
+        return x
 
 
 def _smoke_test():
