@@ -19,13 +19,19 @@ class COCOLikeDetectionDataset(Dataset):
     Handles loading images and annotations from COCO format.
     """
 
-    def __init__(self, coco_root: str, split: str = "train", image_size: int = 640, mode: Mode = Mode.YOLO):
+    def __init__(self, coco_root: str, split: str = "train", image_size: int | None = 640, mode: Mode = Mode.YOLO):
         """
         Args:
             coco_root: Root directory containing train2017, val2017, annotations
             split: "train" or "val"
-            image_size: Target image size for model input
+            image_size: Target image size for model input. Required for YOLO mode.
+                In DETR mode, pass None to keep each image at its original size
+                (canonical DETR-style), or an int to resize to a fixed square
+                (simplified, YOLO-like) — boxes/areas are scaled to match either way.
         """
+        if mode == Mode.YOLO:
+            assert image_size is not None, "In YOLO mode the image size is necessary."
+
         self.image_size = image_size
         self.split = split
         self.mode = mode
@@ -62,8 +68,10 @@ class COCOLikeDetectionDataset(Dataset):
         img = Image.open(img_path).convert("RGB")
         orig_w, orig_h = img.size
 
-        # TODO double check how to handle DeTr resizing, and will need to update the anno
-        img = img.resize((self.image_size, self.image_size), Image.BILINEAR)
+        # Resize to a fixed square when image_size is set; in DETR mode with
+        # image_size=None, keep the original size and leave annotations untouched.
+        if self.image_size is not None:
+            img = img.resize((self.image_size, self.image_size), Image.BILINEAR)
 
         # Get annotations
         ann_ids = self.coco.getAnnIds(imgIds=img_id)
@@ -72,7 +80,7 @@ class COCOLikeDetectionDataset(Dataset):
         if self.mode == Mode.YOLO:
             targets = self._format_yolo(anns, orig_w, orig_h)
         else:
-            targets = self._format_detr(anns, img_id)
+            targets = self._format_detr(anns, img_id, orig_w, orig_h)
 
         img = self.transform(img)
         return img, targets, img_id
@@ -114,15 +122,28 @@ class COCOLikeDetectionDataset(Dataset):
 
         return targets
 
-    def _format_detr(self, anns, img_id):
-        """Return DETR-style absolute XYWH + metadata."""
+    def _format_detr(self, anns, img_id, orig_w, orig_h):
+        """Return DETR-style absolute XYWH + metadata.
+
+        If self.image_size is None, boxes/areas are left in the original image's
+        pixel coordinates (canonical DETR-style, no resizing). If self.image_size
+        is set, boxes/areas are scaled to match the resized (image_size, image_size)
+        image returned by __getitem__.
+        """
         boxes, labels, areas, iscrowd = [], [], [], []
+
+        if self.image_size is not None:
+            scale_x = self.image_size / max(orig_w, 1)
+            scale_y = self.image_size / max(orig_h, 1)
+        else:
+            scale_x = scale_y = 1.0
 
         for ann in anns:
             x, y, w, h = ann["bbox"]
+            x, y, w, h = x * scale_x, y * scale_y, w * scale_x, h * scale_y
             boxes.append([x, y, w, h])
             labels.append(self.category_id_to_index[ann["category_id"]])
-            areas.append(ann["area"])
+            areas.append(ann["area"] * scale_x * scale_y)
             iscrowd.append(ann.get("iscrowd", 0))
 
         return {

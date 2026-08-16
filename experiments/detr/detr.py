@@ -138,7 +138,7 @@ def generalized_box_iou_loss(pred_boxes, tgt_boxes):
     """
     GIoU loss = 1 - GIoU
     """
-    giou = generalized_box_iou(pred_boxes, tgt_boxes)
+    giou = generalized_box_iou(box_cxcywh_to_xyxy(pred_boxes), box_cxcywh_to_xyxy(tgt_boxes))
     return 1.0 - giou.diag().mean()
 
 
@@ -157,6 +157,10 @@ class HungarianMatcher(nn.Module):
         for b in range(bs):
             tgt_boxes = targets[b]["boxes"]
             tgt_labels = targets[b]["labels"]
+
+            if tgt_boxes.numel() == 0:
+                indices.append((torch.as_tensor([], dtype=torch.int64), torch.as_tensor([], dtype=torch.int64)))
+                continue
 
             out_prob = pred_logits[b].softmax(-1)
             out_bbox = pred_boxes[b]
@@ -253,9 +257,9 @@ class DeTr(nn.Module):
     def forward(self, imgs):
         feats = self.backbone.forward_detr(imgs)  # (B, C, H, W)
         B, C, H, W = feats.shape
-        feats = feats.flatten(2).transpose(1, 2)  # (B, HW, C)
+        feats_seq = feats.flatten(2).transpose(1, 2)  # (B, HW, C)
 
-        memory = self.encoder(feats)
+        memory = self.encoder(feats_seq)
         hs = self.decoder(memory)
         out = self.head(hs)
 
@@ -273,8 +277,25 @@ def _collate_coco_detection(batch):
     return torch.stack(images, dim=0), list(targets), list(image_ids)
 
 
+def _abs_xywh_to_norm_cxcywh(boxes: torch.Tensor, image_size: int) -> torch.Tensor:
+    """Convert absolute pixel (x, y, w, h) boxes (top-left) to normalized (cx, cy, w, h) in [0, 1].
+
+    COCOLikeDetectionDataset's DETR mode returns absolute pixel-space boxes scaled to
+    image_size (when image_size is set); DetrHead predicts normalized center-based boxes,
+    so targets need this conversion before matching/loss. reshape(-1, 4) also normalizes
+    the shape of an empty (0,) boxes tensor (no annotations) to (0, 4).
+    """
+    boxes = boxes.reshape(-1, 4)
+    x, y, w, h = boxes.unbind(-1)
+    cx = (x + w / 2) / image_size
+    cy = (y + h / 2) / image_size
+    w_n = w / image_size
+    h_n = h / image_size
+    return torch.stack([cx, cy, w_n, h_n], dim=-1)
+
+
 @torch.no_grad()
-def _evaluate_validation_proxy(model, val_loader, criterion, device, distill_weight):
+def _evaluate_validation_proxy(model, val_loader, criterion, device, distill_weight, image_size):
     model.eval()
     running_loss = 0.0
     running_detection_loss = 0.0
@@ -284,7 +305,13 @@ def _evaluate_validation_proxy(model, val_loader, criterion, device, distill_wei
 
     for images, targets, _ in val_loader:
         images = images.to(device)
-        targets = [{"boxes": t["boxes"].to(device), "labels": t["labels"].to(device)} for t in targets]
+        targets = [
+            {
+                "boxes": _abs_xywh_to_norm_cxcywh(t["boxes"].to(device), image_size),
+                "labels": t["labels"].to(device),
+            }
+            for t in targets
+        ]
 
         predictions, distill_loss = model(images)
         detection_loss = criterion(predictions, targets)["loss"]
@@ -458,7 +485,13 @@ def train(
 
         for images, targets, _ in train_loader:
             images = images.to(device)
-            targets = [{"boxes": t["boxes"].to(device), "labels": t["labels"].to(device)} for t in targets]
+            targets = [
+                {
+                    "boxes": _abs_xywh_to_norm_cxcywh(t["boxes"].to(device), image_size),
+                    "labels": t["labels"].to(device),
+                }
+                for t in targets
+            ]
 
             optimizer.zero_grad(set_to_none=True)
 
@@ -477,7 +510,7 @@ def train(
         train_detection_loss = running_detection_loss / max(len(train_loader), 1)
         train_distill_loss = running_distill_loss / max(len(train_loader), 1)
         val_loss, val_match_rate, val_detection_loss, val_distill_loss = _evaluate_validation_proxy(
-            model, val_loader, device, distill_weight
+            model, val_loader, criterion, device, distill_weight, image_size
         )
 
         logger.info(
