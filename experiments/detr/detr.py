@@ -179,7 +179,7 @@ class HungarianMatcher(nn.Module):
 
             cost = self.class_cost * class_cost + self.bbox_cost * bbox_cost + self.giou_cost * giou_cost
 
-            i, j = linear_sum_assignment(cost.detach().cpu())
+            i, j = linear_sum_assignment(cost.detach().float().cpu())
             indices.append((torch.as_tensor(i), torch.as_tensor(j)))
 
         return indices
@@ -295,7 +295,9 @@ def _abs_xywh_to_norm_cxcywh(boxes: torch.Tensor, image_size: int) -> torch.Tens
 
 
 @torch.no_grad()
-def _evaluate_validation_proxy(model, val_loader, criterion, device, distill_weight, image_size):
+def _evaluate_validation_proxy(
+    model, val_loader, criterion, device, distill_weight, image_size, amp_enabled, amp_dtype
+):
     model.eval()
     running_loss = 0.0
     running_detection_loss = 0.0
@@ -313,7 +315,10 @@ def _evaluate_validation_proxy(model, val_loader, criterion, device, distill_wei
             for t in targets
         ]
 
-        predictions, distill_loss = model(images)
+        with torch.amp.autocast(device_type=device.type, dtype=amp_dtype, enabled=amp_enabled):
+            predictions, distill_loss = model(images)
+        predictions = {k: v.float() for k, v in predictions.items()}
+        distill_loss = distill_loss.float()
         detection_loss = criterion(predictions, targets)["loss"]
         loss = detection_loss + distill_weight * distill_loss
 
@@ -349,6 +354,7 @@ def train(
     distill_weight: float = 0.1,
     num_workers: Optional[int] = None,
     seed: int = 42,
+    use_amp: bool = True,
 ):
     """
     Train DeTr with optional knowledge distillation (not implemented)
@@ -374,6 +380,8 @@ def train(
         seed: Random seed for model init and data shuffling. Keep this fixed across
             teacher_model_name variants so the only difference between runs is the
             teacher, not random init/shuffling noise.
+        use_amp: Enable automatic mixed precision. Only takes effect on CUDA; on
+            CPU/MPS training runs in full precision regardless.
     """
 
     torch.manual_seed(seed)
@@ -382,6 +390,15 @@ def train(
     num_classes = 80
     weight_decay = 1e-4
     device = get_device()
+
+    amp_enabled = use_amp and device.type == "cuda"
+    amp_dtype = torch.bfloat16 if amp_enabled and torch.cuda.is_bf16_supported() else torch.float16
+    # bf16 has fp32's exponent range so it doesn't need loss scaling; fp16 does.
+    scaler = torch.amp.GradScaler("cuda", enabled=amp_enabled and amp_dtype == torch.float16)
+    if use_amp and not amp_enabled:
+        logger.info(f"AMP requested but device is {device.type}; training in full precision")
+    elif amp_enabled:
+        logger.info(f"AMP enabled ({amp_dtype})")
 
     Path(save_dir).mkdir(parents=True, exist_ok=True)
 
@@ -467,6 +484,8 @@ def train(
             optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
         else:
             logger.warning("Checkpoint has no optimizer_state_dict - resuming with fresh optimizer state")
+        if "scaler_state_dict" in checkpoint:
+            scaler.load_state_dict(checkpoint["scaler_state_dict"])
         logger.info(f"Resuming training from epoch {start_epoch} using checkpoint: {checkpoint_path}")
 
     # last_epoch=-1 means "start of schedule"; on resume we advance it to start_epoch - 1
@@ -495,12 +514,18 @@ def train(
 
             optimizer.zero_grad(set_to_none=True)
 
-            predictions, distill_loss = model(images)
-            detection_loss = criterion(predictions, targets)["loss"]
-            loss = detection_loss + distill_weight * distill_loss
+            with torch.amp.autocast(device_type=device.type, dtype=amp_dtype, enabled=amp_enabled):
+                predictions, distill_loss = model(images)
 
-            loss.backward()
-            optimizer.step()
+            # Matching (Hungarian assignment) and GIoU are precision-sensitive, so run
+            # the loss computation in fp32 even though the model forward ran under AMP.
+            predictions_fp32 = {k: v.float() for k, v in predictions.items()}
+            detection_loss = criterion(predictions_fp32, targets)["loss"]
+            loss = detection_loss + distill_weight * distill_loss.float()
+
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
             running_loss += float(loss.item())
             running_detection_loss += float(detection_loss.item())
             running_distill_loss += float(distill_loss.item())
@@ -510,7 +535,7 @@ def train(
         train_detection_loss = running_detection_loss / max(len(train_loader), 1)
         train_distill_loss = running_distill_loss / max(len(train_loader), 1)
         val_loss, val_match_rate, val_detection_loss, val_distill_loss = _evaluate_validation_proxy(
-            model, val_loader, criterion, device, distill_weight, image_size
+            model, val_loader, criterion, device, distill_weight, image_size, amp_enabled, amp_dtype
         )
 
         logger.info(
@@ -526,6 +551,7 @@ def train(
                 "epoch": epoch + 1,
                 "model_state_dict": model.state_dict(),
                 "optimizer_state_dict": optimizer.state_dict(),
+                "scaler_state_dict": scaler.state_dict(),
                 "train_loss": train_loss,
                 "val_loss": val_loss,
             },
