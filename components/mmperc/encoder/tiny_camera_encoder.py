@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import numpy as np
 import torch
 from torch import Tensor, nn
 
@@ -51,12 +52,21 @@ class TinyCameraEncoder(nn.Module):
         super().__init__()
 
         self.out_channels = params.bev_params.bev_channels
+        self.image_scale = params.image_scale
         calibration_path = Path(params.path_calibration)
         self.camera_calibration = load_sensor_calibration(
             calibration_path,
             sensor_name=sensor_name,
             sensor_type="camera",
         )
+
+        K = self.camera_calibration.intrinsic.astype(np.float32)
+        self.fx = float(K[0, 0] * self.image_scale)
+        self.fy = float(K[1, 1] * self.image_scale)
+        self.cx = float(K[0, 2] * self.image_scale)
+        self.cy = float(K[1, 2] * self.image_scale)
+        self._camera_geometry_cache: dict[tuple[int, int, int, int], Tensor] = {}
+
         logger.info(f"TinyCameraEncoder: camera_calibration={self.camera_calibration}")
 
         # Stage 1: 1/2 resolution
@@ -140,18 +150,22 @@ class TinyCameraEncoder(nn.Module):
     ) -> Tensor:
         H2, W2 = feat_hw
         H_img, W_img = img_hw
+        cache_key = (H2, W2, H_img, W_img)
+        if cache_key in self._camera_geometry_cache:
+            cached = self._camera_geometry_cache[cache_key]
+            if cached.device == device and cached.dtype == dtype:
+                return cached
+            return cached.to(device=device, dtype=dtype)
 
         y = torch.linspace(0.5 * H_img / H2, H_img - 0.5 * H_img / H2, H2, device=device, dtype=dtype)
         x = torch.linspace(0.5 * W_img / W2, W_img - 0.5 * W_img / W2, W2, device=device, dtype=dtype)
         grid_y, grid_x = torch.meshgrid(y, x, indexing="ij")
 
-        K = torch.from_numpy(self.camera_calibration.intrinsic).to(device=device, dtype=dtype)
-        fx, fy = K[0, 0], K[1, 1]
-        cx, cy = K[0, 2], K[1, 2]
-        u = (grid_x - cx) / fx
-        v = (grid_y - cy) / fy
+        u = (grid_x - self.cx) / self.fx
+        v = (grid_y - self.cy) / self.fy
 
         geom = torch.stack([u, v], dim=0).unsqueeze(0)
+        self._camera_geometry_cache[cache_key] = geom.detach().to(device=device, dtype=dtype)
         return geom
 
 
