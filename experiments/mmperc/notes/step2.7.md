@@ -12,7 +12,7 @@ The killer line is:
 ```python
 attn_out, _ = self.cross_attn(
     query=bev_tokens,  # (B, HW, C)
-    key=camera,        # (B, N_cam, C)
+    key=camera,  # (B, N_cam, C)
     value=camera,
 )
 ```
@@ -128,7 +128,7 @@ Split BEV into patches (e.g., 20×20 windows) and run attention per window.
 Pool BEV to a small set of tokens:
 
 ```python
-bev_tokens = bev.mean(dim=[2,3], keepdim=True)  # (B, 1, C)
+bev_tokens = bev.mean(dim=[2, 3], keepdim=True)  # (B, 1, C)
 ```
 
 Then fuse.

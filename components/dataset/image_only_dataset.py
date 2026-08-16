@@ -8,9 +8,8 @@ from pathlib import Path
 from typing import Callable, Optional
 
 import torch
-from PIL import Image
-
 from components.utils.logger import logger
+from PIL import Image
 
 # Supported image file extensions for the dataset
 EXTS = (".jpg", ".jpeg", ".png")

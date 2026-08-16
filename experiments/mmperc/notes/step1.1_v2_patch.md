@@ -41,9 +41,10 @@ A minimal, torch‑native class:
 from dataclasses import dataclass
 import torch
 
+
 @dataclass
 class TorchPointCloud:
-    points: torch.Tensor   # shape (N, 5): [x, y, z, intensity, timestamp]
+    points: torch.Tensor  # shape (N, 5): [x, y, z, intensity, timestamp]
 
     @classmethod
     def from_xyzit(cls, arr, device="cpu"):

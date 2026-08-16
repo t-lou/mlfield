@@ -246,8 +246,8 @@ Given a point \((x, y)\):
 So indexing is:
 
 ```python
-h = (y - y_min) / res_y   # row index
-w = (x - x_min) / res_x   # column index
+h = (y - y_min) / res_y  # row index
+w = (x - x_min) / res_x  # column index
 ```
 
 Then you write into the BEV grid as:

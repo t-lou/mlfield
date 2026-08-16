@@ -6,9 +6,6 @@ from pathlib import Path
 
 import torch
 import torch.nn.functional as F
-from torch.utils.data import DataLoader
-from torchvision import transforms
-
 from components.dataset.image_only_dataset import ImageOnlyDataset
 from components.dataset.mask_prefetch import collate_fn_with_masks
 from components.utils.config import load_yaml
@@ -16,6 +13,8 @@ from components.utils.fps_logger import FpsLogger
 from components.utils.logger import configure_logger, logger
 from components.vit.i_jepa import I_JEPA
 from components.vit.i_jepa_defs import IJEPAConfig
+from torch.utils.data import DataLoader
+from torchvision import transforms
 
 
 def _build_transform(image_size: int):

@@ -31,12 +31,11 @@ from typing import Optional
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.utils.data import DataLoader
-
 from components.dataset.coco_like_detection_dataset import COCOLikeDetectionDataset
 from components.utils.device import get_device, resolve_num_workers
 from components.utils.logger import configure_logger, logger
 from components.vit.teacher_models import TeacherModel, create_teacher_model
+from torch.utils.data import DataLoader
 
 
 @dataclass(frozen=True)

@@ -682,9 +682,9 @@ input_details = interpreter.get_input_details()
 output_details = interpreter.get_output_details()
 
 for image in coco_images:
-    interpreter.set_tensor(input_details[0]['index'], preprocessed_image)
+    interpreter.set_tensor(input_details[0]["index"], preprocessed_image)
     interpreter.invoke()
-    output = interpreter.get_tensor(output_details[0]['index'])
+    output = interpreter.get_tensor(output_details[0]["index"])
 ```
 
 You can wrap this in a COCO evaluation pipeline.

@@ -507,8 +507,8 @@ with torch.no_grad():
 
 ### **Student forward**
 ```python
-S_feat = yolo_backbone(img)   # [B, C', H', W']
-S_feat_proj = proj(S_feat)    # match teacher dims
+S_feat = yolo_backbone(img)  # [B, C', H', W']
+S_feat_proj = proj(S_feat)  # match teacher dims
 ```
 
 ### **Feature distillation loss**

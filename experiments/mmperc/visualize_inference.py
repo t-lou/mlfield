@@ -107,12 +107,23 @@ def visualize_3d(data: dict, score_thresh: float) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Visualize a single inference .npz file in 2D or 3D")
     parser.add_argument("npz_path", type=Path, help="Path to the .npz file to visualize")
-    parser.add_argument("--mode", choices=["2d", "3d"], default="3d", help="Visualization mode (default: 3d)")
     parser.add_argument(
-        "--score-thresh", type=float, default=0.3, help="Score threshold to filter predicted boxes (default: 0.3)"
+        "--mode",
+        choices=["2d", "3d"],
+        default="3d",
+        help="Visualization mode (default: 3d)",
     )
     parser.add_argument(
-        "--output", type=Path, default=None, help="(2D only) save the figure here instead of showing it interactively"
+        "--score-thresh",
+        type=float,
+        default=0.3,
+        help="Score threshold to filter predicted boxes (default: 0.3)",
+    )
+    parser.add_argument(
+        "--output",
+        type=Path,
+        default=None,
+        help="(2D only) save the figure here instead of showing it interactively",
     )
     args = parser.parse_args()
 

@@ -167,7 +167,7 @@ Your code converts to:
 
 DETR expects:
 ```python
-[x, y, w, h]   # absolute pixel coordinates
+[x, y, w, h]  # absolute pixel coordinates
 ```
 
 ### 3. **DETR expects boxes normalized *later*, not in the dataset**
@@ -179,13 +179,7 @@ Your dataset returns a tensor of shape `(N, 5)`.
 DETR expects something like:
 
 ```python
-{
-    "boxes": Tensor[N, 4],
-    "labels": Tensor[N],
-    "image_id": Tensor[1],
-    "area": Tensor[N],
-    "iscrowd": Tensor[N]
-}
+{"boxes": Tensor[N, 4], "labels": Tensor[N], "image_id": Tensor[1], "area": Tensor[N], "iscrowd": Tensor[N]}
 ```
 
 ---
@@ -199,7 +193,7 @@ target = {
     "labels": torch.tensor([class_id, ...], dtype=torch.int64),
     "image_id": torch.tensor([img_id]),
     "area": torch.tensor([area, ...]),
-    "iscrowd": torch.tensor([iscrowd, ...])
+    "iscrowd": torch.tensor([iscrowd, ...]),
 }
 ```
 
@@ -234,7 +228,7 @@ target = {
     "labels": torch.tensor(labels, dtype=torch.int64),
     "image_id": torch.tensor([img_id]),
     "area": torch.tensor(areas, dtype=torch.float32),
-    "iscrowd": torch.tensor(iscrowd, dtype=torch.int64)
+    "iscrowd": torch.tensor(iscrowd, dtype=torch.int64),
 }
 ```
 
@@ -445,17 +439,19 @@ DETR’s encoder is a stack of self‑attention layers over flattened spatial to
 class DetrEncoder(nn.Module):
     def __init__(self, embed_dim=384, num_layers=6, num_heads=6):
         super().__init__()
-        self.layers = nn.ModuleList([
-            nn.TransformerEncoderLayer(
-                d_model=embed_dim,
-                nhead=num_heads,
-                dim_feedforward=embed_dim * 4,
-                dropout=0.1,
-                activation="relu",
-                batch_first=True,
-            )
-            for _ in range(num_layers)
-        ])
+        self.layers = nn.ModuleList(
+            [
+                nn.TransformerEncoderLayer(
+                    d_model=embed_dim,
+                    nhead=num_heads,
+                    dim_feedforward=embed_dim * 4,
+                    dropout=0.1,
+                    activation="relu",
+                    batch_first=True,
+                )
+                for _ in range(num_layers)
+            ]
+        )
 
     def forward(self, x):
         for layer in self.layers:
@@ -481,17 +477,19 @@ class DetrDecoder(nn.Module):
         super().__init__()
         self.query_embed = nn.Embedding(num_queries, embed_dim)
 
-        self.layers = nn.ModuleList([
-            nn.TransformerDecoderLayer(
-                d_model=embed_dim,
-                nhead=num_heads,
-                dim_feedforward=embed_dim * 4,
-                dropout=0.1,
-                activation="relu",
-                batch_first=True,
-            )
-            for _ in range(num_layers)
-        ])
+        self.layers = nn.ModuleList(
+            [
+                nn.TransformerDecoderLayer(
+                    d_model=embed_dim,
+                    nhead=num_heads,
+                    dim_feedforward=embed_dim * 4,
+                    dropout=0.1,
+                    activation="relu",
+                    batch_first=True,
+                )
+                for _ in range(num_layers)
+            ]
+        )
 
     def forward(self, memory):
         B = memory.shape[0]
@@ -578,11 +576,7 @@ class HungarianMatcher(nn.Module):
                 box_cxcywh_to_xyxy(tgt_boxes),
             )
 
-            cost = (
-                self.class_cost * class_cost
-                + self.bbox_cost * bbox_cost
-                + self.giou_cost * giou_cost
-            )
+            cost = self.class_cost * class_cost + self.bbox_cost * bbox_cost + self.giou_cost * giou_cost
 
             i, j = linear_sum_assignment(cost.cpu())
             indices.append((torch.as_tensor(i), torch.as_tensor(j)))

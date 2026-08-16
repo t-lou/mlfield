@@ -207,9 +207,9 @@ You let **PyTorch AMP (autocast)** handle it.
 scaler = torch.cuda.amp.GradScaler()
 
 for batch in loader:
-    points = batch["points"].half()      # optional
-    images = batch["images"].half()      # optional
-    gt_boxes = batch["gt_boxes"].float() # keep FP32 for loss
+    points = batch["points"].half()  # optional
+    images = batch["images"].half()  # optional
+    gt_boxes = batch["gt_boxes"].float()  # keep FP32 for loss
 
     with torch.cuda.amp.autocast():
         out = model(points, images)

@@ -18,12 +18,11 @@ from pathlib import Path
 
 import torch
 import torch.nn as nn
-from PIL import Image
-from torchvision import transforms
-
 from components.utils.device import get_device
 from components.vit.i_jepa import I_JEPA
 from components.vit.i_jepa_defs import IJEPAConfig
+from PIL import Image
+from torchvision import transforms
 
 # ---------------------------------------------------------------------------
 # Downstream wrapper

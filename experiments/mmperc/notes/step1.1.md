@@ -22,9 +22,10 @@ A clean, minimal structure:
 from dataclasses import dataclass
 import numpy as np
 
+
 @dataclass
 class PointCloud:
-    xyz: np.ndarray      # shape (N, 3)
+    xyz: np.ndarray  # shape (N, 3)
     intensity: np.ndarray  # shape (N,)
     timestamp: np.ndarray  # shape (N,)
 
@@ -36,7 +37,7 @@ class PointCloud:
         return cls(
             xyz=arr[:, :3].astype(np.float32),
             intensity=arr[:, 3].astype(np.float32),
-            timestamp=arr[:, 4].astype(np.float32)
+            timestamp=arr[:, 4].astype(np.float32),
         )
 ```
 
@@ -68,14 +69,17 @@ This is the standard setup for lightweight BEV encoders.
 ```python
 import numpy as np
 
+
 class PillarVoxelizer:
-    def __init__(self,
-                 x_range=(-50, 50),
-                 y_range=(-50, 50),
-                 z_range=(-5, 3),
-                 voxel_size=(0.32, 0.32, 8.0),  # Z collapsed
-                 max_points_per_pillar=20,
-                 max_pillars=12000):
+    def __init__(
+        self,
+        x_range=(-50, 50),
+        y_range=(-50, 50),
+        z_range=(-5, 3),
+        voxel_size=(0.32, 0.32, 8.0),  # Z collapsed
+        max_points_per_pillar=20,
+        max_pillars=12000,
+    ):
 
         self.x_min, self.x_max = x_range
         self.y_min, self.y_max = y_range
@@ -95,9 +99,12 @@ class PillarVoxelizer:
 
         # filter by range
         mask = (
-            (xyz[:, 0] >= self.x_min) & (xyz[:, 0] < self.x_max) &
-            (xyz[:, 1] >= self.y_min) & (xyz[:, 1] < self.y_max) &
-            (xyz[:, 2] >= self.z_min) & (xyz[:, 2] < self.z_max)
+            (xyz[:, 0] >= self.x_min)
+            & (xyz[:, 0] < self.x_max)
+            & (xyz[:, 1] >= self.y_min)
+            & (xyz[:, 1] < self.y_max)
+            & (xyz[:, 2] >= self.z_min)
+            & (xyz[:, 2] < self.z_max)
         )
         xyz = xyz[mask]
         intensity = intensity[mask]
@@ -114,14 +121,14 @@ class PillarVoxelizer:
 
         # limit number of pillars
         if len(unique_coords) > self.max_pillars:
-            unique_coords = unique_coords[:self.max_pillars]
+            unique_coords = unique_coords[: self.max_pillars]
 
         # allocate pillar buffer
         pillars = np.zeros((self.max_pillars, self.max_points_per_pillar, 5), dtype=np.float32)
         pillar_count = np.zeros(self.max_pillars, dtype=np.int32)
 
         # fill pillars
-        for i, (x, y, z, it) in enumerate(zip(xyz[:,0], xyz[:,1], xyz[:,2], intensity)):
+        for i, (x, y, z, it) in enumerate(zip(xyz[:, 0], xyz[:, 1], xyz[:, 2], intensity)):
             pid = inverse[i]
             if pid >= self.max_pillars:
                 continue
@@ -131,9 +138,9 @@ class PillarVoxelizer:
                 pillar_count[pid] += 1
 
         return {
-            "pillars": pillars,                 # (max_pillars, max_points_per_pillar, 5)
-            "pillar_coords": unique_coords,     # (num_pillars, 2)
-            "pillar_count": pillar_count        # (max_pillars,)
+            "pillars": pillars,  # (max_pillars, max_points_per_pillar, 5)
+            "pillar_coords": unique_coords,  # (num_pillars, 2)
+            "pillar_count": pillar_count,  # (max_pillars,)
         }
 ```
 

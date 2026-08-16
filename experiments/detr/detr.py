@@ -4,14 +4,13 @@ from typing import Optional
 
 import torch
 import torch.nn as nn
-from scipy.optimize import linear_sum_assignment
-from torch.utils.data import DataLoader
-
 from components.dataset.coco_like_detection_dataset import COCOLikeDetectionDataset, Mode
 from components.utils.device import get_device, resolve_num_workers
 from components.utils.logger import configure_logger, logger
 from components.vit.teacher_models import create_teacher_model
 from components.vit.vit_encoder import VitEncoder
+from scipy.optimize import linear_sum_assignment
+from torch.utils.data import DataLoader
 
 
 class DetrEncoder(nn.Module):

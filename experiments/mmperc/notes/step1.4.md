@@ -109,10 +109,7 @@ CenterPoint‑style, BEV‑native.
 Returns a dict like:
 
 ```python
-{
-    "drivable": mask,
-    "detection": {...}
-}
+{"drivable": mask, "detection": {...}}
 ```
 
 ### **D. End‑to‑end pipeline wiring**

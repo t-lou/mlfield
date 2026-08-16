@@ -3,8 +3,6 @@ from contextlib import nullcontext
 from pathlib import Path
 
 import torch
-from torch.utils.data import DataLoader
-
 from components.dataset.image_only_dataset import ImageOnlyDataset
 from components.utils.config import load_yaml
 from components.utils.fps_logger import FpsLogger
@@ -12,6 +10,7 @@ from components.utils.logger import configure_logger, logger
 from components.vit.dino_defs import DINOConfig
 from components.vit.dino_session import DINOSession
 from components.vit.dino_transform import DINOTransform, dino_collate_fn
+from torch.utils.data import DataLoader
 
 
 def train(config: DINOConfig, start_epoch: int = -1):

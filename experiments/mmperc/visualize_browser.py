@@ -141,7 +141,11 @@ class Browser3D:
         sample = _load_sample(self.dataset, self.index)
 
         # Camera panel
-        show_camera_image(self.ax_img, sample["camera"], title=f"Frame {self.index}/{len(self.dataset) - 1}")
+        show_camera_image(
+            self.ax_img,
+            sample["camera"],
+            title=f"Frame {self.index}/{len(self.dataset) - 1}",
+        )
         self.fig.canvas.draw_idle()
 
         # 3D panel
@@ -202,10 +206,23 @@ def main() -> None:
         default="./experiments/mmperc/mmperc_config.yaml",
         help="Path to MMPERC config YAML",
     )
-    parser.add_argument("--mode", choices=["2d", "3d"], default="3d", help="Visualization mode (default: 3d)")
-    parser.add_argument("--start-index", type=int, default=0, help="Frame index to start on (default: 0)")
     parser.add_argument(
-        "--split", choices=["train", "val", "full"], default="full", help="Dataset split to browse (default: full)"
+        "--mode",
+        choices=["2d", "3d"],
+        default="3d",
+        help="Visualization mode (default: 3d)",
+    )
+    parser.add_argument(
+        "--start-index",
+        type=int,
+        default=0,
+        help="Frame index to start on (default: 0)",
+    )
+    parser.add_argument(
+        "--split",
+        choices=["train", "val", "full"],
+        default="full",
+        help="Dataset split to browse (default: full)",
     )
     args = parser.parse_args()
 

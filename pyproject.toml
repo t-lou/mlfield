@@ -1,5 +1,6 @@
 [tool.ruff]
 line-length = 120
+src = ["components"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I"]  # E=pycodestyle, F=pyflakes, I=isort

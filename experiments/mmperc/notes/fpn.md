@@ -360,9 +360,9 @@ import torchvision.models as models
 resnet = models.resnet50(weights=None)
 
 # Extract intermediate layers
-C3 = resnet.layer2   # stride 8
-C4 = resnet.layer3   # stride 16
-C5 = resnet.layer4   # stride 32
+C3 = resnet.layer2  # stride 8
+C4 = resnet.layer3  # stride 16
+C5 = resnet.layer4  # stride 32
 
 # FPN takes these as inputs
 fpn = FPN(C3_out=256, C4_out=512, C5_out=1024)

@@ -87,6 +87,7 @@ Activation memory depends on:
 ```python
 import torch
 
+
 def measure_memory(model, input_size, batch_size, training=True, device="cuda"):
     model = model.to(device)
     x = torch.randn(batch_size, *input_size, device=device)
@@ -157,8 +158,11 @@ print(f"Max batch size that fits: {max_bs}")
 ```python
 from torch.profiler import profile, record_function, ProfilerActivity
 
-with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
-             profile_memory=True, record_shapes=True) as prof:
+with profile(
+    activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
+    profile_memory=True,
+    record_shapes=True,
+) as prof:
     with record_function("model_inference"):
         out = model(torch.randn(8, 3, 224, 224).cuda())
 

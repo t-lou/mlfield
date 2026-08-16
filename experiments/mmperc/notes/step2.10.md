@@ -488,11 +488,7 @@ You can fix your current model by adding:
 
 ### **CalibrationTokenMLP**
 ```python
-calib_vec = torch.cat([
-    fx_norm, fy_norm, cx_norm, cy_norm,
-    cam_pos, cam_rot,
-    ray_dir_mean
-], dim=-1)
+calib_vec = torch.cat([fx_norm, fy_norm, cx_norm, cy_norm, cam_pos, cam_rot, ray_dir_mean], dim=-1)
 
 calib_token = self.calib_mlp(calib_vec)
 camera_tokens = torch.cat([calib_token.unsqueeze(1), camera_tokens], dim=1)

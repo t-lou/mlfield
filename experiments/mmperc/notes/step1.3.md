@@ -139,10 +139,7 @@ Lightweight, upsampling, clean.
 That wraps both heads and returns a dict:
 
 ```python
-{
-    "detection": {...},
-    "drivable_area": mask
-}
+{"detection": {...}, "drivable_area": mask}
 ```
 
 ### ✔️ Tests for the multi‑task heads

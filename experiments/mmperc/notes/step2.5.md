@@ -28,13 +28,13 @@ class BBox2dHead(nn.Module):
         self.cls = nn.Sequential(
             nn.Conv2d(in_channels, in_channels, kernel_size=3, padding=1),
             nn.ReLU(inplace=True),
-            nn.Conv2d(in_channels, 1, kernel_size=1)
+            nn.Conv2d(in_channels, 1, kernel_size=1),
         )
 
         self.reg = nn.Sequential(
             nn.Conv2d(in_channels, in_channels, kernel_size=3, padding=1),
             nn.ReLU(inplace=True),
-            nn.Conv2d(in_channels, 6, kernel_size=1)
+            nn.Conv2d(in_channels, 6, kernel_size=1),
         )
 
     def forward(self, x: Tensor) -> dict:
@@ -92,10 +92,7 @@ class BBox2dHead(nn.Module):
         self.reg = nn.Conv2d(in_channels, 6, kernel_size=1)
 
     def forward(self, x: Tensor) -> dict:
-        return {
-            "heatmap": torch.sigmoid(self.cls(x)),
-            "reg": self.reg(x)
-        }
+        return {"heatmap": torch.sigmoid(self.cls(x)), "reg": self.reg(x)}
 ```
 
 This is functionally identical to your original, just cleaner.

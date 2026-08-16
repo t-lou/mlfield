@@ -45,8 +45,8 @@ def train_one_epoch(model, dataloader, optimizer, device):
     criterion = nn.BCELoss()
 
     for batch in dataloader:
-        points = batch["points"].to(device)              # (N, 5)
-        cam_tokens = batch["cam_tokens"].to(device)      # (B, N_cam, C)
+        points = batch["points"].to(device)  # (N, 5)
+        cam_tokens = batch["cam_tokens"].to(device)  # (B, N_cam, C)
         target_mask = batch["drivable_mask"].to(device)  # (B, 1, H, W)
 
         optimizer.zero_grad()
@@ -67,6 +67,7 @@ class DrivableModel(nn.Module):
     Full pipeline:
     points → voxelizer → PFN (TODO) → BEV backbone → fusion → drivable head
     """
+
     def __init__(self):
         super().__init__()
         self.voxelizer = TorchPillarVoxelizer()

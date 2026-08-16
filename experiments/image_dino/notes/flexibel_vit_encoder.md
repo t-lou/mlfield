@@ -87,11 +87,7 @@ MAE has no head.
 You must add:
 
 ```python
-self.head = nn.Sequential(
-    nn.Linear(embed_dim, hidden_dim),
-    nn.GELU(),
-    nn.Linear(hidden_dim, out_dim)
-)
+self.head = nn.Sequential(nn.Linear(embed_dim, hidden_dim), nn.GELU(), nn.Linear(hidden_dim, out_dim))
 ```
 
 This head is applied to the **CLS token output**.
@@ -139,10 +135,10 @@ Teacher is EMA of student.
 ```python
 def forward(self, imgs):
     B = imgs.shape[0]
-    x = self.patch_embed(imgs)          # (B, C, H', W')
+    x = self.patch_embed(imgs)  # (B, C, H', W')
     H, W = x.shape[2], x.shape[3]
 
-    x = x.flatten(2).transpose(1, 2)    # (B, HW, C)
+    x = x.flatten(2).transpose(1, 2)  # (B, HW, C)
 
     cls = self.cls_token.expand(B, -1, -1)
     x = torch.cat((cls, x), dim=1)
@@ -152,7 +148,7 @@ def forward(self, imgs):
     x = self.blocks(x)
     x = self.norm(x)
 
-    return x[:, 0]                      # CLS token
+    return x[:, 0]  # CLS token
 ```
 
 This is exactly what DINO expects.

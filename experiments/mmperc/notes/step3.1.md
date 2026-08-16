@@ -2005,10 +2005,7 @@ You need:
 Each camera has its own instance of `TinyCameraEncoder`:
 
 ```python
-self.camera_encoders = nn.ModuleList([
-    TinyCameraEncoder(params_for_cam_i)
-    for i in range(num_cameras)
-])
+self.camera_encoders = nn.ModuleList([TinyCameraEncoder(params_for_cam_i) for i in range(num_cameras)])
 ```
 
 Each encoder:

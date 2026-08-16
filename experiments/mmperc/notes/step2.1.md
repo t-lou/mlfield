@@ -26,8 +26,8 @@ Your model returns:
 
 ```python
 pred = model(points, images)
-heatmap_pred = pred["heatmap"]   # shape: (B, C, H, W)
-reg_pred     = pred["reg"]       # shape: (B, 7, H, W)
+heatmap_pred = pred["heatmap"]  # shape: (B, C, H, W)
+reg_pred = pred["reg"]  # shape: (B, 7, H, W)
 ```
 
 This is a **CenterNet‑style representation**:

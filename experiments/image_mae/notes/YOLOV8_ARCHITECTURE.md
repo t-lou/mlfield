@@ -451,7 +451,7 @@ MAE (Masked Autoencoder) pre-trained on ImageNet provides:
 
 ```python
 # Load MAE teacher (frozen)
-mae_teacher = MAE('imagenet')
+mae_teacher = MAE("imagenet")
 mae_teacher.eval()
 for param in mae_teacher.parameters():
     param.requires_grad = False
@@ -460,18 +460,18 @@ for param in mae_teacher.parameters():
 for batch in dataloader:
     # Forward through YOLO
     yolo_features = backbone(images)  # (B, 512, H/16, W/16)
-    
+
     # Forward through MAE (no gradients)
     with torch.no_grad():
         mae_features = mae_teacher.forward_encoder(images)  # (B, 196, 768)
         mae_features = align_to_yolo(mae_features)  # Project to 512-dim, upsample
-    
+
     # Compute losses
     detection_loss = yolo_detection_loss(predictions, targets)
     distillation_loss = MSE(yolo_features, mae_features)
-    
+
     total_loss = detection_loss + 0.3 * distillation_loss
-    
+
     # Backward only on YOLO (MAE frozen)
     optimizer.backward(total_loss)
     optimizer.step()

@@ -122,8 +122,8 @@ If you don’t explicitly flip, they won’t match.
 Add this debug snippet:
 
 ```python
-print("GT max at:", torch.nonzero(gt[0,0] == gt[0,0].max()))
-print("Pred max at:", torch.nonzero(pred[0,0] == pred[0,0].max()))
+print("GT max at:", torch.nonzero(gt[0, 0] == gt[0, 0].max()))
+print("Pred max at:", torch.nonzero(pred[0, 0] == pred[0, 0].max()))
 ```
 
 If the y‑coordinates differ by roughly `bev_h - something`, you have a vertical flip.
@@ -214,7 +214,7 @@ iy = bev_h - iy
 or
 
 ```python
-origin="lower"
+origin = "lower"
 ```
 
 in `imshow`.
@@ -380,11 +380,13 @@ This is why sample 2 collapses.
 Print this for each sample:
 
 ```python
-print("coords min/max:",
-      pillar_coords_xy[b,:,0].min().item(),
-      pillar_coords_xy[b,:,0].max().item(),
-      pillar_coords_xy[b,:,1].min().item(),
-      pillar_coords_xy[b,:,1].max().item())
+print(
+    "coords min/max:",
+    pillar_coords_xy[b, :, 0].min().item(),
+    pillar_coords_xy[b, :, 0].max().item(),
+    pillar_coords_xy[b, :, 1].min().item(),
+    pillar_coords_xy[b, :, 1].max().item(),
+)
 ```
 
 And also print:

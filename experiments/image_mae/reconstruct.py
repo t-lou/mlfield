@@ -3,15 +3,14 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 import torch
-from torch.utils.data import DataLoader
-from torchvision import transforms
-
 from components.dataset.image_only_dataset import ImageOnlyDataset
 from components.utils.config import load_yaml
 from components.utils.device import get_device
 from components.utils.logger import configure_logger
 from components.vit.mae import MAE
 from components.vit.mae_defs import MAEConfig
+from torch.utils.data import DataLoader
+from torchvision import transforms
 
 
 def visualize_mae(model: MAE, imgs: torch.Tensor, save_path: Path) -> None:

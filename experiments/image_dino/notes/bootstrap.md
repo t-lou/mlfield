@@ -26,11 +26,13 @@ import torch
 import torch.nn as nn
 import timm
 
+
 class ViTBackbone(nn.Module):
     def __init__(self, model_name="vit_small_patch16_224"):
         super().__init__()
         self.vit = timm.create_model(model_name, pretrained=False)
         # assume vit.forward_features(x) returns CLS + patch tokens
+
     def forward(self, x):
         feats = self.vit.forward_features(x)  # [B, D]
         return feats  # CLS token embedding
@@ -106,21 +108,26 @@ You can implement a simple version:
 ```python
 from torchvision import transforms
 
-global_transform = transforms.Compose([
-    transforms.RandomResizedCrop(224, scale=(0.4, 1.0)),
-    transforms.RandomHorizontalFlip(),
-    transforms.ColorJitter(0.4, 0.4, 0.4, 0.1),
-    transforms.RandomGrayscale(p=0.2),
-    transforms.ToTensor(),
-])
+global_transform = transforms.Compose(
+    [
+        transforms.RandomResizedCrop(224, scale=(0.4, 1.0)),
+        transforms.RandomHorizontalFlip(),
+        transforms.ColorJitter(0.4, 0.4, 0.4, 0.1),
+        transforms.RandomGrayscale(p=0.2),
+        transforms.ToTensor(),
+    ]
+)
 
-local_transform = transforms.Compose([
-    transforms.RandomResizedCrop(96, scale=(0.05, 0.4)),
-    transforms.RandomHorizontalFlip(),
-    transforms.ColorJitter(0.4, 0.4, 0.4, 0.1),
-    transforms.RandomGrayscale(p=0.2),
-    transforms.ToTensor(),
-])
+local_transform = transforms.Compose(
+    [
+        transforms.RandomResizedCrop(96, scale=(0.05, 0.4)),
+        transforms.RandomHorizontalFlip(),
+        transforms.ColorJitter(0.4, 0.4, 0.4, 0.1),
+        transforms.RandomGrayscale(p=0.2),
+        transforms.ToTensor(),
+    ]
+)
+
 
 def multicrop_augment(img):
     crops = []

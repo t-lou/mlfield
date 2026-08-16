@@ -125,14 +125,10 @@ state = torch.load("mae_cifar.pth")
 model = build_imagenet_model()
 
 # interpolate patch embedding
-model.patch_embed.proj.weight = interpolate_kernel(
-    state["patch_embed.proj.weight"], new_size=(16, 16)
-)
+model.patch_embed.proj.weight = interpolate_kernel(state["patch_embed.proj.weight"], new_size=(16, 16))
 
 # interpolate positional embeddings
-model.pos_embed = interpolate_pos_embed(
-    state["pos_embed"], model.pos_embed.shape[1]
-)
+model.pos_embed = interpolate_pos_embed(state["pos_embed"], model.pos_embed.shape[1])
 
 # load transformer blocks
 for i, blk in enumerate(model.blocks):
@@ -207,28 +203,18 @@ def interpolate_tensor(src, target_shape):
 
     # Fully-connected layers: (out, in)
     if len(src.shape) == 2 and len(target_shape) == 2:
-        return F.interpolate(
-            src.unsqueeze(0).unsqueeze(0),
-            size=target_shape,
-            mode="bilinear",
-            align_corners=False
-        ).squeeze(0).squeeze(0)
+        return (
+            F.interpolate(src.unsqueeze(0).unsqueeze(0), size=target_shape, mode="bilinear", align_corners=False)
+            .squeeze(0)
+            .squeeze(0)
+        )
 
     # Conv or patch embedding: (C_out, C_in, H, W)
     if len(src.shape) == 4 and len(target_shape) == 4:
-        return F.interpolate(
-            src,
-            size=target_shape[2:],
-            mode="bicubic",
-            align_corners=False
-        )
+        return F.interpolate(src, size=target_shape[2:], mode="bicubic", align_corners=False)
 
     # Generic fallback: reshape with nearest interpolation
-    return F.interpolate(
-        src.unsqueeze(0),
-        size=target_shape,
-        mode="nearest"
-    ).squeeze(0)
+    return F.interpolate(src.unsqueeze(0), size=target_shape, mode="nearest").squeeze(0)
 
 
 def initialize_model_from_checkpoint(model, ckpt_path, output_path):
@@ -244,7 +230,7 @@ def initialize_model_from_checkpoint(model, ckpt_path, output_path):
         "interpolated": [],
         "random_initialized": [],
         "unused_checkpoint_keys": [],
-        "warnings": []
+        "warnings": [],
     }
 
     # Track checkpoint keys
@@ -266,15 +252,11 @@ def initialize_model_from_checkpoint(model, ckpt_path, output_path):
                 # Case 2: interpolate
                 try:
                     new_state[key] = interpolate_tensor(src_tensor, target_tensor.shape)
-                    report["interpolated"].append({
-                        "key": key,
-                        "src_shape": list(src_tensor.shape),
-                        "target_shape": list(target_tensor.shape)
-                    })
-                except Exception as e:
-                    report["warnings"].append(
-                        f"Interpolation failed for {key}: {str(e)}"
+                    report["interpolated"].append(
+                        {"key": key, "src_shape": list(src_tensor.shape), "target_shape": list(target_tensor.shape)}
                     )
+                except Exception as e:
+                    report["warnings"].append(f"Interpolation failed for {key}: {str(e)}")
                     new_state[key] = torch.randn_like(target_tensor)
                     report["random_initialized"].append(key)
 
@@ -311,11 +293,7 @@ def initialize_model_from_checkpoint(model, ckpt_path, output_path):
 from my_model import MyModel
 
 model = MyModel()
-report = initialize_model_from_checkpoint(
-    model,
-    ckpt_path="old_checkpoint.pth",
-    output_path="new_checkpoint.pth"
-)
+report = initialize_model_from_checkpoint(model, ckpt_path="old_checkpoint.pth", output_path="new_checkpoint.pth")
 
 print(report)
 ```

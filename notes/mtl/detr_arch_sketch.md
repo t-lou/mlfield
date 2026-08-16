@@ -173,9 +173,7 @@ This is the cleanest, most modular MTL architecture in 2025.
 
 ```python
 class MultiTaskDETR(nn.Module):
-    def __init__(self, backbone, encoder,
-                 det_decoder, seg_decoder, depth_decoder,
-                 det_head, seg_head, depth_head):
+    def __init__(self, backbone, encoder, det_decoder, seg_decoder, depth_decoder, det_head, seg_head, depth_head):
         super().__init__()
         self.backbone = backbone
         self.encoder = encoder

@@ -182,7 +182,7 @@ class FuTr(nn.Module):
         tokens = [self.token_proj(Fi) for Fi in features_list]
         tokens = torch.cat(tokens, dim=1)  # [B, sum(N_i), D]
 
-        fused = self.encoder(tokens)       # [B, sum(N_i), D]
+        fused = self.encoder(tokens)  # [B, sum(N_i), D]
         return fused
 ```
 
