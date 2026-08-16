@@ -5,6 +5,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from components.dataset.a2d2_dataset_unlabeled import A2D2DatasetUnlabeled
 from components.definitions.mmperc_params import MmpercParams
+from components.utils.calibration import load_sensor_calibration
 from components.utils.config import load_yaml
 from components.utils.logger import configure_logger
 from PIL import Image
@@ -38,6 +39,7 @@ if __name__ == "__main__":
             data_per_sensor[sensor_type] = {}
         data_per_sensor[sensor_type][sensor_position] = fileobj
 
+    plt.figure(1)
     line_offset = 0
     if "lidar" in data_per_sensor:
         for i, (sensor_position, fileobj) in enumerate(data_per_sensor["lidar"].items()):
@@ -48,6 +50,17 @@ if __name__ == "__main__":
                 plt.subplot(2, len(data_per_sensor["lidar"]), i + 1)
                 plt.plot(points[:, 0], points[:, 1], ".")
                 plt.title(sensor_position)
+
+                plt.figure(2)
+                vehicle_T = load_sensor_calibration(
+                    Path(cfg.path_calibration),
+                    sensor_name=sensor_position,
+                    sensor_type="camera",
+                ).pose.vehicle_from_sensor
+                xyz_vehicle = points @ vehicle_T[:3, :3].T
+                xyz_vehicle += vehicle_T[:3, -1]
+                plt.plot(xyz_vehicle[:, 0], xyz_vehicle[:, 1], ".", alpha=0.3, label=sensor_position)
+                plt.figure(1)  # switch back
 
         line_offset += 1
 
@@ -60,4 +73,9 @@ if __name__ == "__main__":
                 plt.title(sensor_position)
 
 plt.tight_layout()
+
+plt.figure(2)
+plt.tight_layout()
+plt.legend()
+
 plt.show()
