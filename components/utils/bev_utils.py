@@ -68,8 +68,8 @@ def xy_to_grid_stride(x: float, y: float, mmperc_params: MmpercParams) -> Tuple[
     stride = float(mmperc_params.backbone_stride)
     res_x, res_y = get_res(mmperc_params)
 
-    gx = (x - mmperc_params.x_range[0]) / (res_x * stride)
-    gy = (y - mmperc_params.y_range[0]) / (res_y * stride)
+    gx = (x - mmperc_params.bev_params.x_range[0]) / (res_x * stride)
+    gy = (y - mmperc_params.bev_params.y_range[0]) / (res_y * stride)
 
     ix = int(gx)
     iy = int(gy)
@@ -110,7 +110,7 @@ def grid_to_xy_stride(ix: int, iy: int, mmperc_params: MmpercParams) -> tuple[fl
     stride = float(mmperc_params.backbone_stride)
     res_x, res_y = get_res(mmperc_params)
 
-    x = mmperc_params.x_range[0] + ix * (res_x * stride)
-    y = mmperc_params.y_range[0] + iy * (res_y * stride)
+    x = mmperc_params.bev_params.x_range[0] + ix * (res_x * stride)
+    y = mmperc_params.bev_params.y_range[0] + iy * (res_y * stride)
 
     return x, y
