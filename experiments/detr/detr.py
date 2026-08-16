@@ -345,7 +345,7 @@ def train(
     start_epoch: int = 0,
     batch_size: int = 32,
     learning_rate: float = 1e-3,
-    save_dir: str = "yolo_checkpoints",
+    save_dir: str = "detr_checkpoints",
     distill_weight: float = 0.1,
     num_workers: Optional[int] = None,
     seed: int = 42,
@@ -562,7 +562,7 @@ def main():
     parser.add_argument("--batch-size", type=int, default=32, help="Batch size (adjust for GPU memory)")
     parser.add_argument("--learning-rate", type=float, default=1e-3, help="Initial learning rate")
     parser.add_argument(
-        "--save-dir", type=str, default="yolo_checkpoints", help="Directory to save checkpoints and logs"
+        "--save-dir", type=str, default="detr_checkpoints", help="Directory to save checkpoints and logs"
     )
     parser.add_argument("--distill-weight", type=float, default=0.1, help="Weight for knowledge distillation loss")
     parser.add_argument(
