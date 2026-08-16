@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import torch
 from torch import Tensor, nn
 
@@ -6,6 +8,7 @@ from components.mmperc.backbone.tiny_bev_backbone import TinyBEVBackbone
 from components.mmperc.encoder.simple_pfn import SimplePFN
 from components.mmperc.scatter.scatter import scatter_to_bev
 from components.mmperc.voxelizer.pointpillar_lite import PointpillarLite
+from components.utils.calibration import load_sensor_calibration
 from components.utils.logger import logger
 
 
@@ -21,11 +24,18 @@ class PointPillarBEV(nn.Module):
         (B, params.BEV_CHANNELS, BEV_H/2, BEV_W/2)
     """
 
-    def __init__(self, params: MmpercParams) -> None:
+    def __init__(self, params: MmpercParams, sensor_name: str = "front_center") -> None:
         super().__init__()
 
         # Raw point cloud → pillars
         self.voxelizer = PointpillarLite(params=params)
+
+        # Single-sensor calibration relative to the vehicle frame.
+        self.lidar_calibration = load_sensor_calibration(
+            Path(params.path_calibration),
+            sensor_name=sensor_name,
+            sensor_type="lidar",
+        )
 
         # Pillar Feature Network (per-pillar feature extraction)
         self.pfn = SimplePFN(in_channels=9, out_channels=64)
@@ -46,6 +56,20 @@ class PointPillarBEV(nn.Module):
         Returns:
             BEV feature map: (B, params.BEV_CHANNELS, H/2, W/2)
         """
+
+        # Convert each LiDAR point from its sensor frame into the vehicle frame.
+        # This keeps voxelization and BEV feature extraction in a shared reference.
+        if points.size(-1) >= 3:
+            x = points[..., :3]
+            ones = torch.ones(*x.shape[:-1], 1, device=x.device, dtype=x.dtype)
+            xyz_h = torch.cat([x, ones], dim=-1)
+            vehicle_T = torch.as_tensor(
+                self.lidar_calibration.pose.vehicle_from_sensor,
+                device=points.device,
+                dtype=points.dtype,
+            )
+            xyz_vehicle_h = xyz_h @ vehicle_T.T
+            points = torch.cat([xyz_vehicle_h[..., :3], points[..., 3:]], dim=-1)
 
         # 1. Voxelization
         vox = self.voxelizer(points)

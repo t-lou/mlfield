@@ -4,7 +4,7 @@ import torch
 from torch import Tensor, nn
 
 from components.definitions.mmperc_params import MmpercParams
-from components.utils.calibration import load_cams_lidars_calibration
+from components.utils.calibration import load_sensor_calibration
 from components.utils.logger import logger
 
 
@@ -47,20 +47,16 @@ class TinyCameraEncoder(nn.Module):
         - C = out_channels (default 128)
     """
 
-    def __init__(self, params: MmpercParams) -> None:
+    def __init__(self, params: MmpercParams, sensor_name: str = "front_center") -> None:
         super().__init__()
 
         self.out_channels = params.bev_params.bev_channels
-        self.camera_calibration = None
-        if params.use_camera and params.use_camera_calibration:
-            try:
-                self.camera_calibration = load_cams_lidars_calibration(
-                    Path(params.path_calibration),
-                    camera_name=params.camera_name,
-                    lidar_name=params.lidar_name,
-                )
-            except Exception:
-                self.camera_calibration = None
+        calibration_path = Path(params.path_calibration)
+        self.camera_calibration = load_sensor_calibration(
+            calibration_path,
+            sensor_name=sensor_name,
+            sensor_type="camera",
+        )
         logger.info(f"TinyCameraEncoder: camera_calibration={self.camera_calibration}")
 
         # Stage 1: 1/2 resolution
@@ -149,15 +145,11 @@ class TinyCameraEncoder(nn.Module):
         x = torch.linspace(0.5 * W_img / W2, W_img - 0.5 * W_img / W2, W2, device=device, dtype=dtype)
         grid_y, grid_x = torch.meshgrid(y, x, indexing="ij")
 
-        if self.camera_calibration is not None and self.camera_calibration.camera.intrinsic is not None:
-            K = torch.from_numpy(self.camera_calibration.camera.intrinsic).to(device=device, dtype=dtype)
-            fx, fy = K[0, 0], K[1, 1]
-            cx, cy = K[0, 2], K[1, 2]
-            u = (grid_x - cx) / fx
-            v = (grid_y - cy) / fy
-        else:
-            u = (grid_x / (W_img - 1)) * 2.0 - 1.0
-            v = (grid_y / (H_img - 1)) * 2.0 - 1.0
+        K = torch.from_numpy(self.camera_calibration.intrinsic).to(device=device, dtype=dtype)
+        fx, fy = K[0, 0], K[1, 1]
+        cx, cy = K[0, 2], K[1, 2]
+        u = (grid_x - cx) / fx
+        v = (grid_y - cy) / fy
 
         geom = torch.stack([u, v], dim=0).unsqueeze(0)
         return geom

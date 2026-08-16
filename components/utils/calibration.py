@@ -94,6 +94,41 @@ def _load_lidar_info(name: str, info: dict[str, Any]) -> SensorCalibration:
     return SensorCalibration(name=name, pose=pose)
 
 
+def load_sensor_calibration(path: Path, sensor_name: str, sensor_type: str = "camera") -> SensorCalibration:
+    """Load a single sensor calibration relative to the vehicle frame.
+
+    This is the single-sensor API that should be used by standalone encoders. The
+    vehicle-frame pose is stored on the sensor itself and remains independent from
+    any front-lidar reference.
+    """
+    if not path.exists():
+        raise FileNotFoundError(f"Calibration file not found: {path}")
+
+    with path.open("r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    sensor_kind = sensor_type.lower()
+    if sensor_kind == "camera":
+        sensors = data.get("cameras")
+        if sensors is None:
+            raise ValueError("Calibration JSON must contain a 'cameras' section.")
+        sensor_info = sensors.get(sensor_name)
+        if sensor_info is None:
+            raise KeyError(f"Camera '{sensor_name}' not found in calibration file.")
+        return _load_camera_info(sensor_name, sensor_info)
+
+    if sensor_kind == "lidar":
+        sensors = data.get("lidars")
+        if sensors is None:
+            raise ValueError("Calibration JSON must contain a 'lidars' section.")
+        sensor_info = sensors.get(sensor_name)
+        if sensor_info is None:
+            raise KeyError(f"LIDAR '{sensor_name}' not found in calibration file.")
+        return _load_lidar_info(sensor_name, sensor_info)
+
+    raise ValueError(f"Unsupported sensor type '{sensor_type}'. Expected 'camera' or 'lidar'.")
+
+
 def load_cams_lidars_calibration(
     path: Path,
     camera_name: str = "front_center",
@@ -102,24 +137,11 @@ def load_cams_lidars_calibration(
     if not path.exists():
         raise FileNotFoundError(f"Calibration file not found: {path}")
 
-    with path.open("r", encoding="utf-8") as f:
-        data = json.load(f)
+    camera_calib = load_sensor_calibration(path=path, sensor_name=camera_name, sensor_type="camera")
+    lidar_calib = load_sensor_calibration(path=path, sensor_name=lidar_name, sensor_type="lidar")
 
-    cameras = data.get("cameras")
-    lidars = data.get("lidars")
-    if cameras is None or lidars is None:
-        raise ValueError("Calibration JSON must contain both 'cameras' and 'lidars' sections.")
-
-    camera_info = cameras.get(camera_name)
-    lidar_info = lidars.get(lidar_name)
-    if camera_info is None:
-        raise KeyError(f"Camera '{camera_name}' not found in calibration file.")
-    if lidar_info is None:
-        raise KeyError(f"LIDAR '{lidar_name}' not found in calibration file.")
-
-    camera_calib = _load_camera_info(camera_name, camera_info)
-    lidar_calib = _load_lidar_info(lidar_name, lidar_info)
-
+    # Both sensor poses are expressed in the vehicle frame, so the transform between
+    # them is the usual sensor-to-sensor composition from the common reference.
     lidar_to_camera = camera_calib.pose.sensor_from_vehicle @ lidar_calib.pose.vehicle_from_sensor
     camera_to_lidar = np.linalg.inv(lidar_to_camera)
 
