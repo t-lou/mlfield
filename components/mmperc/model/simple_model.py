@@ -28,7 +28,7 @@ class SimpleModel(nn.Module):
         # 1. Lidar encoder → BEV feature map
         # ---------------------------------------------------------
         if params.use_lidar:
-            self.lidar_encoder = PointPillarBEV(params=params)  # (B, C, H, W)
+            self.lidar_encoder = PointPillarBEV(params=params, skip_calibration=True)  # (B, C, H, W)
 
         # ---------------------------------------------------------
         # 2. Camera encoder → token embeddings

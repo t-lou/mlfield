@@ -44,7 +44,7 @@ class PointPillarBEV(nn.Module):
         xyz_vehicle_h = xyz_h @ vehicle_T.T
         return torch.cat([xyz_vehicle_h[..., :3], points[..., 3:]], dim=-1)
 
-    def __init__(self, params: MmpercParams, sensor_name: str = "front_center") -> None:
+    def __init__(self, params: MmpercParams, sensor_name: str = "front_center", skip_calibration: bool = False) -> None:
         super().__init__()
 
         # Raw point cloud → pillars
@@ -55,6 +55,11 @@ class PointPillarBEV(nn.Module):
             Path(params.path_calibration),
             sensor_name=sensor_name,
             sensor_type="lidar",
+        )
+        self.skip_calibration = skip_calibration
+
+        print(
+            self.lidar_calibration.pose.vehicle_from_sensor,
         )
 
         # Pillar Feature Network (per-pillar feature extraction)
@@ -78,7 +83,8 @@ class PointPillarBEV(nn.Module):
         """
 
         # Convert each LiDAR point from its sensor frame into the vehicle frame.
-        points = self.transform_points_to_vehicle(self.lidar_calibration, points)
+        if not self.skip_calibration:
+            points = self.transform_points_to_vehicle(self.lidar_calibration, points)
 
         # 1. Voxelization
         vox = self.voxelizer(points)
