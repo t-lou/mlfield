@@ -24,6 +24,26 @@ class PointPillarBEV(nn.Module):
         (B, params.BEV_CHANNELS, BEV_H/2, BEV_W/2)
     """
 
+    @staticmethod
+    def transform_points_to_vehicle(calibration, points: Tensor) -> Tensor:
+        """Apply the sensor-to-vehicle frame transform while preserving feature channels."""
+        if points.dim() == 2:
+            points = points.unsqueeze(0)
+
+        if points.size(-1) < 3:
+            raise ValueError("Point cloud must contain x, y, z as the first 3 columns.")
+
+        xyz = points[..., :3]
+        ones = torch.ones(*xyz.shape[:-1], 1, device=points.device, dtype=points.dtype)
+        xyz_h = torch.cat([xyz, ones], dim=-1)
+        vehicle_T = torch.as_tensor(
+            calibration.pose.vehicle_from_sensor,
+            device=points.device,
+            dtype=points.dtype,
+        )
+        xyz_vehicle_h = xyz_h @ vehicle_T.T
+        return torch.cat([xyz_vehicle_h[..., :3], points[..., 3:]], dim=-1)
+
     def __init__(self, params: MmpercParams, sensor_name: str = "front_center") -> None:
         super().__init__()
 
@@ -58,18 +78,7 @@ class PointPillarBEV(nn.Module):
         """
 
         # Convert each LiDAR point from its sensor frame into the vehicle frame.
-        # This keeps voxelization and BEV feature extraction in a shared reference.
-        if points.size(-1) >= 3:
-            x = points[..., :3]
-            ones = torch.ones(*x.shape[:-1], 1, device=x.device, dtype=x.dtype)
-            xyz_h = torch.cat([x, ones], dim=-1)
-            vehicle_T = torch.as_tensor(
-                self.lidar_calibration.pose.vehicle_from_sensor,
-                device=points.device,
-                dtype=points.dtype,
-            )
-            xyz_vehicle_h = xyz_h @ vehicle_T.T
-            points = torch.cat([xyz_vehicle_h[..., :3], points[..., 3:]], dim=-1)
+        points = self.transform_points_to_vehicle(self.lidar_calibration, points)
 
         # 1. Voxelization
         vox = self.voxelizer(points)
