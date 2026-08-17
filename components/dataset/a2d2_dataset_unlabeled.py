@@ -1,4 +1,5 @@
 import tarfile
+from enum import Enum
 from pathlib import Path
 
 from components.definitions.mmperc_params import MmpercParams
@@ -6,10 +7,24 @@ from components.utils.logger import logger
 from torch.utils.data import Dataset
 
 
-class A2D2DatasetUnlabeled(Dataset):
-    """ """
+class Mode(Enum):
+    TRAIN = "train"
+    REFINE = "refine"
 
-    def __init__(self, params: MmpercParams, recording_time: str = "20190401145936"):
+
+class A2D2DatasetUnlabeled(Dataset):
+    """
+    The Dataset for A2D2 without labeling (BBox and Semantics).
+
+    This dataset will load all available sensor frames, and output the frames which are already divided.
+    The lidars should be synchronized with the corresponding cameras, but the cameras are not synchronized.
+    The timestamp difference is ignored for now.
+
+    In traning mode the CAN data containing the vehicle status are read and interpolated with any camera frame,
+    and in refinement mode the actuator status is also included. TODO
+    """
+
+    def __init__(self, params: MmpercParams, recording_time: str = "20190401145936", mode: Mode = Mode.TRAIN):
         self.params = params
         self.path_data = Path(params.path_data)
         assert self.path_data.is_dir()
@@ -47,11 +62,15 @@ class A2D2DatasetUnlabeled(Dataset):
         first_tar = next(iter(self._tars.values()))
         for member in first_tar.getmembers():
             if member.isfile():
-                # Extract the sequence id from the filename
-                sequence_id = Path(member.name).stem.split("_")[-1]
-                self.sequence_ids.append(sequence_id)
+                # Extract the sequence id from the filename with extension npz or png
+                path_member = Path(member.name)
+                if path_member.suffix in (".npz", ".png"):
+                    sequence_id = path_member.stem.split("_")[-1]
+                    self.sequence_ids.append(sequence_id)
         self.sequence_ids.sort()
         logger.info(f"Found {len(self.sequence_ids)} files.")
+
+        # TODO read CAN and interpolate
 
     def __del__(self) -> None:
         """Close all opened tars."""
