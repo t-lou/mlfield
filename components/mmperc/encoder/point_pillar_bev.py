@@ -10,6 +10,23 @@ from components.mmperc.scatter.scatter import scatter_to_bev
 from components.mmperc.voxelizer.pointpillar_lite import PointpillarLite
 from components.utils.calibration import load_sensor_calibration
 from components.utils.logger import logger
+from components.vit.position_embedding import PosEmbdCache
+
+
+class BEVTokenizer(nn.Module):
+    def __init__(self, in_channels, embed_dim, patch_size=1):
+        super().__init__()
+        self.proj = nn.Conv2d(in_channels, embed_dim, kernel_size=patch_size, stride=patch_size)
+        self.norm = nn.LayerNorm(embed_dim)
+        self._pos_cache = PosEmbdCache()  # keyed by grid size, same idea as TinyCameraEncoder._camera_geometry_cache
+
+    def forward(self, bev_feat):  # (B, C, H, W)
+        x = self.proj(bev_feat)  # (B, embed_dim, H', W')
+        B, C, H, W = x.shape
+        tokens = x.flatten(2).transpose(1, 2)  # (B, H'*W', embed_dim)
+        pos = self._pos_cache.get_2d(H, W, C, device=x.device, dtype=x.dtype)  # sincos, no cls
+        tokens = self.norm(tokens + pos)
+        return tokens
 
 
 class PointPillarBEV(nn.Module):
