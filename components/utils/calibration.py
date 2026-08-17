@@ -7,6 +7,8 @@ from typing import Any
 
 import numpy as np
 
+from components.utils.logger import logger
+
 
 @dataclass
 class SensorPose:
@@ -118,6 +120,7 @@ def load_sensor_calibration(path: Path, sensor_name: str, sensor_type: str = "ca
         return _load_camera_info(sensor_name, sensor_info)
 
     if sensor_kind == "lidar":
+        logger.warning("A2D2 dataset lidar data doesn't seem to fit the raw calibration, use with caution")
         sensors = data.get("lidars")
         if sensors is None:
             raise ValueError("Calibration JSON must contain a 'lidars' section.")

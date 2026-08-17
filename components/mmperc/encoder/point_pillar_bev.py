@@ -54,7 +54,7 @@ class PointPillarBEV(nn.Module):
         self.lidar_calibration = load_sensor_calibration(
             Path(params.path_calibration),
             sensor_name=sensor_name,
-            sensor_type="lidar",
+            sensor_type="camera",
         )
         self.skip_calibration = skip_calibration
 
