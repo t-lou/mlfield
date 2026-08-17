@@ -2,6 +2,7 @@ import torch
 from torch import Tensor, nn
 
 from components.definitions.mmperc_params import MmpercParams
+from components.mmperc.encoder.multi_camera_encoder import MultiCameraEncoder
 from components.mmperc.encoder.point_pillar_bev import PointPillarBEV
 from components.mmperc.encoder.tiny_camera_encoder import TinyCameraEncoder
 from components.mmperc.fusion.futr_fusion import FuTrFusionBlock
@@ -36,7 +37,12 @@ class SimpleModel(nn.Module):
         # 2. Camera encoder → token embeddings
         # ---------------------------------------------------------
         if params.use_camera:
-            self.cam_encoder = TinyCameraEncoder(params=params)  # (B, N_cam, C)
+            self.cam_encoder = MultiCameraEncoder(
+                cam_encoders={
+                    sensor_name: TinyCameraEncoder(params=params, sensor_name=sensor_name)
+                    for sensor_name in [self._sensor_name]
+                }
+            )  # (B, N_cam, C)
 
         # ---------------------------------------------------------
         # 3. Fusion block (BEV <-> camera tokens)
@@ -73,7 +79,7 @@ class SimpleModel(nn.Module):
 
         self._params = params
 
-    def forward(self, points: Tensor, images: Tensor) -> dict:
+    def forward(self, points: Tensor, image: Tensor, cam_meta: dict[str, dict] | None = None) -> dict:
         """
         Forward pass of the multi-task BEV + camera fusion model.
 
@@ -82,8 +88,13 @@ class SimpleModel(nn.Module):
                 LiDAR point cloud tensor of shape (B, N, 4),
                 where N is the number of points and each point is (x, y, z, intensity).
 
-            images:
-                RGB camera images of shape (B, 3, H_img, W_img).
+            image:
+                RGB camera image of shape (B, 3, H_img, W_img).
+
+            cam_meta:
+                {camera_id: {"pose": ..., "extrinsics": ..., "camera_id": ...}} — per-camera
+                calibration/pose metadata, required by MultiCameraEncoder when use_camera=True.
+
 
         Returns:
             dict with the following keys:
@@ -104,7 +115,7 @@ class SimpleModel(nn.Module):
 
         Notes:
             - LiDAR is encoded into a BEV feature map.
-            - Camera images are encoded into tokens + feature maps.
+            - Camera image is encoded into tokens + feature maps.
             - Fusion combines BEV and camera tokens.
             - Detection heads operate on fused BEV features.
             - Semantic head operates on camera feature maps.
@@ -112,6 +123,7 @@ class SimpleModel(nn.Module):
         lidar_token = None
         camera_tokens = None
         cam_feat = None
+        cam_skip_feats = None
 
         # ---------------------------------------------------------
         # 1. Lidar → BEV feature map
@@ -123,7 +135,10 @@ class SimpleModel(nn.Module):
         # 2. Camera → tokens
         # ---------------------------------------------------------
         if self._params.use_camera:
-            camera_tokens, cam_feat, cam_skip_feats = self.cam_encoder(images)
+            tokens_per_cam, feats_per_cam, skip_feats_per_cam = self.cam_encoder({self._sensor_name: image}, cam_meta)
+            camera_tokens = tokens_per_cam[self._sensor_name]
+            cam_feat = feats_per_cam[self._sensor_name]
+            cam_skip_feats = skip_feats_per_cam[self._sensor_name]
 
         # ---------------------------------------------------------
         # 3. BEV–camera fusion

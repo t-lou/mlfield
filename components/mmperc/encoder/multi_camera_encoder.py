@@ -26,59 +26,20 @@ class MultiCameraEncoder(nn.Module):
 
         self.use_meta = True
         C = next(iter(cam_encoders.values())).out_channels
+        if any(enc.out_channels != C for enc in cam_encoders.values()):
+            raise ValueError("MultiCameraEncoder requires all camera encoders to share out_channels.")
+        self.out_channels = C
         self.cam_id_embed = nn.Embedding(len(self.cam_ids), C)
         self.pose_mlp = nn.Linear(16, C)
         self.pose_mlp_legacy = nn.Linear(6, C)
 
-    def _extract_pose_vector(self, meta: dict[str, Any] | Any, device: torch.device) -> Tensor:
-        pose_obj = None
-        if isinstance(meta, dict):
-            pose_obj = meta.get("pose")
-            if pose_obj is None and "calibration" in meta:
-                calibration = meta["calibration"]
-                if hasattr(calibration, "pose"):
-                    pose_obj = calibration.pose
-                else:
-                    pose_obj = calibration
-            if pose_obj is None and "extrinsics" in meta:
-                pose_obj = meta["extrinsics"]
-        else:
-            pose_obj = meta
+        for idx, cam_id in enumerate(self.cam_ids):
+            pose_vec = cam_encoders[cam_id].cam_pose_vector
+            self.register_buffer(f"_default_pose_{idx}", pose_vec.detach().clone())
 
-        if pose_obj is not None:
-            if hasattr(pose_obj, "sensor_from_vehicle"):
-                pose_obj = pose_obj.sensor_from_vehicle
-            elif hasattr(pose_obj, "vehicle_from_sensor"):
-                pose_obj = pose_obj.vehicle_from_sensor
-            elif isinstance(pose_obj, dict):
-                for key in ("sensor_from_vehicle", "vehicle_from_sensor", "extrinsics"):
-                    if key in pose_obj:
-                        pose_obj = pose_obj[key]
-                        break
-
-        if pose_obj is None:
-            raise ValueError("MultiCameraEncoder requires camera pose metadata in each camera entry.")
-
-        pose = torch.as_tensor(pose_obj, device=device, dtype=torch.float32)
-        if pose.dim() == 2:
-            if pose.shape == (3, 4):
-                pose = torch.cat(
-                    [pose, torch.tensor([[0.0, 0.0, 0.0, 1.0]], device=device, dtype=torch.float32)], dim=0
-                )
-            pose = pose.reshape(-1)
-        elif pose.dim() == 1:
-            pose = pose.reshape(-1)
-
-        if pose.numel() == 6:
-            return pose
-        if pose.numel() == 16:
-            return pose
-        raise ValueError(
-            "MultiCameraEncoder pose must be a 4x4 matrix, a flattened 16-vector, or a legacy 6-vector. "
-            f"Got {tuple(pose.shape)} with {pose.numel()} elements."
-        )
-
-    def forward(self, images: dict[str, Tensor], cam_meta: dict[str, dict[str, Any]]):
+    def forward(
+        self, images: dict[str, Tensor], cam_meta: dict[str, dict[str, Any]] | None = None
+    ) -> tuple[dict[str, Tensor], dict[str, Tensor], dict[str, dict[str, Tensor]]]:
         """
         images: {camera_id: (B, 3, H, W)}
         cam_meta: {
@@ -88,21 +49,33 @@ class MultiCameraEncoder(nn.Module):
                 "camera_id": int or str,
             }
         }
+
+        Returns per-camera outputs, kept separate (not concatenated/ensembled) so
+        callers can decide how to combine them — e.g. simple concatenation for
+        SimpleModel, or per-camera masking/prediction for JEPA-style pretraining:
+
+            tokens_per_cam: {camera_id: (B, N_cam, C)}
+            feats:          {camera_id: (B, C, H', W')}
+            skip_feats:     {camera_id: {"s2": ..., "s4": ...}}
         """
-        tokens_list: list[Tensor] = []
+        if not self.cam_ids:
+            raise ValueError("MultiCameraEncoder received an empty camera list.")
+
+        tokens_per_cam: dict[str, Tensor] = {}
+        feats: dict[str, Tensor] = {}
+        skip_feats: dict[str, dict[str, Tensor]] = {}
 
         for idx, cam_id in enumerate(self.cam_ids):
             img = images[cam_id]
             encoder = self.cam_encoders[cam_id]
 
-            tokens, _, _ = encoder(img)
+            tokens, feat, skips = encoder(img)
 
             if self.use_meta:
-                meta = cam_meta[cam_id]
                 cam_id_tensor = torch.tensor([idx], device=img.device, dtype=torch.long)
                 cam_id_emb = self.cam_id_embed(cam_id_tensor).view(1, 1, -1)
 
-                pose_vec = self._extract_pose_vector(meta, img.device)
+                pose_vec = getattr(self, f"_default_pose_{idx}").to(img.device)
                 if pose_vec.numel() == 6:
                     pose_emb = self.pose_mlp_legacy(pose_vec).view(1, 1, -1)
                 else:
@@ -110,9 +83,8 @@ class MultiCameraEncoder(nn.Module):
 
                 tokens = tokens + cam_id_emb + pose_emb
 
-            tokens_list.append(tokens)
+            tokens_per_cam[cam_id] = tokens
+            feats[cam_id] = feat
+            skip_feats[cam_id] = skips
 
-        if not tokens_list:
-            raise ValueError("MultiCameraEncoder received an empty camera list.")
-
-        return torch.cat(tokens_list, dim=1)
+        return tokens_per_cam, feats, skip_feats

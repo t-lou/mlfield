@@ -69,6 +69,9 @@ class TinyCameraEncoder(nn.Module):
 
         logger.info(f"TinyCameraEncoder: camera_calibration={self.camera_calibration}")
 
+        pose_matrix = self.camera_calibration.pose.sensor_from_vehicle.astype(np.float32)
+        self.register_buffer("cam_pose_vector", torch.from_numpy(pose_matrix.reshape(-1)))
+
         # Stage 1: 1/2 resolution
         self.stem = nn.Sequential(
             nn.Conv2d(3, 32, kernel_size=3, stride=2, padding=1),
