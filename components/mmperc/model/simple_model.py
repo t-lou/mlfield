@@ -24,11 +24,13 @@ class SimpleModel(nn.Module):
 
         assert params.use_lidar or params.use_camera, "Hey, both lidar and camera off."
 
+        self._sensor_name = "front_center"  # only front_center is labeled
+
         # ---------------------------------------------------------
         # 1. Lidar encoder → BEV feature map
         # ---------------------------------------------------------
         if params.use_lidar:
-            self.lidar_encoder = PointPillarBEV(params=params)  # (B, C, H, W)
+            self.lidar_encoder = PointPillarBEV(params=params, sensor_names=[self._sensor_name])  # (B, C, H, W)
 
         # ---------------------------------------------------------
         # 2. Camera encoder → token embeddings
@@ -115,7 +117,7 @@ class SimpleModel(nn.Module):
         # 1. Lidar → BEV feature map
         # ---------------------------------------------------------
         if self._params.use_lidar:
-            lidar_token: Tensor = self.lidar_encoder(points)  # (B, C, H, W)
+            lidar_token: Tensor = self.lidar_encoder({self._sensor_name: points})  # (B, C, H, W)
 
         # ---------------------------------------------------------
         # 2. Camera → tokens

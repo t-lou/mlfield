@@ -44,85 +44,84 @@ class PointPillarBEV(nn.Module):
         xyz_vehicle_h = xyz_h @ vehicle_T.T
         return torch.cat([xyz_vehicle_h[..., :3], points[..., 3:]], dim=-1)
 
-    def __init__(self, params: MmpercParams, sensor_name: str = "front_center", skip_calibration: bool = False) -> None:
+    def __init__(self, params: MmpercParams, sensor_names: list[str]) -> None:
         super().__init__()
 
-        # Raw point cloud → pillars
+        self.sensor_names = list(sensor_names)
+
+        self.calibrations = {
+            sensor_name: load_sensor_calibration(
+                Path(params.path_calibration),
+                sensor_name=sensor_name,
+                sensor_type="camera",  # in a2d2 dataset lidar data seems to be projected to camera
+            )
+            for sensor_name in self.sensor_names
+        }
+
+        # Shared voxelization + backbone pipeline across all sensors.
         self.voxelizer = PointpillarLite(params=params)
-
-        # Single-sensor calibration relative to the vehicle frame.
-        self.lidar_calibration = load_sensor_calibration(
-            Path(params.path_calibration),
-            sensor_name=sensor_name,
-            sensor_type="camera",
-        )
-        self.skip_calibration = skip_calibration
-
-        print(
-            self.lidar_calibration.pose.vehicle_from_sensor,
-        )
-
-        # Pillar Feature Network (per-pillar feature extraction)
         self.pfn = SimplePFN(in_channels=9, out_channels=64)
-
-        # BEV backbone (expands 64 → params.BEV_CHANNELS)
         self.backbone = TinyBEVBackbone(params=params, out_channels=params.bev_params.bev_channels)
-
-        # Precomputed BEV grid resolution
         self.bev_h = params.bev_params.bev_h
         self.bev_w = params.bev_params.bev_w
 
-    def forward(self, points: Tensor) -> Tensor:
-        """
-        Args:
-            points: (B, N, 5)
-                Raw lidar points: x, y, z, intensity, timestamp
-
-        Returns:
-            BEV feature map: (B, params.BEV_CHANNELS, H/2, W/2)
-        """
-
-        # Convert each LiDAR point from its sensor frame into the vehicle frame.
-        if not self.skip_calibration:
-            points = self.transform_points_to_vehicle(self.lidar_calibration, points)
-
-        # 1. Voxelization
+    def _encode_points(self, points: Tensor) -> Tensor:
+        """Voxelize, encode, and project the merged LiDAR points into a BEV feature map."""
         vox = self.voxelizer(points)
-        pillars = vox["pillars"]  # (B, P, M, C_in)
-        pillar_coords = vox["pillar_coords"]  # (B, P, 2)
+        pillars = vox["pillars"]
+        pillar_coords = vox["pillar_coords"]
         logger.debug(f"pillars.shape: {pillars.shape}, pillar_coords.shape: {pillar_coords.shape}")
 
-        # 2. PFN → per-pillar features
-        pillar_feats = self.pfn(pillars)  # (B, P, 64)
+        pillar_feats = self.pfn(pillars)
         logger.debug(f"pillar_feats.shape: {pillar_feats.shape}")
 
-        # 3. Scatter to BEV grid
         bev = scatter_to_bev(
             pillar_feats,
             pillar_coords,
             bev_h=self.bev_h,
             bev_w=self.bev_w,
-        )  # (B, 64, H, W)
+        )
         logger.debug(f"bev.shape: {bev.shape}")
 
-        # 4. BEV backbone, downsampling H/2, W/2
         bev_backbone = self.backbone(bev)
         logger.debug(f"bev_backbone.shape: {bev_backbone.shape}")
-
         return bev_backbone
+
+    def forward(self, points_by_sensor: dict[str, Tensor]) -> Tensor:
+        """
+        Args:
+            points_by_sensor: {
+                "front_center": Tensor[(B, N, 5)],
+                "front_left": Tensor[(B, N, 5)],
+                ...
+            }
+
+        Returns:
+            BEV feature map: (B, params.BEV_CHANNELS, H/2, W/2)
+        """
+        transformed: list[Tensor] = [
+            self.transform_points_to_vehicle(calibration=self.calibrations[sensor_name], points=points)
+            for sensor_name, points in points_by_sensor.items()
+        ]
+
+        if not transformed:
+            raise ValueError("No point clouds were provided to MultiPointPillarBEV.")
+
+        merged_points = torch.cat(transformed, dim=1)
+        return self._encode_points(merged_points)
 
 
 def _smoke_test():
-    """
-    Smoke test for PointPillarBEV
-    """
     params = MmpercParams()
-    model = PointPillarBEV(params=params)
+    model = PointPillarBEV(params=params, sensor_names=["front_center", "front_left"])
 
-    # Random input: (B, N, 5)
-    points = torch.rand((2, 1000, 5))
-    output = model(points)
-    print(f"Output shape: {output.shape}")
+    B = 2
+    points = {
+        "front_center": torch.rand((B, 1000, 5)),
+        "front_left": torch.rand((B, 1000, 5)),
+    }
+    out = model(points)
+    print(f"Output shape: {out.shape}")
 
 
 if __name__ == "__main__":
