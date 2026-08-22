@@ -41,6 +41,7 @@ class A2D2DatasetUnlabeled(Dataset):
     def __init__(self, params: MmpercParams, recording_time: str = "20190401145936", mode: Mode = Mode.TRAIN):
         self.params = params
         self.path_data = Path(params.path_data)
+        self.mode = mode
         assert self.path_data.is_dir()
         self.path_calib = Path(params.path_calibration)
         assert self.path_calib.exists()
@@ -70,18 +71,24 @@ class A2D2DatasetUnlabeled(Dataset):
                     logger.warning(f"Path {path} not found")
 
         assert self._tars
+        assert any(sensor_type == "camera" for sensor_type, _ in self._tars.keys())
 
-        # If any tar is found, extract all the sequence id of the files
+        # Open any camera file, collect the sequence ids and load json for timestamps
         self.sequence_ids = []
-        first_tar = next(iter(self._tars.values()))
-        for member in first_tar.getmembers():
+        self.timestamps = []
+        first_camera_tar = next(iter(tar for (sensor_type, _), tar in self._tars.items() if sensor_type == "camera"))
+        for member in first_camera_tar.getmembers():
             if member.isfile():
                 # Extract the sequence id from the filename with extension npz or png
                 path_member = Path(member.name)
-                if path_member.suffix in (".npz", ".png"):
+                if path_member.suffix == ".json":
                     sequence_id = path_member.stem.split("_")[-1]
                     self.sequence_ids.append(sequence_id)
+                    with first_camera_tar.extractfile(member) as f:
+                        data = json.load(f)
+                        self.timestamps.append(data["cam_tstamp"])
         self.sequence_ids.sort()
+        self.timestamps.sort()
         logger.info(f"Found {len(self.sequence_ids)} files.")
 
         # Read CAN and interpolate
@@ -137,6 +144,22 @@ class A2D2DatasetUnlabeled(Dataset):
             except Exception:
                 pass
 
+    def iter_sensor(self) -> tuple[str, str, tarfile.TarFile]:
+        """Iterate over all sensors and return the sensor type, position, and tarfile."""
+        for (sensor_type, sensor_position), tar in self._tars.items():
+            yield sensor_type, sensor_position, tar
+
+    def _find_nearest_last_can_signal(self, signal_name: str, timestamp: int) -> float:
+        """Find the last nearest CAN signal value for a given timestamp."""
+        signal_values = self.can_data[signal_name]["values"]
+        nearest_value = None
+        for ts, value in signal_values:
+            if ts <= timestamp:
+                nearest_value = value
+            else:
+                break
+        return nearest_value
+
     def get_with_index(self, index: int) -> dict:
         assert 0 <= index < len(self.sequence_ids)
         sequence_id = self.sequence_ids[index]
@@ -153,5 +176,17 @@ class A2D2DatasetUnlabeled(Dataset):
             logger.info(f"loading {path_dir}/{path_name} for {sensor_type} {sensor_position}")
             fileobj = tar.extractfile(f"{path_dir}/{path_name}")
             result[(sensor_type, sensor_position)] = fileobj
+
+        # Find the last nearest CAN in signals, if mode is REFINE, also add CAN out signals
+        timestamp = self.timestamps[index]
+        result["can_in"] = {
+            signal_name: self._find_nearest_last_can_signal(signal_name, timestamp)
+            for signal_name in self.signal_in_names
+        }
+        if self.mode == Mode.REFINE:
+            result["can_out"] = {
+                signal_name: self._find_nearest_last_can_signal(signal_name, timestamp)
+                for signal_name in self.signal_out_names
+            }
 
         return result

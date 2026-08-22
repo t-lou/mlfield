@@ -4,6 +4,7 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 from components.dataset.a2d2_dataset_unlabeled import A2D2DatasetUnlabeled
+from components.dataset.a2d2_dataset_unlabeled import Mode as DatasetMode
 from components.definitions.mmperc_params import MmpercParams
 from components.utils.calibration import load_sensor_calibration
 from components.utils.config import load_yaml
@@ -30,14 +31,26 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     cfg = load_yaml(Path(args.path_config), MmpercParams)
-    dataset = A2D2DatasetUnlabeled(cfg, recording_time="20190401145936")
+    dataset = A2D2DatasetUnlabeled(cfg, recording_time="20190401145936", mode=DatasetMode.REFINE)
 
     data = dataset.get_with_index(args.index)
+
+    if "can_in" in data:
+        print("CAN in signals:")
+        for signal_name, value in data["can_in"].items():
+            print(f"  {signal_name}: {value}")
+
+    if "can_out" in data:
+        print("CAN out signals:")
+        for signal_name, value in data["can_out"].items():
+            print(f"  {signal_name}: {value}")
+
     data_per_sensor = {}
-    for (sensor_type, sensor_position), fileobj in data.items():
+    keys_sensor = [k for k in data.keys() if isinstance(k, tuple) and len(k) == 2 and k[0] in ["camera", "lidar"]]
+    for sensor_type, sensor_position in keys_sensor:
         if sensor_type not in data_per_sensor:
             data_per_sensor[sensor_type] = {}
-        data_per_sensor[sensor_type][sensor_position] = fileobj
+        data_per_sensor[sensor_type][sensor_position] = data[(sensor_type, sensor_position)]
 
     plt.figure(1)
     line_offset = 0
