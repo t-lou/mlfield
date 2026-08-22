@@ -2,14 +2,12 @@ import argparse
 from pathlib import Path
 
 import matplotlib.pyplot as plt
-import numpy as np
 from components.dataset.a2d2_dataset_unlabeled import A2D2DatasetUnlabeled
 from components.dataset.a2d2_dataset_unlabeled import Mode as DatasetMode
 from components.definitions.mmperc_params import MmpercParams
 from components.utils.calibration import load_sensor_calibration
 from components.utils.config import load_yaml
 from components.utils.logger import configure_logger
-from PIL import Image
 
 if __name__ == "__main__":
     configure_logger("mmperc_check")
@@ -55,35 +53,31 @@ if __name__ == "__main__":
     plt.figure(1)
     line_offset = 0
     if "lidar" in data_per_sensor:
-        for i, (sensor_position, fileobj) in enumerate(data_per_sensor["lidar"].items()):
-            with fileobj:
-                lidar_data = np.load(fileobj)
-                key = "points" if "points" in lidar_data else "pcloud_points"
-                points = lidar_data[key]
-                plt.subplot(2, len(data_per_sensor["lidar"]), i + 1)
-                plt.plot(points[:, 0], points[:, 1], ".")
-                plt.title(sensor_position)
+        for i, (sensor_position, lidar_data) in enumerate(data_per_sensor["lidar"].items()):
+            key = "points" if "points" in lidar_data else "pcloud_points"
+            points = lidar_data[key]
+            plt.subplot(2, len(data_per_sensor["lidar"]), i + 1)
+            plt.plot(points[:, 0], points[:, 1], ".")
+            plt.title(sensor_position)
 
-                plt.figure(2)
-                vehicle_T = load_sensor_calibration(
-                    Path(cfg.path_calibration),
-                    sensor_name=sensor_position,
-                    sensor_type="camera",
-                ).pose.vehicle_from_sensor
-                xyz_vehicle = points @ vehicle_T[:3, :3].T
-                xyz_vehicle += vehicle_T[:3, -1]
-                plt.plot(xyz_vehicle[:, 0], xyz_vehicle[:, 1], ".", alpha=0.3, label=sensor_position)
-                plt.figure(1)  # switch back
+            plt.figure(2)
+            vehicle_T = load_sensor_calibration(
+                Path(cfg.path_calibration),
+                sensor_name=sensor_position,
+                sensor_type="camera",
+            ).pose.vehicle_from_sensor
+            xyz_vehicle = points @ vehicle_T[:3, :3].T
+            xyz_vehicle += vehicle_T[:3, -1]
+            plt.plot(xyz_vehicle[:, 0], xyz_vehicle[:, 1], ".", alpha=0.3, label=sensor_position)
+            plt.figure(1)  # switch back
 
         line_offset += 1
 
     if "camera" in data_per_sensor:
-        for i, (sensor_position, fileobj) in enumerate(data_per_sensor["camera"].items()):
-            with fileobj:
-                img = Image.open(fileobj).convert("RGB")
-                plt.subplot(2, len(data_per_sensor["camera"]), i + 1 + line_offset * len(data_per_sensor["camera"]))
-                plt.imshow(img)
-                plt.title(sensor_position)
+        for i, (sensor_position, img) in enumerate(data_per_sensor["camera"].items()):
+            plt.subplot(2, len(data_per_sensor["camera"]), i + 1 + line_offset * len(data_per_sensor["camera"]))
+            plt.imshow(img)
+            plt.title(sensor_position)
 
 plt.tight_layout()
 
