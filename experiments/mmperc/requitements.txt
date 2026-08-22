@@ -2,5 +2,6 @@ graphviz
 matplotlib
 numpy
 open3d
+pyvista
 torchviz
 tqdm

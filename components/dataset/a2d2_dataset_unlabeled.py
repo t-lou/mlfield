@@ -1,3 +1,4 @@
+import json
 import tarfile
 from enum import Enum
 from pathlib import Path
@@ -10,6 +11,19 @@ from torch.utils.data import Dataset
 class Mode(Enum):
     TRAIN = "train"
     REFINE = "refine"
+
+
+def _reformat_recording_time(recording_time: str) -> str:
+    if "_" in recording_time:
+        assert len(recording_time) == 15
+        return recording_time.replace("_", "")
+    else:
+        assert len(recording_time) == 14
+
+        recording_date = recording_time[:8]
+        recording_clock = recording_time[8:]
+
+        return f"{recording_date}_{recording_clock}"
 
 
 class A2D2DatasetUnlabeled(Dataset):
@@ -70,7 +84,49 @@ class A2D2DatasetUnlabeled(Dataset):
         self.sequence_ids.sort()
         logger.info(f"Found {len(self.sequence_ids)} files.")
 
-        # TODO read CAN and interpolate
+        # Read CAN and interpolate
+        self.signal_in_names = [
+            "acceleration_x",
+            "acceleration_y",
+            "acceleration_z",
+            "angular_velocity_omega_x",
+            "angular_velocity_omega_y",
+            "angular_velocity_omega_z",
+            "distance_pulse_front_left",
+            "distance_pulse_front_right",
+            "distance_pulse_rear_left",
+            "distance_pulse_rear_right",
+            "latitude_degree",
+            "latitude_direction",
+            "longitude_degree",
+            "longitude_direction",
+            "pitch_angle",
+            "roll_angle",
+            "vehicle_speed",
+        ]
+        self.signal_out_names = [
+            "accelerator_pedal",
+            "accelerator_pedal_gradient_sign",
+            "brake_pressure",
+            "steering_angle_calculated",
+            "steering_angle_calculated_sign",
+        ]
+        path_can = self.path_data / f"camera_lidar-{self.recording_time}_bus_signals.tar"
+        assert path_can.exists(), f"Path {path_can} not found"
+        with tarfile.open(path_can, mode="r") as can_file:
+            # Open and parse CAN content
+            path_json = (
+                f"camera_lidar/{_reformat_recording_time(self.recording_time)}/"
+                f"bus/{self.recording_time}_bus_signals.json"
+            )
+            with can_file.extractfile(path_json) as f:
+                self.can_data = json.load(f)
+
+                # Check the data
+                missing_in_signals = [n for n in self.signal_in_names if n not in self.can_data]
+                missing_out_signals = [n for n in self.signal_out_names if n not in self.can_data]
+                assert not missing_in_signals, f"Missing CAN signals: {missing_in_signals}"
+                assert not missing_out_signals, f"Missing CAN signals: {missing_out_signals}"
 
     def __del__(self) -> None:
         """Close all opened tars."""
@@ -85,13 +141,12 @@ class A2D2DatasetUnlabeled(Dataset):
         assert 0 <= index < len(self.sequence_ids)
         sequence_id = self.sequence_ids[index]
 
-        recording_date = self.recording_time[:8]
-        recording_clock = self.recording_time[8:]
-
         result = {}
 
         for (sensor_type, sensor_position), tar in self._tars.items():
-            path_dir = f"./camera_lidar/{recording_date}_{recording_clock}/{sensor_type}/cam_{sensor_position}"
+            path_dir = (
+                f"./camera_lidar/{_reformat_recording_time(self.recording_time)}/{sensor_type}/cam_{sensor_position}"
+            )
             pos_in_name = sensor_position.replace("_", "")
             ext = "npz" if sensor_type == "lidar" else "png"
             path_name = f"{self.recording_time}_{sensor_type}_{pos_in_name}_{sequence_id}.{ext}"
