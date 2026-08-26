@@ -20,7 +20,7 @@ class SimpleModel(nn.Module):
     - BEV detection heads (heatmap + regression)
     """
 
-    def __init__(self, params: MmpercParams) -> None:
+    def __init__(self, params: MmpercParams, lidar_encoder: nn.Module | None = None) -> None:
         super().__init__()
 
         assert params.use_lidar or params.use_camera, "Hey, both lidar and camera off."
@@ -31,7 +31,9 @@ class SimpleModel(nn.Module):
         # 1. Lidar encoder → BEV feature map
         # ---------------------------------------------------------
         if params.use_lidar:
-            self.lidar_encoder = PointPillarBEV(params=params, sensor_names=[self._sensor_name])  # (B, C, H, W)
+            self.lidar_encoder = lidar_encoder or PointPillarBEV(
+                params=params, sensor_names=[self._sensor_name]
+            )  # (B, C, H, W)
 
         # ---------------------------------------------------------
         # 2. Camera encoder → token embeddings

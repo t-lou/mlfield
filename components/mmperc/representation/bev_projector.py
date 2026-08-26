@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import torch
 from torch import Tensor, nn
 
 from components.vit.position_embedding import PosEmbdCache

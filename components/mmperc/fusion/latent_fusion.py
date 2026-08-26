@@ -3,7 +3,7 @@ from __future__ import annotations
 import torch
 from torch import Tensor, nn
 
-from components.mmperc.fusion.perceiver_core import (
+from components.mmperc.fusion.perceiver_fusion import (
     CrossAttention,
     FeedForward,
     LatentSelfAttentionLayer,
