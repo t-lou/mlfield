@@ -5,6 +5,8 @@ from torch.nn import functional as F
 
 def _mask_tokens(tokens: Tensor, mask_ratio: float) -> Tensor:
     """Randomly hide token content while retaining its positions."""
+    if tokens.ndim != 3:
+        raise ValueError(f"tokens must have shape (B, N, D), got {tuple(tokens.shape)}")
     if not 0.0 <= mask_ratio < 1.0:
         raise ValueError("mask_ratio must be in the range [0, 1)")
     if mask_ratio == 0.0:
@@ -46,6 +48,8 @@ def sigreg_loss(embeddings: Tensor, num_slices: int = 64) -> Tensor:
     """
     if embeddings.ndim != 3:
         raise ValueError("embeddings must have shape (B, N, D)")
+    if num_slices < 1:
+        raise ValueError("num_slices must be positive")
     flat = F.normalize(embeddings.reshape(-1, embeddings.shape[-1]), dim=-1)
     directions = torch.randn(num_slices, flat.shape[-1], device=flat.device, dtype=flat.dtype)
     directions = F.normalize(directions, dim=-1)
@@ -73,7 +77,7 @@ class LeJEPA(nn.Module):
         lidar_points: dict[str, Tensor],
         camera_images: dict[str, Tensor],
         cam_meta: dict[str, dict] | None = None,
-        can_tokens: Tensor | None = None,
+        can_tokens: Tensor | dict[str, Tensor] | None = None,
         mask_ratio: float = 0.5,
     ) -> dict[str, Tensor]:
         context = self.encoder.encode_modalities(lidar_points, camera_images, cam_meta, can_tokens)
@@ -115,12 +119,14 @@ class JEPAEncoder(nn.Module):
         camera_encoder: nn.Module,
         fusion_module: nn.Module,
         bev_projector: nn.Module = None,
+        can_encoder: nn.Module | None = None,
     ):
         super().__init__()
         self.lidar_encoder = lidar_encoder
         self.camera_encoder = camera_encoder
         self.fusion_module = fusion_module
         self.bev_projector = bev_projector  # used only in fine-tuning
+        self.can_encoder = can_encoder
 
     def forward_ssl(self, lidar_points_list, camera_images_list, cam_meta_list, can_bus=None):
         """
@@ -143,6 +149,10 @@ class JEPAEncoder(nn.Module):
     def encode_modalities(self, lidar_points, camera_images, cam_meta=None, can_tokens=None):
         lidar_bev = self.lidar_encoder(lidar_points)
         camera_tokens, _, _ = self.camera_encoder(camera_images, cam_meta)
+        if isinstance(can_tokens, dict):
+            if self.can_encoder is None:
+                raise ValueError("CAN input is a dictionary but no can_encoder was configured")
+            can_tokens = self.can_encoder(can_tokens)
         return {"lidar": lidar_bev, "cameras": camera_tokens, "can": can_tokens}
 
     def fuse(self, lidar_bev, camera_tokens, can_tokens=None):

@@ -148,6 +148,8 @@ class LatentFusion(nn.Module):
                 spatial_hints[name] = cam_hw[cam_id]
 
         if can_tokens is not None:
+            if "can" not in self.modality_encoders:
+                raise ValueError("CAN tokens were provided, but LatentFusion was built without a CAN modality")
             inputs["can"] = can_tokens
 
         tokens = self._registry.encode(inputs, spatial_hints)  # (B, N_total, dim)

@@ -180,7 +180,7 @@ def _smoke_test():
     x = torch.rand(B, C_in, H, W)
     params = MmpercParams()
     encoder = TinyCameraEncoder(params=params)
-    tokens, feat = encoder(x)
+    tokens, feat, _ = encoder(x)
     assert tokens.shape[0] == B and tokens.shape[2] == params.bev_params.bev_channels
     assert feat.shape[0] == B and feat.shape[1] == params.bev_params.bev_channels
     print("TinyCameraEncoder smoke test passed.")
