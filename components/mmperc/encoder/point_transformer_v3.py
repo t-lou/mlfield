@@ -114,17 +114,18 @@ class PointTransformerV3BEV(nn.Module):
         vehicle_xyz = (xyz_h @ transform.T)[..., :3]
         return torch.cat([vehicle_xyz, points[..., 3:]], dim=-1)
 
-    def _serialize(self, pillar_features: Tensor, pillar_coords: Tensor) -> tuple[Tensor, Tensor, Tensor]:
+    def _serialize(
+        self, pillar_features: Tensor, pillar_coords: Tensor, pillar_valid: Tensor
+    ) -> tuple[Tensor, Tensor, Tensor]:
         batch_size, num_pillars, dim = pillar_features.shape
-        valid = pillar_features.abs().sum(dim=-1) > 0
-        batch_ids = torch.arange(batch_size, device=pillar_features.device).view(-1, 1).expand_as(valid)
+        batch_ids = torch.arange(batch_size, device=pillar_features.device).view(-1, 1).expand_as(pillar_valid)
         keys = _morton_code(pillar_coords[..., 0].long(), pillar_coords[..., 1].long())
         keys = keys + batch_ids * (1 << 32)
-        keys = keys.masked_fill(~valid, torch.iinfo(keys.dtype).max)
+        keys = keys.masked_fill(~pillar_valid, torch.iinfo(keys.dtype).max)
         order = torch.argsort(keys, dim=1)
         return (
             pillar_features.gather(1, order.unsqueeze(-1).expand(-1, -1, dim)),
-            valid.gather(1, order),
+            pillar_valid.gather(1, order),
             order,
         )
 
@@ -134,8 +135,20 @@ class PointTransformerV3BEV(nn.Module):
         point_valid = voxels["pillars"].abs().sum(dim=-1) > 0
         point_padding = ~point_valid
         point_padding[..., 0] = False
+
+        # nn.MultiheadAttention (batch_first=True) only accepts 3D (batch,
+        # seq, dim) input. `pillar_points` is (B, P, M, dim), so each
+        # pillar's M points need to be flattened into the batch dimension
+        # before attending over them, then unflattened afterward. The mask
+        # was already being reshaped this way below; the features were not,
+        # which would raise a shape error the first time this ran.
+        b, p, m, d = pillar_points.shape
+        pillar_points = pillar_points.reshape(b * p, m, d)
+        point_padding_flat = point_padding.reshape(b * p, m)
         for block in self.point_blocks:
-            pillar_points = block(pillar_points, key_padding_mask=point_padding.reshape(-1, point_padding.shape[-1]))
+            pillar_points = block(pillar_points, key_padding_mask=point_padding_flat)
+        pillar_points = pillar_points.reshape(b, p, m, d)
+
         point_weights = point_valid.to(pillar_points.dtype).unsqueeze(-1)
         pooled = (pillar_points * point_weights).sum(dim=2) / point_weights.sum(dim=2).clamp_min(1.0)
         pooled = self.pillar_pool(pooled)
@@ -143,19 +156,40 @@ class PointTransformerV3BEV(nn.Module):
         coordinates = coordinates / coordinates.new_tensor([self.bev_w, self.bev_h])
         pooled = pooled + self.pillar_position(coordinates)
 
-        serialized, valid, order = self._serialize(pooled, voxels["pillar_coords"])
+        # Pillar validity must come from the raw points (point_valid, above),
+        # not from `pooled`: LayerNorm's affine bias in pillar_pool and the
+        # position embedding both add a nonzero value to every pillar,
+        # including empty ones, so by the time a pillar reaches `pooled` an
+        # all-zero (empty) pillar no longer looks like all-zeros.
+        pillar_valid = point_valid.any(dim=-1)
+
+        serialized, valid, order = self._serialize(pooled, voxels["pillar_coords"], pillar_valid)
         batch_size, num_pillars, dim = serialized.shape
         padding = ~valid
         for start in range(0, num_pillars, self.window_size):
             stop = min(start + self.window_size, num_pillars)
-            serialized[:, start:stop] = self.pillar_blocks[0](
-                serialized[:, start:stop], key_padding_mask=padding[:, start:stop]
-            )
-            for block in self.pillar_blocks[1:]:
-                serialized[:, start:stop] = block(serialized[:, start:stop], key_padding_mask=padding[:, start:stop])
+            window_padding = padding[:, start:stop].clone()
+            # A window can end up entirely padding once real pillars run out
+            # (they're sorted to the front by _serialize). An all-True
+            # key_padding_mask row makes every attention score -inf for that
+            # batch item, and softmax over an all -inf row is NaN. Force one
+            # token unmasked in that case -- its output is discarded anyway
+            # since the whole window is invalid, but this stops the NaN from
+            # ever being written into `serialized`.
+            fully_padded = window_padding.all(dim=1)
+            window_padding[fully_padded, 0] = False
+            for block in self.pillar_blocks:
+                serialized[:, start:stop] = block(serialized[:, start:stop], key_padding_mask=window_padding)
 
         inverse = torch.argsort(order, dim=1)
         pooled = serialized.gather(1, inverse.unsqueeze(-1).expand(-1, -1, dim))
+        # Zero out invalid pillars before scattering. pillar_pool /
+        # pillar_position (and, transiently, any NaN-guarded window above)
+        # can leave non-zero values in pillars that have no real points, and
+        # every invalid pillar shares coordinate (0, 0) in PointpillarLite's
+        # padded output -- left unmasked, that would land on top of whatever
+        # real feature belongs at BEV cell (0, 0).
+        pooled = pooled * pillar_valid.unsqueeze(-1).to(pooled.dtype)
         bev = scatter_to_bev(pooled, voxels["pillar_coords"], self.bev_h, self.bev_w)
         return self.backbone(bev)
 
