@@ -118,9 +118,10 @@ class PointTransformerV3BEV(nn.Module):
         self, pillar_features: Tensor, pillar_coords: Tensor, pillar_valid: Tensor
     ) -> tuple[Tensor, Tensor, Tensor]:
         batch_size, num_pillars, dim = pillar_features.shape
-        batch_ids = torch.arange(batch_size, device=pillar_features.device).view(-1, 1).expand_as(pillar_valid)
+        # argsort below runs per batch row (dim=1), so batches are already
+        # sorted independently -- no batch offset needs to be folded into
+        # the key itself.
         keys = _morton_code(pillar_coords[..., 0].long(), pillar_coords[..., 1].long())
-        keys = keys + batch_ids * (1 << 32)
         keys = keys.masked_fill(~pillar_valid, torch.iinfo(keys.dtype).max)
         order = torch.argsort(keys, dim=1)
         return (
@@ -134,6 +135,10 @@ class PointTransformerV3BEV(nn.Module):
         pillar_points = self.point_input(voxels["pillars"])
         point_valid = voxels["pillars"].abs().sum(dim=-1) > 0
         point_padding = ~point_valid
+        # A pillar with zero real points would otherwise have an all-True
+        # padding row, which makes every attention score -inf and softmax
+        # NaN. Force one token unmasked -- its output is discarded later
+        # since point_valid (not point_padding) drives the pooling weights.
         point_padding[..., 0] = False
 
         # nn.MultiheadAttention (batch_first=True) only accepts 3D (batch,
@@ -166,20 +171,35 @@ class PointTransformerV3BEV(nn.Module):
         serialized, valid, order = self._serialize(pooled, voxels["pillar_coords"], pillar_valid)
         batch_size, num_pillars, dim = serialized.shape
         padding = ~valid
-        for start in range(0, num_pillars, self.window_size):
-            stop = min(start + self.window_size, num_pillars)
-            window_padding = padding[:, start:stop].clone()
-            # A window can end up entirely padding once real pillars run out
-            # (they're sorted to the front by _serialize). An all-True
-            # key_padding_mask row makes every attention score -inf for that
-            # batch item, and softmax over an all -inf row is NaN. Force one
-            # token unmasked in that case -- its output is discarded anyway
-            # since the whole window is invalid, but this stops the NaN from
-            # ever being written into `serialized`.
-            fully_padded = window_padding.all(dim=1)
-            window_padding[fully_padded, 0] = False
-            for block in self.pillar_blocks:
-                serialized[:, start:stop] = block(serialized[:, start:stop], key_padding_mask=window_padding)
+
+        # Windows never attend to each other, so instead of looping over
+        # them in Python (issuing depth * num_windows small attention calls
+        # per forward pass) we fold the window dimension into the batch
+        # dimension and run each block once over every window at once.
+        window = self.window_size
+        num_windows = -(-num_pillars // window)  # ceil division
+        pad_amount = num_windows * window - num_pillars
+        if pad_amount:
+            serialized = torch.cat([serialized, serialized.new_zeros(batch_size, pad_amount, dim)], dim=1)
+            padding = torch.cat([padding, padding.new_ones(batch_size, pad_amount)], dim=1)
+
+        windowed = serialized.view(batch_size * num_windows, window, dim)
+        window_padding = padding.view(batch_size * num_windows, window).clone()
+
+        # A window can end up entirely padding once real pillars run out
+        # (they're sorted to the front by _serialize), or from the padding
+        # added above. An all-True key_padding_mask row makes every
+        # attention score -inf for that item, and softmax over an all -inf
+        # row is NaN. Force one token unmasked in that case -- its output is
+        # discarded anyway since the whole window is invalid, but this stops
+        # the NaN from ever being written into `serialized`.
+        fully_padded = window_padding.all(dim=1)
+        window_padding[fully_padded, 0] = False
+
+        for block in self.pillar_blocks:
+            windowed = block(windowed, key_padding_mask=window_padding)
+
+        serialized = windowed.view(batch_size, num_windows * window, dim)[:, :num_pillars]
 
         inverse = torch.argsort(order, dim=1)
         pooled = serialized.gather(1, inverse.unsqueeze(-1).expand(-1, -1, dim))
