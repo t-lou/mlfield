@@ -96,7 +96,12 @@ def generate_masks_for_batch(
     num_target_blocks: int = 4,
     device: torch.device | None = None,
 ) -> tuple[torch.Tensor, list[torch.Tensor]]:
-    """Generate context and target masks for a batch (CPU-friendly, for DataLoader prefetch).
+    """Generate context and target masks for a batch.
+
+    Sampling is performed on the CPU and the completed masks are moved to
+    ``device``. Target masks are cleared where they overlap the context mask;
+    every target mask still contains at least one patch when the grid has an
+    available patch.
 
     Args:
         batch_size: Number of samples in batch
@@ -149,15 +154,15 @@ def generate_masks_for_batch(
         empty_mask = target_masks_all.sum(dim=1) == 0  # (B,) bool
 
         if empty_mask.any():
-            empty_indices = torch.where(empty_mask)[0]
-            for idx in empty_indices:
-                avail_positions = torch.where(available[idx])[0]
-                if avail_positions.numel() > 0:
-                    random_offset = torch.randint(0, avail_positions.numel(), (1,), device=device)
-                    target_masks_all[idx, avail_positions[random_offset]] = True
-                else:
-                    random_pos = torch.randint(0, target_masks_all.shape[1], (1,), device=device)
-                    target_masks_all[idx, random_pos] = True
+            # Select one random available patch per empty row in one tensor op.
+            # Rows without available patches fall back to any patch.
+            random_scores = torch.rand_like(target_masks_all, dtype=torch.float32)
+            available_scores = random_scores.masked_fill(~available, -1.0)
+            available_positions = available_scores.argmax(dim=1)
+            fallback_positions = random_scores.argmax(dim=1)
+            positions = torch.where(available.any(dim=1), available_positions, fallback_positions)
+            empty_rows = torch.where(empty_mask)[0]
+            target_masks_all[empty_rows, positions[empty_rows]] = True
 
         target_masks.append(target_masks_all)
 
@@ -168,7 +173,7 @@ def collate_fn_with_masks(
     batch,
     config,
     device: torch.device,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, list[torch.Tensor]]:
+) -> tuple[torch.Tensor, torch.Tensor, list[torch.Tensor]]:
     """Custom collate function that prefetches masks alongside images.
 
     Use this as the collate_fn for DataLoader when using mask prefetching.
@@ -179,7 +184,7 @@ def collate_fn_with_masks(
         device: Device to generate masks on
 
     Returns:
-        (images, context_masks, target_masks_list) ready for model forward()
+        ``(images, context_masks, target_masks_list)`` ready for model forward().
     """
     # Stack images
     images = torch.stack([item[0] if isinstance(item, tuple) else item for item in batch])

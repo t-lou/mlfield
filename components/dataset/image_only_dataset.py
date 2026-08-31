@@ -18,10 +18,10 @@ DEFAULT_PREFETCH_THREAD = 12
 
 
 class _ThreadedBatchMixin:
-    """Adds a threaded __getitems__ on top of a subclass-provided _load_one.
+    """Add threaded batch loading to a dataset implementing ``_load_one``.
 
-    Also makes the dataset safe to pickle (spawn) or fork: thread pool and
-    any per-thread handles are dropped from state and recreated lazily.
+    The pool and thread-local archive handles are excluded from serialized
+    state and recreated lazily in the process that performs the reads.
     """
 
     _prefetch_threads: int = DEFAULT_PREFETCH_THREAD
@@ -43,7 +43,7 @@ class _ThreadedBatchMixin:
 
 
 class ImageOnlyFolderDataset(_ThreadedBatchMixin, torch.utils.data.Dataset):
-    """Dataset for images without annotation, backed by a plain folder."""
+    """Load RGB images recursively from one or more filesystem folders."""
 
     def __init__(
         self,
@@ -78,13 +78,10 @@ class ImageOnlyFolderDataset(_ThreadedBatchMixin, torch.utils.data.Dataset):
 
 
 class ImageOnlyZipDataset(_ThreadedBatchMixin, torch.utils.data.Dataset):
-    """Dataset for images without annotation, backed by one or more zip archives.
+    """Load RGB images from one or more ZIP archives.
 
-    Transparently supports ZIP_STORED and any ZIP_DEFLATED compression level
-    (Defl:N/X/S all decode the same way -- level only matters when writing).
-    Each thread opens its own ZipFile handle onto the same path, so reads
-    across threads run truly concurrently instead of serializing on a shared
-    file object -- important when the underlying filesystem is slow.
+    Only stored and deflated entries are supported. Each worker thread opens
+    its own handle so concurrent reads do not share a mutable archive cursor.
     """
 
     def __init__(
@@ -143,12 +140,11 @@ class ImageOnlyZipDataset(_ThreadedBatchMixin, torch.utils.data.Dataset):
 
 
 class ImageOnlyTarDataset(_ThreadedBatchMixin, torch.utils.data.Dataset):
-    """Dataset for images without annotation, backed by one or more tar archives.
+    """Load RGB images from one or more uncompressed TAR archives.
 
-    Requires uncompressed .tar so members can be read via direct seek+read.
-    Each thread opens its own file handle onto the same path -- sharing one
-    handle across threads for raw seek()+read() is an actual data race, not
-    just a performance issue, so this is required for correctness, not just speed.
+    Member offsets are indexed once, then each thread reads through its own
+    file handle. Compressed TAR files are rejected because direct reads need
+    the stored member offsets.
     """
 
     def __init__(
@@ -207,11 +203,10 @@ class ImageOnlyTarDataset(_ThreadedBatchMixin, torch.utils.data.Dataset):
 
 
 class ImageOnlyDataset(torch.utils.data.Dataset):
-    """Container generalizing over Folder / Tar / Zip sources.
+    """Combine folder, TAR, and ZIP image sources into one dataset.
 
-    Defines __getitems__ so batched fetches actually reach the underlying
-    threaded datasets -- without this, DataLoader silently falls back to
-    one __getitem__ call per index and none of the threading below helps.
+    Batched access is grouped by source and forwarded to each source's
+    threaded ``__getitems__`` implementation, preserving the input order.
     """
 
     def __init__(
