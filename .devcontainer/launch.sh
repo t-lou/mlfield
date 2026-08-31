@@ -87,6 +87,9 @@ fi
 
 echo
 
+echo "Ensuring the required local base image exists: $BASE_IMAGE"
+bash ./.devcontainer/create_base_container.sh
+
 echo "Building development container from $BASE_IMAGE..."
 docker compose -f .devcontainer/docker-compose.yml build \
     --build-arg HOST_UID="$HOST_UID" \
