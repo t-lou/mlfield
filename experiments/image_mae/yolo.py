@@ -25,6 +25,7 @@ Why Teacher Models Help:
 
 import argparse
 from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 
 import torch
@@ -37,10 +38,60 @@ from components.vit.teacher_models import TeacherModel, create_teacher_model
 from torch.utils.data import DataLoader
 
 
+class YOLOVariant(Enum):
+    """YOLO scale variants with depth and width multipliers.
+
+    Standard YOLOv8 scaling approach:
+    - Depth multiplier: scales number of blocks in each C2f stage
+    - Width multiplier: scales number of channels in each stage
+    """
+
+    S = (0.33, 0.5)  # Small: 1/3 depth, 1/2 width
+    M = (0.67, 0.75)  # Medium: 2/3 depth, 3/4 width
+    L = (1.0, 1.0)  # Large: full depth and width
+    XL = (1.33, 1.25)  # Extra Large: 4/3 depth, 5/4 width
+
+    def __init__(self, depth_mult, width_mult):
+        self.depth_mult = depth_mult
+        self.width_mult = width_mult
+
+
+@dataclass(frozen=True)
+class YOLOArchConfig:
+    """Architecture configuration for flexible YOLO models.
+
+    Controls depth (number of blocks) and width (number of channels) for each scale.
+    """
+
+    variant: YOLOVariant = YOLOVariant.S
+    base_channels: int = 64  # Base channel for stem (scaled by width_mult)
+    base_depth: int = 3  # Base depth units (scaled by depth_mult)
+
+    @property
+    def depth_mult(self):
+        return self.variant.depth_mult
+
+    @property
+    def width_mult(self):
+        return self.variant.width_mult
+
+    def get_channels(self, base: int) -> int:
+        """Scale channel dimension by width multiplier."""
+        return int(base * self.width_mult)
+
+    def get_depth(self, base: int) -> int:
+        """Scale depth (number of blocks) by depth multiplier."""
+        return max(1, int(base * self.depth_mult))
+
+
 @dataclass(frozen=True)
 class YOLOConfig:
-    """Configuration for YOLOv8-s training"""
+    """Configuration for YOLO training with flexible architecture."""
 
+    # Architecture
+    arch: YOLOArchConfig = YOLOArchConfig(variant=YOLOVariant.S)
+
+    # Training
     image_size: int = 640  # Input image size
     batch_size: int = 32  # Adjust for GPU memory (30GB: 32-64, 4GB: 4-8)
     num_classes: int = 80  # COCO has 80 classes
@@ -135,9 +186,13 @@ class C2fBlock(nn.Module):
 
 
 class YOLOBackbone(nn.Module):
-    """
-    YOLOv8-s Backbone
+    """Flexible YOLOv8 Backbone that scales to different variants (s/m/l/xl).
+
     Outputs multi-scale features: P3 (1/8), P4 (1/16), P5 (1/32)
+
+    Architecture adapts based on depth_mult and width_mult:
+    - depth_mult: scales number of BottleNeck blocks in each C2f stage
+    - width_mult: scales number of channels at each stage
 
     WHY BACKBONE MATTERS FOR DISTILLATION:
     - Early layers learn low-level features (edges, textures)
@@ -146,69 +201,84 @@ class YOLOBackbone(nn.Module):
     - Teacher provides "golden reference" for all these levels
     """
 
-    def __init__(self, use_teacher_distillation: bool = False, teacher_feature_dim: int | None = None):
+    def __init__(
+        self,
+        arch: YOLOArchConfig = None,
+        use_teacher_distillation: bool = False,
+        teacher_feature_dim: int | None = None,
+    ):
         super().__init__()
+        if arch is None:
+            arch = YOLOArchConfig(variant=YOLOVariant.S)
+        self.arch = arch
         self.use_teacher_distillation = use_teacher_distillation
 
-        # Stem: Initial convolution to reduce spatial size and increase channels, preparing for deeper feature
-        # extraction.
-        self.stem = ConvBlock(3, 64, kernel_size=3, stride=2, padding=1)
+        # Channel progression: 64 → 128 → 256 → 512 → 1024
+        base_channels = [64, 128, 256, 512, 1024]
+        channels = [self.arch.get_channels(c) for c in base_channels]
 
-        # Darknet-like stages (dark2, dark3, dark4, dark5) progressively downsample the feature maps while increasing
-        # channel depth. Each stage consists of a ConvBlock followed by a C2fBlock to extract rich features at multiple
-        # scales.
+        # Depth progression for C2f blocks (scales by depth_mult)
+        base_depths = [1, 2, 2, 1]  # dark2, dark3, dark4, dark5
+        depths = [self.arch.get_depth(d) for d in base_depths]
+
+        # Stem: Initial convolution (3 → base_channels[0])
+        self.stem = ConvBlock(3, channels[0], kernel_size=3, stride=2, padding=1)
+
+        # Darknet-like stages: each stage has downsampling + C2f block
         self.dark2 = nn.Sequential(
-            ConvBlock(64, 128, kernel_size=3, stride=2, padding=1),
-            C2fBlock(128, 128, num_bottlenecks=1),
+            ConvBlock(channels[0], channels[1], kernel_size=3, stride=2, padding=1),
+            C2fBlock(channels[1], channels[1], num_bottlenecks=depths[0]),
         )
 
         self.dark3 = nn.Sequential(
-            ConvBlock(128, 256, kernel_size=3, stride=2, padding=1),
-            C2fBlock(256, 256, num_bottlenecks=2),
+            ConvBlock(channels[1], channels[2], kernel_size=3, stride=2, padding=1),
+            C2fBlock(channels[2], channels[2], num_bottlenecks=depths[1]),
         )
 
         self.dark4 = nn.Sequential(
-            ConvBlock(256, 512, kernel_size=3, stride=2, padding=1),
-            C2fBlock(512, 512, num_bottlenecks=2),
+            ConvBlock(channels[2], channels[3], kernel_size=3, stride=2, padding=1),
+            C2fBlock(channels[3], channels[3], num_bottlenecks=depths[2]),
         )
 
         self.dark5 = nn.Sequential(
-            ConvBlock(512, 1024, kernel_size=3, stride=2, padding=1),
-            C2fBlock(1024, 1024, num_bottlenecks=1),
+            ConvBlock(channels[3], channels[4], kernel_size=3, stride=2, padding=1),
+            C2fBlock(channels[4], channels[4], num_bottlenecks=depths[3]),
         )
 
-        # DISTILLATION ADAPTER (if using teacher model):
-        # Different teacher models output different feature dimensions at ~1/16 scale
-        # MAE: 768-dim, DINO: 384-dim, I-JEPA: embed_dim
-        # We need to match YOLO's P4 features (512-dim at 1/16 scale)
-        # This adapter helps align representations generically
+        # Store final channel dimensions for downstream modules
+        self.out_channels = (channels[2], channels[3], channels[4])  # P3, P4, P5
+
+        # DISTILLATION ADAPTER (if using teacher model)
         if self.use_teacher_distillation:
             assert teacher_feature_dim is not None, "teacher_feature_dim is required when use_teacher_distillation=True"
+            # Project teacher features to match YOLO's P4 feature dimension
             self.teacher_adapter = nn.Sequential(
-                nn.Linear(teacher_feature_dim, 512),  # Project teacher features to YOLO feature dim
+                nn.Linear(teacher_feature_dim, channels[3]),
                 nn.ReLU(inplace=True),
-                nn.Linear(512, 512),  # Refine features to match YOLO's P4 representation
+                nn.Linear(channels[3], channels[3]),
             )
 
     def forward(self, x):
-        """
-        Forward pass for YOLO backbone.
+        """Forward pass for YOLO backbone.
 
         Args:
             x: Input image tensor (B, 3, H, W)
+
+        Returns:
+            p3, p4, p5: Feature maps at 1/8, 1/16, 1/32 scales
         """
         p1 = self.stem(x)  # 1/2
-        p2 = self.dark2(p1)  # 1/4, 128 channels
-        p3 = self.dark3(p2)  # 1/8, 256 channels (P3 output)
-        p4 = self.dark4(p3)  # 1/16, 512 channels (P4 output) <- teacher alignment target
-        p5 = self.dark5(p4)  # 1/32, 1024 channels (P5 output)
+        p2 = self.dark2(p1)  # 1/4
+        p3 = self.dark3(p2)  # 1/8
+        p4 = self.dark4(p3)  # 1/16
+        p5 = self.dark5(p4)  # 1/32
 
         return p3, p4, p5
 
 
 class YOLONeck(nn.Module):
-    """
-    YOLOv8 Neck (FPN - Feature Pyramid Network)
+    """Flexible YOLOv8 Neck (FPN - Feature Pyramid Network) that scales to different variants.
+
     Combines multi-scale features to create rich representations at each scale.
 
     IMPORTANCE FOR DETECTION:
@@ -218,25 +288,33 @@ class YOLONeck(nn.Module):
     - Neck combines them so each level has both detail and semantics
     """
 
-    def __init__(self):
+    def __init__(self, in_channels: tuple[int, int, int]):
+        """
+        Args:
+            in_channels: (c3, c4, c5) channel dimensions from backbone
+        """
         super().__init__()
+        c3, c4, c5 = in_channels
 
         # Upsample and fuse P5 with P4
-        self.cv1 = ConvBlock(1024, 512, kernel_size=1, stride=1, padding=0)
+        self.cv1 = ConvBlock(c5, c4, kernel_size=1, stride=1, padding=0)
         self.upsample1 = nn.Upsample(scale_factor=2, mode="nearest")
-        self.c2f1 = C2fBlock(1024, 512, num_bottlenecks=1)  # 512 (up) + 512 (P4)
+        self.c2f1 = C2fBlock(c4 + c4, c4, num_bottlenecks=1)  # c4 (up) + c4 (P4)
 
         # Upsample and fuse with P3
-        self.cv2 = ConvBlock(512, 256, kernel_size=1, stride=1, padding=0)
+        self.cv2 = ConvBlock(c4, c3, kernel_size=1, stride=1, padding=0)
         self.upsample2 = nn.Upsample(scale_factor=2, mode="nearest")
-        self.c2f2 = C2fBlock(512, 256, num_bottlenecks=1)  # 256 (up) + 256 (P3)
+        self.c2f2 = C2fBlock(c3 + c3, c3, num_bottlenecks=1)  # c3 (up) + c3 (P3)
 
         # Downsample and fuse back
-        self.cv3 = ConvBlock(256, 256, kernel_size=3, stride=2, padding=1)
-        self.c2f3 = C2fBlock(768, 512, num_bottlenecks=1)  # 256 (down) + 512 (fp4)
+        self.cv3 = ConvBlock(c3, c3, kernel_size=3, stride=2, padding=1)
+        self.c2f3 = C2fBlock(c3 + c4, c4, num_bottlenecks=1)  # c3 (down) + c4 (fp4)
 
-        self.cv4 = ConvBlock(512, 512, kernel_size=3, stride=2, padding=1)
-        self.c2f4 = C2fBlock(1536, 1024, num_bottlenecks=1)  # 512 (down) + 1024 (p5)
+        self.cv4 = ConvBlock(c4, c4, kernel_size=3, stride=2, padding=1)
+        self.c2f4 = C2fBlock(c4 + c5, c5, num_bottlenecks=1)  # c4 (down) + c5 (p5)
+
+        # Store output channels for head
+        self.out_channels = (c3, c4, c5)
 
     def forward(self, p3, p4, p5):
         """
@@ -269,8 +347,8 @@ class YOLONeck(nn.Module):
 
 
 class YOLOHead(nn.Module):
-    """
-    YOLOv8 Detection Head
+    """Flexible YOLOv8 Detection Head that scales to different variants.
+
     Predicts bounding boxes and class probabilities at 3 scales.
 
     KEY IMPROVEMENTS WITH MAE DISTILLATION:
@@ -280,33 +358,42 @@ class YOLOHead(nn.Module):
     - Result: Higher mAP with fewer training steps
     """
 
-    def __init__(self, num_classes=80):
+    def __init__(self, in_channels: tuple[int, int, int], num_classes: int = 80):
+        """
+        Args:
+            in_channels: (c3, c4, c5) channel dimensions from neck
+            num_classes: Number of object classes
+        """
         super().__init__()
+        c3, c4, c5 = in_channels
         self.num_classes = num_classes
-        self.na = 3  # Number of anchors per scale (YOLO doesn't use explicit anchors but we do 3 pred per cell)
+        self.na = 3  # Number of predictions per cell (YOLO doesn't use explicit anchors)
         self.no = num_classes + 5  # Num outputs per prediction (x, y, w, h, conf, c1, c2, ..., cn)
 
-        # Detection heads for each scale
-        # P3 (small objects): 256 -> 3*(80+5) = 255
+        # Detection heads for each scale (P3, P4, P5)
+        # P3 (small objects): c3 -> 3*(num_classes+5)
         self.head3 = nn.Sequential(
-            ConvBlock(256, 256, kernel_size=3, stride=1, padding=1), nn.Conv2d(256, self.na * self.no, kernel_size=1)
+            ConvBlock(c3, c3, kernel_size=3, stride=1, padding=1),
+            nn.Conv2d(c3, self.na * self.no, kernel_size=1),
         )
 
-        # P4 (medium objects): 512 -> 3*(80+5) = 255
+        # P4 (medium objects): c4 -> 3*(num_classes+5)
         self.head4 = nn.Sequential(
-            ConvBlock(512, 512, kernel_size=3, stride=1, padding=1), nn.Conv2d(512, self.na * self.no, kernel_size=1)
+            ConvBlock(c4, c4, kernel_size=3, stride=1, padding=1),
+            nn.Conv2d(c4, self.na * self.no, kernel_size=1),
         )
 
-        # P5 (large objects): 1024 -> 3*(80+5) = 255
+        # P5 (large objects): c5 -> 3*(num_classes+5)
         self.head5 = nn.Sequential(
-            ConvBlock(1024, 1024, kernel_size=3, stride=1, padding=1), nn.Conv2d(1024, self.na * self.no, kernel_size=1)
+            ConvBlock(c5, c5, kernel_size=3, stride=1, padding=1),
+            nn.Conv2d(c5, self.na * self.no, kernel_size=1),
         )
 
     def forward(self, fp3, fp4, fp5):
         """Predict detections at multiple scales"""
-        p3_pred = self.head3(fp3)  # (B, 255, H/8, W/8)
-        p4_pred = self.head4(fp4)  # (B, 255, H/16, W/16)
-        p5_pred = self.head5(fp5)  # (B, 255, H/32, W/32)
+        p3_pred = self.head3(fp3)  # (B, 3*(num_classes+5), H/8, W/8)
+        p4_pred = self.head4(fp4)  # (B, 3*(num_classes+5), H/16, W/16)
+        p5_pred = self.head5(fp5)  # (B, 3*(num_classes+5), H/32, W/32)
 
         return p3_pred, p4_pred, p5_pred
 
@@ -316,14 +403,21 @@ class YOLOHead(nn.Module):
 # ============================================================================
 
 
-class YOLOv8s(nn.Module):
-    """
-    YOLOv8-s Object Detector with Optional Knowledge Distillation
+class YOLOv8(nn.Module):
+    """Flexible YOLO Object Detector that scales to different variants (s/m/l/xl).
+
+    With optional knowledge distillation for faster convergence.
 
     ARCHITECTURE:
     1. Backbone: Extract multi-scale features (P3, P4, P5)
     2. Neck: Combine features across scales (FPN)
     3. Head: Predict boxes and classes at each scale
+
+    VARIANTS:
+    - s (small): 0.33 depth, 0.5 width - fast inference, lower accuracy
+    - m (medium): 0.67 depth, 0.75 width - balanced
+    - l (large): 1.0 depth, 1.0 width - high accuracy, slower
+    - xl (extra large): 1.33 depth, 1.25 width - maximum accuracy
 
     KNOWLEDGE DISTILLATION (OPTIONAL):
     - If teacher_model is provided:
@@ -349,16 +443,20 @@ class YOLOv8s(nn.Module):
     def __init__(
         self,
         num_classes: int = 80,
+        arch: YOLOArchConfig = None,
         teacher_model: TeacherModel | None = None,
     ):
-        """
-        Initialize YOLOv8s detector.
+        """Initialize flexible YOLO detector.
 
         Args:
             num_classes: Number of output classes (default: 80 for COCO)
+            arch: Architecture config for scaling (default: Small variant)
             teacher_model: Optional teacher model for knowledge distillation
         """
         super().__init__()
+        if arch is None:
+            arch = YOLOArchConfig(variant=YOLOVariant.S)
+        self.arch = arch
         self.num_classes = num_classes
 
         teacher_feature_dim = None
@@ -375,11 +473,27 @@ class YOLOv8s(nn.Module):
         object.__setattr__(self, "teacher_model", teacher_model)
 
         self.backbone = YOLOBackbone(
+            arch=arch,
             use_teacher_distillation=(teacher_model is not None),
             teacher_feature_dim=teacher_feature_dim,
         )
-        self.neck = YOLONeck()
-        self.head = YOLOHead(num_classes=num_classes)
+        self.neck = YOLONeck(in_channels=self.backbone.out_channels)
+        self.head = YOLOHead(in_channels=self.neck.out_channels, num_classes=num_classes)
+
+    @classmethod
+    def from_variant(cls, variant: YOLOVariant, num_classes: int = 80, teacher_model: TeacherModel | None = None):
+        """Create YOLO model from a predefined variant.
+
+        Args:
+            variant: YOLOVariant enum (S, M, L, XL)
+            num_classes: Number of classes
+            teacher_model: Optional teacher for distillation
+
+        Returns:
+            YOLOv8 instance
+        """
+        arch = YOLOArchConfig(variant=variant)
+        return cls(num_classes=num_classes, arch=arch, teacher_model=teacher_model)
 
     def train(self, mode: bool = True):
         """Override train() so the frozen teacher never leaves eval mode."""
@@ -480,6 +594,28 @@ class YOLOv8s(nn.Module):
             state_dict = checkpoint
 
         self.load_state_dict(state_dict)
+
+
+# Backward compatibility: YOLOv8s is YOLOv8 with Small variant as default
+class YOLOv8s(YOLOv8):
+    """YOLOv8-s (Small variant) - backward compatible alias for YOLOv8.
+
+    This is equivalent to:
+        YOLOv8(arch=YOLOArchConfig(variant=YOLOVariant.S), ...)
+
+    Use this when you want to explicitly specify the small variant, or use
+    YOLOv8.from_variant(YOLOVariant.S) for other variants.
+    """
+
+    def __init__(self, num_classes: int = 80, teacher_model: TeacherModel | None = None):
+        """Initialize YOLOv8-s (Small variant).
+
+        Args:
+            num_classes: Number of classes (default: 80 for COCO)
+            teacher_model: Optional teacher for knowledge distillation
+        """
+        arch = YOLOArchConfig(variant=YOLOVariant.S)
+        super().__init__(num_classes=num_classes, arch=arch, teacher_model=teacher_model)
 
 
 def _reshape_yolo_prediction(prediction, num_classes):
@@ -663,6 +799,7 @@ def _evaluate_validation_proxy(model, data_loader, device, distill_weight):
 
 def train(
     data_root: str = "./data/kaggle/coco/coco2017/",
+    variant: str = "s",
     teacher_model_name: str = "none",
     teacher_checkpoint_path: str | None = None,
     teacher_variant: str = "base",
@@ -676,8 +813,7 @@ def train(
     num_workers: int | None = None,
     seed: int = 42,
 ):
-    """
-    Train YOLOv8-s with optional knowledge distillation.
+    """Train YOLO with flexible architecture and optional knowledge distillation.
 
     This implements a simplified but functional training loop that:
     - loads COCO train/val splits
@@ -686,6 +822,7 @@ def train(
 
     Args:
         data_root: Root directory for COCO dataset
+        variant: YOLO variant to train ('s', 'm', 'l', 'xl')
         teacher_model_name: Teacher model to use ('none', 'mae', 'dino', 'ijepa')
         teacher_checkpoint_path: Path to teacher checkpoint (if None, uses default)
         teacher_variant: Variant of teacher model to use (e.g., 'imagenet', 'small', 'base')
@@ -697,14 +834,28 @@ def train(
         distill_weight: Weight for the distillation loss term
         max_steps: Maximum number of training steps (default: -1, meaning no limit)
         num_workers: Number of DataLoader workers
-        seed: Random seed for model init and data shuffling. Keep this fixed across
-            teacher_model_name variants so the only difference between runs is the
-            teacher, not random init/shuffling noise.
+        seed: Random seed for model init and data shuffling
     """
+
+    # Map variant string to YOLOVariant enum
+    variant_map = {
+        "s": YOLOVariant.S,
+        "m": YOLOVariant.M,
+        "l": YOLOVariant.L,
+        "xl": YOLOVariant.XL,
+    }
+    if variant.lower() not in variant_map:
+        raise ValueError(f"Invalid variant '{variant}'. Choices: {list(variant_map.keys())}")
+    yolo_variant = variant_map[variant.lower()]
 
     torch.manual_seed(seed)
 
-    config = YOLOConfig(batch_size=batch_size, epochs=epochs, learning_rate=learning_rate)
+    config = YOLOConfig(
+        arch=YOLOArchConfig(variant=yolo_variant),
+        batch_size=batch_size,
+        epochs=epochs,
+        learning_rate=learning_rate,
+    )
     device = get_device()
 
     Path(save_dir).mkdir(parents=True, exist_ok=True)
@@ -763,8 +914,9 @@ def train(
     train_loader = DataLoader(train_dataset, **train_loader_kwargs)
     val_loader = DataLoader(val_dataset, **val_loader_kwargs)
 
-    model = YOLOv8s(
+    model = YOLOv8(
         num_classes=config.num_classes,
+        arch=config.arch,
         teacher_model=teacher_model,
     ).to(device)
 
@@ -856,7 +1008,24 @@ def train(
 
 
 def main():
-    parser = argparse.ArgumentParser(description="YOLOv8-s with Optional Knowledge Distillation")
+    parser = argparse.ArgumentParser(description="Flexible YOLO with Optional Knowledge Distillation")
+    parser.add_argument(
+        "--data-root", type=str, default="./data/kaggle/coco/coco2017", help="Root directory for COCO dataset"
+    )
+    parser.add_argument(
+        "--variant",
+        type=str,
+        default="s",
+        choices=["s", "m", "l", "xl"],
+        help="YOLO variant to train: s (small), m (medium), l (large), xl (extra large)",
+    )
+    parser.add_argument(
+        "--teacher",
+        type=str,
+        default="none",
+        choices=["none", "mae", "dino", "ijepa"],
+        help="Teacher model for knowledge distillation (default: none for baseline training)",
+    )
     parser.add_argument(
         "--data-root", type=str, default="./data/kaggle/coco/coco2017", help="Root directory for COCO dataset"
     )
@@ -904,6 +1073,7 @@ def main():
 
     train(
         data_root=args.data_root,
+        variant=args.variant,
         teacher_model_name=args.teacher,
         teacher_checkpoint_path=args.teacher_checkpoint,
         teacher_variant=args.teacher_variant,
