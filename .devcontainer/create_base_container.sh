@@ -1,40 +1,39 @@
 #!/bin/bash
 set -euo pipefail
 
-BASE_DIR=$(dirname "$(readlink -f "$0")")
+BASE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$BASE_DIR"
 
-# --- Detect NVIDIA GPU availability ---
-echo "Checking for NVIDIA GPU..."
+eval "$($BASE_DIR/detect-platform.sh --shell)"
 
-HAS_NVIDIA=false
+build_cuda=false
+build_cpu=false
 
-# Case 1: nvidia-smi exists (host has NVIDIA driver)
-if command -v nvidia-smi >/dev/null 2>&1; then
-    echo "✔ nvidia-smi found — NVIDIA GPU detected"
-    HAS_NVIDIA=true
-
-# Case 2: Docker runtime exposes NVIDIA (common in WSL2)
-elif docker info 2>/dev/null | grep -qi "nvidia"; then
-    echo "✔ Docker reports NVIDIA runtime — GPU available"
-    HAS_NVIDIA=true
-
-# Case 3: Check for /dev/nvidia* devices
-elif ls /dev/nvidia* >/dev/null 2>&1; then
-    echo "✔ /dev/nvidia* devices found — GPU available"
-    HAS_NVIDIA=true
-
+if [ "${1:-}" = "--cuda" ]; then
+  build_cuda=true
+elif [ "${1:-}" = "--cpu" ]; then
+  build_cpu=true
+elif [ "${1:-}" = "--all" ]; then
+  build_cuda=true
+  build_cpu=true
 else
-    echo "✘ No NVIDIA GPU detected — falling back to CPU build"
+  if [ "$BASE_IMAGE" = "mlfield_cuda_base:latest" ]; then
+    echo "✔ NVIDIA GPU detected — building CUDA base image."
+    build_cuda=true
+  else
+    echo "✘ No NVIDIA GPU detected — building CPU base image."
+    build_cpu=true
+  fi
 fi
 
-# --- Build correct base image ---
-if [ "$HAS_NVIDIA" = true ]; then
-    echo "Building CUDA base image..."
-    docker build -f Dockerfile.cuda.base -t mlfield_cuda_base:latest .
-else
-    echo "Building CPU base image..."
-    docker build -f Dockerfile.cpu.base -t mlfield_cpu_base:latest .
+if [ "$build_cuda" = true ]; then
+  echo "Building CUDA base image..."
+  docker build -f Dockerfile.cuda.base -t mlfield_cuda_base:latest .
 fi
 
-echo "Done."
+if [ "$build_cpu" = true ]; then
+  echo "Building CPU base image..."
+  docker build -f Dockerfile.cpu.base -t mlfield_cpu_base:latest .
+fi
+
+echo "Base image build complete."

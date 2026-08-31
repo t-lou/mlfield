@@ -3,20 +3,17 @@
   "dockerComposeFile": "../.devcontainer/docker-compose.yml",
   "service": "mlfield",
   "workspaceFolder": "/repo",
-
-  "remoteUser": "${localEnv:USERNAME}",
-
-  "initializeCommand": ".devcontainer/detect-platform.sh && .devcontainer/generate_docker_compose.sh \"$(uname -s)\" \"$(pwd)\" \"$(id -u)\" \"$(id -g)\" \"$(whoami)\" \"${DISPLAY}\"",
-
+  "remoteUser": "${localEnv:USER}",
+  "initializeCommand": "BASE_IMAGE=$( .devcontainer/detect-platform.sh 2>/dev/null | sed -n 's/^BASE_IMAGE=//p' | tail -n 1 ); .devcontainer/generate_docker_compose.sh \"$(uname -s)\" \"$(pwd)\" \"$(id -u)\" \"$(id -g)\" \"$(id -un)\" \"$(id -gn)\" \"${DISPLAY}\" \"\" \".devcontainer/docker-compose.yml\" \"$BASE_IMAGE\"",
   "build": {
     "args": {
       "HOST_UID": "${localEnv:UID}",
       "HOST_GID": "${localEnv:GID}",
-      "USERNAME": "${localEnv:USERNAME}",
+      "HOST_USER": "${localEnv:USER}",
+      "HOST_GROUP": "${localEnv:USER}",
       "BASE_IMAGE": "${localEnv:BASE_IMAGE:-mlfield_cuda_base:latest}"
     }
   },
-
   "customizations": {
     "vscode": {
       "extensions": [
@@ -24,7 +21,6 @@
       ]
     }
   },
-
   "remoteEnv": {
     "PYTHONUNBUFFERED": "1",
     "PIP_DISABLE_PIP_VERSION_CHECK": "1"

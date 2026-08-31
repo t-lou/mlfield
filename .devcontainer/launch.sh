@@ -1,29 +1,19 @@
 #!/bin/bash
-set -e
+set -euo pipefail
 
-# -----------------------------
-# Resolve workspace directory
-# -----------------------------
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WS_DIR="$(dirname "$SCRIPT_DIR")"
 cd "$WS_DIR"
 
-# -----------------------------
-# Export environment variables
-# -----------------------------
-export HOST_UID="$(id -u)"
-export HOST_GID="$(id -g)"
-export USERNAME="$(whoami)"
-export WS_DIR="$WS_DIR"
+eval "$($SCRIPT_DIR/detect-platform.sh --shell)"
+
+export WS_DIR
 
 echo "Workspace: $WS_DIR"
-echo "User: $USERNAME ($HOST_UID:$HOST_GID)"
+echo "User: $HOST_USER ($HOST_UID:$HOST_GID) / group: $HOST_GROUP ($HOST_GID)"
 echo
 
-# -----------------------------
-# Detect OS
-# -----------------------------
-OS_TYPE=$(uname -s)
+OS_TYPE="$(uname -s)"
 case "$OS_TYPE" in
   Darwin)
     OS_NAME="macOS"
@@ -37,35 +27,45 @@ case "$OS_TYPE" in
     ;;
 esac
 
-echo "Detected OS: $OS_NAME"
-export OS_NAME="$OS_NAME"
+export OS_NAME
 
-# Detect Linux distro if applicable
+echo "Detected OS: $OS_NAME"
 if [ "$OS_NAME" = "Linux" ]; then
-  DISTRO_ID=$(grep '^ID=' /etc/os-release | cut -d= -f2)
-  DISTRO_VERSION=$(grep '^VERSION_ID=' /etc/os-release | cut -d= -f2 | tr -d '"')
+  DISTRO_ID="$(grep '^ID=' /etc/os-release | cut -d= -f2)"
+  DISTRO_VERSION="$(grep '^VERSION_ID=' /etc/os-release | cut -d= -f2 | tr -d '"')"
   echo "Detected distro: $DISTRO_ID $DISTRO_VERSION"
 fi
+
 echo
 
-# Set platform-specific docker parameters
-if [ "$OS_NAME" = "macOS" ]; then
-  export DOCKER_RUNTIME=""  # No GPU runtime on macOS
-  export DOCKER_X11_VOLUME=""  # No X11 on macOS
-  export DOCKER_NETWORK_MODE=""  # Use default bridge network
-  export BASE_IMAGE="mlfield_cpu_base:latest"
-else
-  export DOCKER_RUNTIME="runtime: nvidia"
-  export DOCKER_X11_VOLUME="- /tmp/.X11-unix:/tmp/.X11-unix"
-  export DOCKER_NETWORK_MODE="network_mode: host"
-  export BASE_IMAGE="mlfield_cuda_base:latest"
+export DOCKER_RUNTIME=""
+export DOCKER_X11_VOLUME=""
+export DOCKER_NETWORK_MODE=""
+
+if [ "$OS_NAME" = "Linux" ]; then
+  if [ "$BASE_IMAGE" = "mlfield_cuda_base:latest" ]; then
+    export DOCKER_RUNTIME="runtime: nvidia"
+    export DOCKER_X11_VOLUME="- /tmp/.X11-unix:/tmp/.X11-unix"
+    export DOCKER_NETWORK_MODE="network_mode: host"
+  else
+    export DOCKER_RUNTIME=""
+    export DOCKER_X11_VOLUME="- /tmp/.X11-unix:/tmp/.X11-unix"
+    export DOCKER_NETWORK_MODE="network_mode: host"
+  fi
 fi
 
-# Generate the docker-compose.yml based on platform
-# =============================
-bash ./.devcontainer/generate_docker_compose.sh "$OS_NAME" "$WS_DIR" "$HOST_UID" "$HOST_GID" "$USERNAME" "$DISPLAY" "${DATASET_DIR:-}" ".devcontainer/docker-compose.yml"
+bash ./.devcontainer/generate_docker_compose.sh \
+  "$OS_NAME" \
+  "$WS_DIR" \
+  "$HOST_UID" \
+  "$HOST_GID" \
+  "$HOST_USER" \
+  "$HOST_GROUP" \
+  "$DISPLAY" \
+  "${DATASET_DIR:-}" \
+  ".devcontainer/docker-compose.yml" \
+  "$BASE_IMAGE"
 
-# Load optional local overrides
 if [ -f ".devcontainer/local.env" ]; then
     echo "Loading local overrides from .devcontainer/local.env"
     set -a
@@ -74,11 +74,8 @@ if [ -f ".devcontainer/local.env" ]; then
 else
     echo "No local.env found, using defaults"
 fi
-echo
 
-# =============================
-# PLATFORM-SPECIFIC SETUP
-# =============================
+echo
 
 if [ "$OS_NAME" = "macOS" ]; then
     echo "📱 Running macOS-specific setup..."
@@ -87,32 +84,31 @@ elif [ "$OS_NAME" = "Linux" ]; then
     echo "🐧 Running Linux-specific setup..."
     bash ./.devcontainer/setup_linux.sh
 fi
+
 echo
 
-# -----------------------------
-# Build container
-# -----------------------------
-echo "Building development container..."
+echo "Building development container from $BASE_IMAGE..."
 docker compose -f .devcontainer/docker-compose.yml build \
     --build-arg HOST_UID="$HOST_UID" \
     --build-arg HOST_GID="$HOST_GID" \
-    --build-arg USERNAME="$USERNAME"
-docker compose  -f .devcontainer/docker-compose.yml up -d
+    --build-arg HOST_USER="$HOST_USER" \
+    --build-arg HOST_GROUP="$HOST_GROUP" \
+    --build-arg BASE_IMAGE="$BASE_IMAGE"
 
-# -----------------------------
-# Check container
-# -----------------------------
+docker compose -f .devcontainer/docker-compose.yml up -d
+
 echo "Testing user and GPU..."
 echo "- uname -a"
 docker compose -f .devcontainer/docker-compose.yml exec mlfield uname -a
 echo "- whoami"
 docker compose -f .devcontainer/docker-compose.yml exec mlfield whoami
+echo "- id -u -g"
+docker compose -f .devcontainer/docker-compose.yml exec mlfield sh -lc 'id -u && id -g && id -un && id -gn'
 echo "- torch.cuda.is_available()"
-docker compose -f .devcontainer/docker-compose.yml exec mlfield python3 -c "import torch;print(torch.cuda.is_available())" || {
-    echo "⚠️ CUDA not available (expected on macOS without GPU)"
-}
+if ! docker compose -f .devcontainer/docker-compose.yml exec mlfield python3 -c "import torch; print(torch.cuda.is_available())"; then
+    echo "⚠️ CUDA not available (expected on CPU fallback)"
+fi
 
-# Run container
 echo "Launching container, don't forget to run the following command or add to .bashrc outside the container..."
 echo 'eval "$(direnv hook bash)"'
 docker compose -f .devcontainer/docker-compose.yml exec mlfield bash -l
