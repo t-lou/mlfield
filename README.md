@@ -6,15 +6,15 @@ My private playground and notes collection for ML.
 
 ## 🚀 **Overview**
 
-**mlfield** is a modular repository designed for:
+**mlfield** is a modular, experimental ML repository designed for:
 
-- Fast iteration on ML experiments
-- Clean separation of ideas into themed subfolders
-- Reproducible development environments
-- Notes, insights, and research logs that accompany experiments
-- Future expansion into multimodal, SSL, and robotics‑related workflows
+- **Fast iteration** on diverse ML experiments and research ideas
+- **Modular structure** with clean separation of components, experiments, and utilities
+- **Reproducible environments** via containerized dev setup (Docker + VS Code devcontainers)
+- **Rich documentation** with research notes, logs, and conceptual writeups
+- **Multiple ML domains** including autonomous driving, self‑supervised learning (SSL), vision transformers, and point cloud processing
 
-It’s intentionally lightweight and flexible — a “field notebook” for machine learning.
+It's intentionally lightweight and flexible—a notebook for iterating on ML research.
 
 ---
 
@@ -23,81 +23,102 @@ It’s intentionally lightweight and flexible — a “field notebook” for mac
 ```
 mlfield/
 │
-├── .devcontainer/      # Reproducible development environment (incl. VS Code devcontainer, direct init not supported)
+├── .devcontainer/      # Docker setup & VS Code devcontainer config
 │
-├── components/         # Reusable layers, functions and models
+├── components/         # Reusable ML building blocks
+│   ├── dataset/        # Dataset loaders (A2D2, COCO, image-only)
+│   ├── definitions/    # Config classes and hyperparameter definitions
+│   ├── mmperc/         # Multi-modal perception model (backbone, encoder, decoder, losses)
+│   ├── utils/          # Common utilities (calibration, BEV, logging, config)
+│   └── vit/            # Vision transformer models (DINO, iJEPA, MAE)
 │
-├── experiments/        # The trainings and evaluations
+├── experiments/        # Active experiments and training scripts
+│   ├── image_dino/     # DINO vision transformer experiments
+│   ├── image_jepa/     # iJEPA self-supervised learning
+│   ├── image_mae/      # Masked autoencoder experiments
+│   └── mmperc/         # Multi-modal perception training
 │
-├── notes/              # General research notes, logs, design sketches, and conceptual writeups
+├── notes/              # Research notes, design sketches, learnings
+│   ├── ssl/            # Self-supervised learning notes
+│   ├── mtl/            # Multi-task learning insights
+│   └── (domain-specific folders)
 │
-├── tools/              # Standalone utilities for editing checkpoints, for controlling WSL2 etc
+├── tools/              # Standalone CLI utilities
+│   ├── gpu_monitor.py
+│   ├── clean_every_n.py
+│   └── (checkpoint & environment helpers)
 │
-├── _to_clarify/        # Legacy before restructering, which needs to be deleted or continued
-│
-└── (more coming...)
+└── _to_clarify/        # Legacy code pending cleanup or migration
 ```
 
-Each folder is self‑contained and may include scripts, notebooks, configs, and experiment logs.
+Each folder is self‑contained with its own scripts, notebooks, configs, and logs.
 
 ---
 
 ## 🛠️ **Getting Started**
 
-### **Clone the repository**
+### **Option 1: Docker Container (Recommended)**
+
 ```bash
 git clone https://github.com/t-lou/mlfield
-bash mlfield/.devcontainer/launch.sh
+cd mlfield
+bash .devcontainer/launch.sh
 ```
 
-You can either launch the container with launch.sh script or open it with VS Code extension "Dev Containers".
+Alternatively, open with VS Code's "Dev Containers" extension for a seamless IDE experience.
 
-If you are cautious about the base docker image, you can also create the base image from scatch and rename it with "docker tag...".
+**Custom base image (optional):**
+If you prefer to build the CUDA base image from scratch:
 
 ```bash
-bash .devcontainer/create_base_container.sh  # create mlfield_cuda_base:latest
+bash .devcontainer/create_base_container.sh  # creates mlfield_cuda_base:latest
 docker tag mlfield_cuda_base:latest tlou/mlfield_cuda_base:latest
 ```
 
-If you already have everything installed (mainly pytorch), then just load the env var to make import work:
+### **Option 2: Local Environment**
+
+If PyTorch and dependencies are already installed locally:
 
 ```bash
-source .envrc
+cd mlfield
+source .envrc  # Load environment variables for import paths
 ```
 
-Then run either with `python3 -m FOLDER1.FOLDER2.PART` or `runpy FOLDER1/FOLDER2/PART.py`.
+### **Running Experiments**
+
+Use one of these patterns:
+
+```bash
+# As a Python module (preferred for package organization)
+python3 -m experiments.image_dino.dino
+
+# Or with the runpy helper
+runpy experiments/image_dino/dino.py
+```
 
 ---
 
-### 📁 Optional Dataset Mount (`DATASET_DIR` via `local.env`)
+### 📁 Dataset Configuration
 
-You can mount a local dataset into the container by defining `DATASET_DIR` in your `.devcontainer/local.env` file:
+**Mount local datasets into the container:**
+
+Create `.devcontainer/local.env` with:
 
 ```
 DATASET_DIR=/path/to/your/dataset
 ```
 
-The compose file uses:
+The compose file mounts this read-only at `/mnt/dataset`, or safely falls back to `/dev/null` if unset.
 
-```
-- ${DATASET_DIR:-/dev/null}:/mnt/dataset:ro
-```
+---
 
-If `DATASET_DIR` is set in `.devcontainer/local.env`, that directory is mounted read‑only at `/mnt/dataset`.
-If it’s missing, the mount safely falls back to `/dev/null`.
+## 📋 Datasets & Licensing
 
-## Dataset Usage Policy
+This repository includes experiments with multiple datasets (e.g., Open Images, ImageNet, KITTI, BDD100K, A2D2). **No dataset files are included**—you must download them from official sources and comply with their respective licenses.
 
-This repository contains multiple experiments using different datasets
-(e.g., Open Images, ImageNet, KITTI, audio datasets). No dataset files
-are included in this repository.
+Dataset-specific setup instructions and notes are provided in each experiment folder.
 
-Each dataset has its own license and usage terms. Users must download
-datasets from their official sources and comply with their licenses.
-
-Dataset-specific notes are provided in each experiment folder.
-
-### Citations about dataset
+### **Dataset Citations**
 
 ```
 @InProceedings{bdd100k,
