@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Dict
+from typing import Any
 
 import common.params as params
 import torch
@@ -8,7 +8,7 @@ from torch import Tensor
 from torch.utils.data import DataLoader
 
 
-def move_to_device(batch: Dict[str, Tensor], device: str) -> Dict[str, Tensor]:
+def move_to_device(batch: dict[str, Tensor], device: str) -> dict[str, Tensor]:
     """
     Move a batch of tensors to the target device.
     """
@@ -30,7 +30,7 @@ def reduce_output_to_scalar(out: Any) -> Tensor:
 
 def measure_memory(
     model: torch.nn.Module,
-    batch: Dict[str, Tensor],
+    batch: dict[str, Tensor],
     training: bool,
     device: str,
 ) -> int:

@@ -1,6 +1,5 @@
 import argparse
 from pathlib import Path
-from typing import Optional
 
 import torch
 import torch.nn as nn
@@ -239,7 +238,7 @@ class DeTr(nn.Module):
         encoder: DetrEncoder,
         decoder: DetrDecoder,
         head: DetrHead,
-        teacher_model: Optional[nn.Module] = None,
+        teacher_model: nn.Module | None = None,
     ):
         super().__init__()
         self.backbone = backbone
@@ -343,7 +342,7 @@ def _evaluate_validation_proxy(
 def train(
     data_root: str = "./data/kaggle/coco/coco2017/",
     teacher_model_name: str = "none",
-    teacher_checkpoint_path: Optional[str] = None,
+    teacher_checkpoint_path: str | None = None,
     teacher_variant: str = "base",
     epochs: int = 100,
     start_epoch: int = 0,
@@ -351,7 +350,7 @@ def train(
     learning_rate: float = 1e-3,
     save_dir: str = "detr_checkpoints",
     distill_weight: float = 0.1,
-    num_workers: Optional[int] = None,
+    num_workers: int | None = None,
     seed: int = 42,
     use_amp: bool = True,
 ):

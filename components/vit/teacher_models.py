@@ -7,7 +7,6 @@ Supports multiple pretrained models: MAE, DINO, I-JEPA, and extensible for other
 
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Optional, Tuple
 
 import numpy as np
 import torch
@@ -36,7 +35,7 @@ class TeacherModel(ABC):
         pass
 
     @abstractmethod
-    def extract_features(self, x: torch.Tensor) -> Tuple[torch.Tensor, int, int]:
+    def extract_features(self, x: torch.Tensor) -> tuple[torch.Tensor, int, int]:
         """
         Extract features from input images.
 
@@ -77,7 +76,7 @@ class MAETeacher(TeacherModel):
     for object detection tasks.
     """
 
-    def __init__(self, checkpoint_path: Optional[str] = None, variant: str = "imagenet"):
+    def __init__(self, checkpoint_path: str | None = None, variant: str = "imagenet"):
         """
         Initialize MAE teacher model.
 
@@ -142,7 +141,7 @@ class MAETeacher(TeacherModel):
     def eval(self) -> None:
         self.mae.eval()
 
-    def extract_features(self, x: torch.Tensor) -> Tuple[torch.Tensor, int, int]:
+    def extract_features(self, x: torch.Tensor) -> tuple[torch.Tensor, int, int]:
         """
         Extract MAE encoder features at intermediate resolution.
 
@@ -188,7 +187,7 @@ class DINOTeacher(TeacherModel):
     knowledge distillation. It produces features at multiple scales.
     """
 
-    def __init__(self, checkpoint_path: Optional[str] = None, variant: str = "base"):
+    def __init__(self, checkpoint_path: str | None = None, variant: str = "base"):
         """
         Initialize DINO teacher model.
 
@@ -255,7 +254,7 @@ class DINOTeacher(TeacherModel):
     def eval(self) -> None:
         self.dino.eval()
 
-    def extract_features(self, x: torch.Tensor) -> Tuple[torch.Tensor, int, int]:
+    def extract_features(self, x: torch.Tensor) -> tuple[torch.Tensor, int, int]:
         """
         Extract DINO features at intermediate resolution.
 
@@ -304,7 +303,7 @@ class IJEPATeacher(TeacherModel):
     from visible regions. It produces contextual features at multiple scales.
     """
 
-    def __init__(self, checkpoint_path: Optional[str] = None, variant: str = "base"):
+    def __init__(self, checkpoint_path: str | None = None, variant: str = "base"):
         """
         Initialize I-JEPA teacher model.
 
@@ -371,7 +370,7 @@ class IJEPATeacher(TeacherModel):
     def eval(self) -> None:
         self.ijepa.eval()
 
-    def extract_features(self, x: torch.Tensor) -> Tuple[torch.Tensor, int, int]:
+    def extract_features(self, x: torch.Tensor) -> tuple[torch.Tensor, int, int]:
         """
         Extract I-JEPA context encoder features.
 
@@ -410,9 +409,9 @@ class IJEPATeacher(TeacherModel):
 
 def create_teacher_model(
     teacher_name: str,
-    checkpoint_path: Optional[str] = None,
+    checkpoint_path: str | None = None,
     variant: str = "base",
-) -> Optional[TeacherModel]:
+) -> TeacherModel | None:
     """
     Factory function to create a teacher model.
 

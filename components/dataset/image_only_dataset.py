@@ -3,9 +3,9 @@ import io
 import tarfile
 import threading
 import zipfile
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Callable, Optional
 
 import torch
 from components.utils.logger import logger
@@ -48,12 +48,12 @@ class ImageOnlyFolderDataset(_ThreadedBatchMixin, torch.utils.data.Dataset):
     def __init__(
         self,
         root_dirs: list[str],
-        transform: Optional[Callable] = None,
+        transform: Callable | None = None,
         prefetch_threads: int = DEFAULT_PREFETCH_THREAD,
     ):
         self._transform = transform
         self._prefetch_threads = prefetch_threads
-        self._pool: Optional[ThreadPoolExecutor] = None
+        self._pool: ThreadPoolExecutor | None = None
 
         glob_patterns = tuple(f"*{ext}" for ext in EXTS)
         self.image_paths = []
@@ -90,14 +90,14 @@ class ImageOnlyZipDataset(_ThreadedBatchMixin, torch.utils.data.Dataset):
     def __init__(
         self,
         zip_paths: list[str],
-        transform: Optional[Callable] = None,
+        transform: Callable | None = None,
         prefetch_threads: int = DEFAULT_PREFETCH_THREAD,
     ):
         self._transform = transform
         self._zip_paths = zip_paths
         self._prefetch_threads = prefetch_threads
-        self._pool: Optional[ThreadPoolExecutor] = None
-        self._local: Optional[threading.local] = None
+        self._pool: ThreadPoolExecutor | None = None
+        self._local: threading.local | None = None
 
         self.index: list[tuple[int, str]] = []
         for zi, zp in enumerate(zip_paths):
@@ -154,14 +154,14 @@ class ImageOnlyTarDataset(_ThreadedBatchMixin, torch.utils.data.Dataset):
     def __init__(
         self,
         tar_paths: list[str],
-        transform: Optional[Callable] = None,
+        transform: Callable | None = None,
         prefetch_threads: int = DEFAULT_PREFETCH_THREAD,
     ):
         self._transform = transform
         self._tar_paths = tar_paths
         self._prefetch_threads = prefetch_threads
-        self._pool: Optional[ThreadPoolExecutor] = None
-        self._local: Optional[threading.local] = None
+        self._pool: ThreadPoolExecutor | None = None
+        self._local: threading.local | None = None
 
         self.index: list[tuple[int, int, int]] = []
         for ti, tp in enumerate(tar_paths):
@@ -217,7 +217,7 @@ class ImageOnlyDataset(torch.utils.data.Dataset):
     def __init__(
         self,
         root_dirs: list[str],
-        transform: Optional[Callable] = None,
+        transform: Callable | None = None,
         prefetch_threads: int = DEFAULT_PREFETCH_THREAD,
     ):
         self._transform = transform

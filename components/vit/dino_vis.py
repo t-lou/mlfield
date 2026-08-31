@@ -1,5 +1,4 @@
 from pathlib import Path
-from typing import List, Optional, Tuple
 
 import numpy as np
 import torch
@@ -8,7 +7,7 @@ import torch.nn.functional as F
 from components.vit.dino_inf import preprocess_image
 
 
-def _reshape_token_vector_to_grid(vec: torch.Tensor) -> Optional[torch.Tensor]:
+def _reshape_token_vector_to_grid(vec: torch.Tensor) -> torch.Tensor | None:
     """Reshape [num_tokens] to [h, w] if token count is a square."""
     n = vec.numel()
     side = int(n**0.5)
@@ -18,11 +17,11 @@ def _reshape_token_vector_to_grid(vec: torch.Tensor) -> Optional[torch.Tensor]:
 
 
 def extract_maps_from_activations(
-    attn_tensor: Optional[torch.Tensor],
-    token_tensor: Optional[torch.Tensor],
+    attn_tensor: torch.Tensor | None,
+    token_tensor: torch.Tensor | None,
     out_h: int,
     out_w: int,
-) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
+) -> tuple[np.ndarray | None, np.ndarray | None]:
     """Build attention and token-energy heatmaps from captured tensors."""
     attn_map = None
     token_map = None
@@ -79,8 +78,8 @@ class ActivationCatcher:
     """Capture one representative attention tensor and one token tensor per forward pass."""
 
     def __init__(self):
-        self.last_attn: Optional[torch.Tensor] = None
-        self.last_tokens: Optional[torch.Tensor] = None
+        self.last_attn: torch.Tensor | None = None
+        self.last_tokens: torch.Tensor | None = None
 
     def make_hook(self, module_name: str):
         def _hook(_module, _inputs, output):
@@ -102,10 +101,10 @@ class ActivationCatcher:
 @torch.no_grad()
 def get_features(
     encoder: torch.nn.Module,
-    image_paths: List[Path],
+    image_paths: list[Path],
     image_size: int,
     device: torch.device,
-) -> Tuple[List[np.ndarray], List[Optional[np.ndarray]], List[Optional[np.ndarray]]]:
+) -> tuple[list[np.ndarray], list[np.ndarray | None], list[np.ndarray | None]]:
     """Create and save two grids: attention maps and patch-token feature maps."""
 
     catcher = ActivationCatcher()

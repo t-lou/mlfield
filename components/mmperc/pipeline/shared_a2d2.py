@@ -3,7 +3,6 @@ from __future__ import annotations
 import logging
 from collections import deque
 from contextlib import nullcontext
-from typing import Dict
 
 import torch
 import torch.nn.functional as F
@@ -114,7 +113,7 @@ def run_one_epoch(
         no_grad_context = nullcontext() if train else torch.no_grad()
 
         with no_grad_context, fwd_context:
-            pred: Dict[str, torch.Tensor] = model(points, images)
+            pred: dict[str, torch.Tensor] = model(points, images)
             heatmap_pred = pred["bbox_heatmap"]
             reg_pred = pred["bbox_reg"]
             sem_pred = pred["sem_logits"]

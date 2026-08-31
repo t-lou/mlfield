@@ -1,5 +1,4 @@
 import math
-from typing import List
 
 import torch
 
@@ -55,7 +54,7 @@ def draw_gaussian(heatmap: torch.Tensor, cx: int, cy: int, radius: int) -> None:
 
 
 def generate_bev_labels_bbox2d(
-    gt_boxes: List[torch.Tensor],
+    gt_boxes: list[torch.Tensor],
     mmperc_params: MmpercParams,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """

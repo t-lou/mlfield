@@ -76,10 +76,36 @@ class MultiCameraEncoder(nn.Module):
                 cam_id_emb = self.cam_id_embed(cam_id_tensor).view(1, 1, -1)
 
                 pose_vec = getattr(self, f"_default_pose_{idx}").to(img.device)
-                if pose_vec.numel() == 6:
-                    pose_emb = self.pose_mlp_legacy(pose_vec).view(1, 1, -1)
+                if cam_meta is not None and cam_id in cam_meta:
+                    meta = cam_meta[cam_id]
+                    if isinstance(meta, list):
+                        batch_pose = []
+                        for item in meta:
+                            if isinstance(item, dict):
+                                pose = item.get("pose")
+                            else:
+                                pose = None
+                            if pose is None:
+                                batch_pose.append(pose_vec.detach().clone())
+                            else:
+                                batch_pose.append(torch.as_tensor(pose, device=img.device, dtype=pose_vec.dtype))
+                        if batch_pose:
+                            pose_vec = torch.stack(batch_pose)
+                    elif isinstance(meta, dict):
+                        pose = meta.get("pose")
+                        if pose is not None:
+                            pose_vec = torch.as_tensor(pose, device=img.device, dtype=pose_vec.dtype)
+
+                if pose_vec.ndim == 1:
+                    if pose_vec.numel() == 6:
+                        pose_emb = self.pose_mlp_legacy(pose_vec).view(1, 1, -1)
+                    else:
+                        pose_emb = self.pose_mlp(pose_vec).view(1, 1, -1)
                 else:
-                    pose_emb = self.pose_mlp(pose_vec).view(1, 1, -1)
+                    if pose_vec.shape[-1] == 6:
+                        pose_emb = self.pose_mlp_legacy(pose_vec).unsqueeze(1)
+                    else:
+                        pose_emb = self.pose_mlp(pose_vec).unsqueeze(1)
 
                 tokens = tokens + cam_id_emb + pose_emb
 

@@ -36,7 +36,6 @@ import math
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional
 
 import matplotlib.pyplot as plt
 import pandas as pd
@@ -60,7 +59,7 @@ class LayerAttentionCatcher:
     """
 
     def __init__(self):
-        self.per_layer: Dict[int, torch.Tensor] = {}
+        self.per_layer: dict[int, torch.Tensor] = {}
 
     def make_hook(self, layer_idx: int):
         def _hook(_module, _inputs, output):
@@ -113,7 +112,7 @@ class EntropyRow:
     network: str  # "student" or "teacher"
     image: str
     layer: int
-    head: Optional[int]  # None => averaged over heads
+    head: int | None  # None => averaged over heads
     region: str  # "cls" or "patch" or "all"
     entropy: float
 
@@ -124,12 +123,12 @@ def summarize_attention(
     network: str,
     image_name: str,
     layer: int,
-) -> List[EntropyRow]:
+) -> list[EntropyRow]:
     """Reduce one layer's attention tensor into a handful of entropy summaries."""
     norm_entropy = attention_entropy(attn)  # [B, heads, N]
     norm_entropy = norm_entropy[0]  # drop batch dim -> [heads, N]
 
-    rows: List[EntropyRow] = []
+    rows: list[EntropyRow] = []
 
     # CLS-row entropy (query 0 = CLS token attending to everything).
     # This is the row your attention-map visualizations are built from.
@@ -175,13 +174,13 @@ def parse_epoch_from_filename(path: Path) -> int:
 def compute_entropy_for_checkpoint(
     config,
     ckpt_path: Path,
-    image_paths: List[Path],
+    image_paths: list[Path],
     image_size: int,
     device: torch.device,
-) -> List[EntropyRow]:
+) -> list[EntropyRow]:
     epoch = parse_epoch_from_filename(ckpt_path)
 
-    rows: List[EntropyRow] = []
+    rows: list[EntropyRow] = []
 
     for network_name in ("student", "teacher"):
         model = load_from_checkpoint(config, ckpt_path, device, network_name)
@@ -208,7 +207,7 @@ def compute_entropy_for_checkpoint(
     return rows
 
 
-def find_checkpoints(ckpt_dir: Path, ckpt_glob: str) -> List[Path]:
+def find_checkpoints(ckpt_dir: Path, ckpt_glob: str) -> list[Path]:
     ckpts = sorted(ckpt_dir.glob(ckpt_glob), key=parse_epoch_from_filename)
     if not ckpts:
         raise FileNotFoundError(f"No checkpoints found in {ckpt_dir} matching '{ckpt_glob}'")
@@ -321,7 +320,7 @@ def main() -> None:
     ckpts = find_checkpoints(Path(args.ckpt_dir), args.ckpt_glob)
     print(f"Found {len(ckpts)} checkpoints: {[c.name for c in ckpts]}")
 
-    all_rows: List[EntropyRow] = []
+    all_rows: list[EntropyRow] = []
     for ckpt_path in ckpts:
         print(f"Processing {ckpt_path.name} ...")
         rows = compute_entropy_for_checkpoint(

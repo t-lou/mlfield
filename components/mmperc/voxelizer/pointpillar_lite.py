@@ -1,5 +1,3 @@
-from typing import Dict, Tuple
-
 import torch
 from torch import Tensor
 
@@ -23,10 +21,10 @@ class PointpillarLite:
         max_pillars: int = 12000,
     ) -> None:
 
-        x_range: Tuple[float, float] = params.bev_params.x_range
-        y_range: Tuple[float, float] = params.bev_params.y_range
-        z_range: Tuple[float, float] = params.bev_params.z_range
-        voxel_size: Tuple[float, float, float] = params.bev_params.voxel_size
+        x_range: tuple[float, float] = params.bev_params.x_range
+        y_range: tuple[float, float] = params.bev_params.y_range
+        z_range: tuple[float, float] = params.bev_params.z_range
+        voxel_size: tuple[float, float, float] = params.bev_params.voxel_size
 
         # Spatial bounds
         self.x_min, self.x_max = x_range
@@ -47,7 +45,7 @@ class PointpillarLite:
         self.iy_bins = int((self.y_max - self.y_min) / self.vy) + 1
 
     @torch.no_grad()
-    def __call__(self, points: Tensor) -> Dict[str, Tensor]:
+    def __call__(self, points: Tensor) -> dict[str, Tensor]:
         """
         Args:
             points: (B, N, 4) tensor  # x, y, z, intensity

@@ -3,7 +3,6 @@ from __future__ import annotations
 import math
 from functools import partial
 from pathlib import Path
-from typing import Tuple
 
 import numpy as np
 import torch
@@ -20,7 +19,7 @@ from components.utils.logger import logger
 # ================================================================
 
 
-def topk_heatmap(heatmap: torch.Tensor, K: int = 50) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+def topk_heatmap(heatmap: torch.Tensor, K: int = 50) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """
     Extract top-K heatmap peaks per class.
 

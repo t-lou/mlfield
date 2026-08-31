@@ -1,7 +1,5 @@
 """Mask prefetching utilities for DataLoader-based mask generation (for JEPA)."""
 
-from typing import List, Tuple
-
 import torch
 
 # In I-JEPA training, the mask generation and processing can be a bottleneck. This module provides functions to
@@ -94,7 +92,7 @@ def generate_masks_for_batch(
     aspect_ratio_max: float,
     num_target_blocks: int = 4,
     device: torch.device = torch.device("cpu"),
-) -> Tuple[torch.Tensor, List[torch.Tensor]]:
+) -> tuple[torch.Tensor, list[torch.Tensor]]:
     """Generate context and target masks for a batch (CPU-friendly, for DataLoader prefetch).
 
     Args:
@@ -124,7 +122,7 @@ def generate_masks_for_batch(
     ).to(device)  # (B, N)
 
     # Sample all target masks at once for each target block
-    target_masks: List[torch.Tensor] = []
+    target_masks: list[torch.Tensor] = []
     for block_idx in range(num_target_blocks):
         target_masks_all = sample_rect_mask_cpu(
             grid_h,
@@ -164,7 +162,7 @@ def collate_fn_with_masks(
     batch,
     config,
     device: torch.device,
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, List[torch.Tensor]]:
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, list[torch.Tensor]]:
     """Custom collate function that prefetches masks alongside images.
 
     Use this as the collate_fn for DataLoader when using mask prefetching.

@@ -1,6 +1,5 @@
 from enum import Enum
 from pathlib import Path
-from typing import Tuple
 
 import numpy as np
 import torch
@@ -40,7 +39,7 @@ def load_from_checkpoint(config: DINOConfig, ckpt_path: Path, device: torch.devi
     return part
 
 
-def preprocess_image(path: Path, image_size: int) -> Tuple[torch.Tensor, np.ndarray]:
+def preprocess_image(path: Path, image_size: int) -> tuple[torch.Tensor, np.ndarray]:
     """Load and resize image to the DINO encoder input size."""
     image = Image.open(path).convert("RGB")
     tfm = transforms.Compose(

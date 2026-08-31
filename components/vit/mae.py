@@ -1,5 +1,4 @@
 from pathlib import Path
-from typing import Optional, Tuple
 
 import torch
 from torch import nn
@@ -184,7 +183,7 @@ class MAE(nn.Module):
         x = torch.einsum("nhwpqc->nchpwq", x)  # Rearrange to (batch, channels, n, p, n, p)
         return x.reshape(shape=(x.shape[0], self.in_chans, n * p, n * p))
 
-    def random_masking(self, x: torch.Tensor, mask_ratio: float) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def random_masking(self, x: torch.Tensor, mask_ratio: float) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Randomly mask patches and keep only visible patches.
 
@@ -239,7 +238,7 @@ class MAE(nn.Module):
         x, _, _ = self.forward_encoder(imgs, mask_ratio)
         return x
 
-    def forward_encoder(self, imgs: torch.Tensor, mask_ratio: float) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def forward_encoder(self, imgs: torch.Tensor, mask_ratio: float) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Encode visible patches through transformer encoder.
 
@@ -328,7 +327,7 @@ class MAE(nn.Module):
 
     def forward_loss(
         self, imgs: torch.Tensor, pred: torch.Tensor, mask: torch.Tensor
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Compute MAE reconstruction loss.
 
@@ -359,7 +358,7 @@ class MAE(nn.Module):
         loss = (loss * mask).sum() / mask.sum().clamp_min(1.0)
         return loss, target
 
-    def forward(self, imgs: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    def forward(self, imgs: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Complete forward pass: encode, decode, compute loss.
 
@@ -378,7 +377,7 @@ class MAE(nn.Module):
         loss, target = self.forward_loss(imgs, pred, mask)
         return loss, pred, target, mask
 
-    def save_checkpoint(self, path: Optional[Path] = None) -> None:
+    def save_checkpoint(self, path: Path | None = None) -> None:
         """
         Save model checkpoint to disk.
 
@@ -394,7 +393,7 @@ class MAE(nn.Module):
 
         torch.save(state_dict_cpu, path_ckpt)
 
-    def load_checkpoint(self, path: Optional[Path] = None, device: Optional[str] = None) -> None:
+    def load_checkpoint(self, path: Path | None = None, device: str | None = None) -> None:
         """
         Load model checkpoint from disk.
 

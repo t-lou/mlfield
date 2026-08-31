@@ -30,7 +30,8 @@ Box column convention (shared across the whole codebase):
 
 from __future__ import annotations
 
-from typing import Any, Iterable, List, Optional, Tuple
+from collections.abc import Iterable
+from typing import Any
 
 import numpy as np
 
@@ -75,7 +76,7 @@ def strip_zero_padded_rows(arr: np.ndarray) -> np.ndarray:
     return arr[:last]
 
 
-def filter_pred_boxes(pred_boxes: np.ndarray, pred_scores: Optional[np.ndarray], score_thresh: float) -> np.ndarray:
+def filter_pred_boxes(pred_boxes: np.ndarray, pred_scores: np.ndarray | None, score_thresh: float) -> np.ndarray:
     """Drop predicted boxes below score_thresh. Falls back to no filtering if
     the scores don't line up 1:1 with the boxes (rather than guessing wrong)."""
     if pred_scores is None or pred_boxes.shape[0] == 0:
@@ -128,7 +129,7 @@ def get_box_corners_3d(box: np.ndarray) -> np.ndarray:
 # ----------------------------------------------------------------------
 
 
-def draw_box_2d(ax, box: np.ndarray, color: str, label: Optional[str] = None) -> None:
+def draw_box_2d(ax, box: np.ndarray, color: str, label: str | None = None) -> None:
     """Draw a single box's bottom face + heading tick onto a matplotlib Axes."""
     from matplotlib.patches import Polygon
 
@@ -140,7 +141,7 @@ def draw_box_2d(ax, box: np.ndarray, color: str, label: Optional[str] = None) ->
     ax.plot([center[0], front_mid[0]], [center[1], front_mid[1]], color=color, linewidth=1.5)
 
 
-def draw_boxes_2d(ax, boxes: np.ndarray, color: str, label: Optional[str] = None) -> None:
+def draw_boxes_2d(ax, boxes: np.ndarray, color: str, label: str | None = None) -> None:
     """Draw a whole set of boxes, only labeling the first one so the legend
     doesn't get one entry per box."""
     for i, box in enumerate(boxes):
@@ -150,8 +151,8 @@ def draw_boxes_2d(ax, boxes: np.ndarray, color: str, label: Optional[str] = None
 def plot_bev(
     ax,
     points: np.ndarray,
-    box_sets: Iterable[Tuple[np.ndarray, str, Optional[str]]] = (),
-    title: Optional[str] = None,
+    box_sets: Iterable[tuple[np.ndarray, str, str | None]] = (),
+    title: str | None = None,
 ) -> None:
     """Render a top-down (BEV) scatter of `points` plus any number of box sets.
     Clears `ax` first so this can be reused frame-to-frame in an interactive
@@ -192,7 +193,7 @@ def show_camera_image(ax, image: np.ndarray, title: str = "Camera (front center)
 # ----------------------------------------------------------------------
 
 
-def semantic_ids_to_rgb(sem_ids: np.ndarray, class_to_color: Iterable[Tuple[int, Tuple[int, int, int]]]) -> np.ndarray:
+def semantic_ids_to_rgb(sem_ids: np.ndarray, class_to_color: Iterable[tuple[int, tuple[int, int, int]]]) -> np.ndarray:
     """Map a (H, W) array of class ids to an (H, W, 3) uint8 color image using
     a (class_id, (r, g, b)) mapping."""
     sem_rgb = np.zeros((*sem_ids.shape, 3), dtype=np.uint8)
@@ -241,7 +242,7 @@ def add_point_cloud(plotter, points: np.ndarray, point_size: float = 2.0):
     )
 
 
-def add_boxes_3d(plotter, boxes: np.ndarray, color: Tuple[float, float, float], line_width: float = 2) -> List:
+def add_boxes_3d(plotter, boxes: np.ndarray, color: tuple[float, float, float], line_width: float = 2) -> list:
     """Add a set of wireframe boxes to a PyVista plotter/subplot. Returns the list of actors."""
     actors = []
     for box in boxes:
@@ -250,8 +251,8 @@ def add_boxes_3d(plotter, boxes: np.ndarray, color: Tuple[float, float, float], 
 
 
 def build_3d_scene(
-    plotter, points: np.ndarray, box_sets: Iterable[Tuple[np.ndarray, Tuple[float, float, float]]] = ()
-) -> List:
+    plotter, points: np.ndarray, box_sets: Iterable[tuple[np.ndarray, tuple[float, float, float]]] = ()
+) -> list:
     """Populate a PyVista plotter/subplot with a point cloud, an origin axes
     triad, and any number of box sets. Returns the full list of actors added
     (handy for later removal when redrawing in an interactive browser).

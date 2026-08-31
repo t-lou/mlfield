@@ -26,7 +26,6 @@ Why Teacher Models Help:
 import argparse
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 
 import torch
 import torch.nn as nn
@@ -147,7 +146,7 @@ class YOLOBackbone(nn.Module):
     - Teacher provides "golden reference" for all these levels
     """
 
-    def __init__(self, use_teacher_distillation: bool = False, teacher_feature_dim: Optional[int] = None):
+    def __init__(self, use_teacher_distillation: bool = False, teacher_feature_dim: int | None = None):
         super().__init__()
         self.use_teacher_distillation = use_teacher_distillation
 
@@ -350,7 +349,7 @@ class YOLOv8s(nn.Module):
     def __init__(
         self,
         num_classes: int = 80,
-        teacher_model: Optional[TeacherModel] = None,
+        teacher_model: TeacherModel | None = None,
     ):
         """
         Initialize YOLOv8s detector.
@@ -452,7 +451,7 @@ class YOLOv8s(nn.Module):
         state_dict_cpu = {k: v.cpu() for k, v in self.state_dict().items()}
         torch.save(state_dict_cpu, str(path))
 
-    def load_checkpoint(self, path: str | Path, device: Optional[str] = None) -> None:
+    def load_checkpoint(self, path: str | Path, device: str | None = None) -> None:
         """
         Load YOLO model weights from disk.
 
@@ -665,7 +664,7 @@ def _evaluate_validation_proxy(model, data_loader, device, distill_weight):
 def train(
     data_root: str = "./data/kaggle/coco/coco2017/",
     teacher_model_name: str = "none",
-    teacher_checkpoint_path: Optional[str] = None,
+    teacher_checkpoint_path: str | None = None,
     teacher_variant: str = "base",
     epochs: int = 100,
     start_epoch: int = 0,
@@ -674,7 +673,7 @@ def train(
     save_dir: str = "yolo_checkpoints",
     distill_weight: float = 0.1,
     max_steps: int = -1,
-    num_workers: Optional[int] = None,
+    num_workers: int | None = None,
     seed: int = 42,
 ):
     """

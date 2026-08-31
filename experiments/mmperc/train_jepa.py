@@ -39,22 +39,54 @@ def _points_from_npz(value: dict) -> torch.Tensor:
     return torch.as_tensor(points, dtype=torch.float32)
 
 
+def _zero_camera_tensor(ref_hw: tuple[int, int] | None = None) -> torch.Tensor:
+    hw = ref_hw or (1, 1)
+    return torch.zeros((3, hw[0], hw[1]), dtype=torch.float32)
+
+
 def ssl_collate(
     samples: list[dict],
-) -> tuple[dict[str, torch.Tensor], dict[str, torch.Tensor], dict[str, torch.Tensor]]:
-    cameras: dict[str, torch.Tensor] = {}
-    lidars: dict[str, list[torch.Tensor]] = {name: [] for name in SENSOR_NAMES}
+) -> tuple[
+    dict[str, torch.Tensor],
+    dict[str, torch.Tensor],
+    dict[str, torch.Tensor],
+    dict[str, list[dict[str, object]]],
+]:
+    cameras: dict[str, list[torch.Tensor]] = {name: [] for name in SENSOR_NAMES}
+    lidar_points: dict[str, list[torch.Tensor]] = {name: [] for name in SENSOR_NAMES}
     can_values: dict[str, list[float]] = {name: [] for name in CANEncoder.DEFAULT_KEYS}
+    cam_meta: dict[str, list[dict[str, object]]] = {name: [] for name in SENSOR_NAMES}
 
+    ref_hw: tuple[int, int] | None = None
     for sample in samples:
         for sensor_name in SENSOR_NAMES:
             camera = sample.get(("camera", sensor_name))
+            if camera is not None:
+                camera_tensor = torch.as_tensor(camera, dtype=torch.float32).permute(2, 0, 1) / 255.0
+                if ref_hw is None:
+                    ref_hw = camera_tensor.shape[-2:]
+                cameras[sensor_name].append(camera_tensor)
+            else:
+                if ref_hw is None:
+                    ref_hw = (1, 1)
+                cameras[sensor_name].append(_zero_camera_tensor(ref_hw))
+
             lidar = sample.get(("lidar", sensor_name))
-            if camera is None or lidar is None:
-                raise ValueError(f"Missing camera/lidar pair for {sensor_name}")
-            camera_tensor = torch.as_tensor(camera, dtype=torch.float32).permute(2, 0, 1) / 255.0
-            cameras.setdefault(sensor_name, []).append(camera_tensor)
-            lidars[sensor_name].append(_points_from_npz(lidar))
+            if lidar is not None:
+                lidar_points[sensor_name].append(_points_from_npz(lidar))
+            else:
+                lidar_points[sensor_name].append(torch.zeros((1, 4), dtype=torch.float32))
+
+            meta = (sample.get("cam_meta") or {}).get(sensor_name)
+            if meta is None:
+                meta = {
+                    "camera_id": sensor_name,
+                    "pose": np.eye(4, dtype=np.float32).reshape(-1).tolist(),
+                    "intrinsics": None,
+                    "resolution": ref_hw,
+                }
+            cam_meta[sensor_name].append(meta)
+
         can_in = sample.get("can_in")
         if can_in is None:
             raise ValueError("Missing can_in data")
@@ -65,9 +97,11 @@ def ssl_collate(
             can_values[name].append(float(value))
 
     camera_batch = {name: torch.stack(values) for name, values in cameras.items()}
-    lidar_batch = {name: torch.nn.utils.rnn.pad_sequence(values, batch_first=True) for name, values in lidars.items()}
+    lidar_batch = {
+        name: torch.nn.utils.rnn.pad_sequence(values, batch_first=True) for name, values in lidar_points.items()
+    }
     can_batch = {name: torch.tensor(values, dtype=torch.float32) for name, values in can_values.items()}
-    return lidar_batch, camera_batch, can_batch
+    return lidar_batch, camera_batch, can_batch, cam_meta
 
 
 def build_model(params: MmpercParams) -> LeJEPA:
@@ -111,11 +145,12 @@ def train(params: MmpercParams, checkpoint_dir: str = "checkpoints-jepa") -> Non
         model.train()
         batches = 0
         epoch_totals = {name: 0.0 for name in ("loss", "prediction_loss", "sigreg_loss")}
-        for lidar_points, camera_images, can_values in loader:
+        for lidar_points, camera_images, can_values, cam_meta in loader:
             lidar_points = {name: value.to(device, non_blocking=True) for name, value in lidar_points.items()}
             camera_images = {name: value.to(device, non_blocking=True) for name, value in camera_images.items()}
             can_values = {name: value.to(device, non_blocking=True) for name, value in can_values.items()}
-            output = model(lidar_points, camera_images, can_tokens=can_values, mask_ratio=0.5)
+            cam_meta = {name: [meta for meta in values] for name, values in cam_meta.items()}
+            output = model(lidar_points, camera_images, cam_meta=cam_meta, can_tokens=can_values, mask_ratio=0.5)
             optimizer.zero_grad(set_to_none=True)
             output["loss"].backward()
             optimizer.step()

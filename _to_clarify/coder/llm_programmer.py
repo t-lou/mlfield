@@ -3,7 +3,6 @@ import subprocess
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
 
 import requests
 from llama_cpp import Llama
@@ -117,7 +116,7 @@ class LLMProgrammer(ABC):
     # Stage 5: Update code (patching)
     # ---------------------------------------------------------
     @abstractmethod
-    def update_code(self, failing_output: Optional[str] = None) -> str:
+    def update_code(self, failing_output: str | None = None) -> str:
         """
         failing_output: pytest output or error message
         """
@@ -292,7 +291,7 @@ Requirements:
     # -------------------------
     # Update code after failing tests
     # -------------------------
-    def update_code(self, failing_output: Optional[str] = None) -> str:
+    def update_code(self, failing_output: str | None = None) -> str:
         prompt = f"""
 The following pytest output indicates failing tests:
 

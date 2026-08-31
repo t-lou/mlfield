@@ -1,14 +1,12 @@
 from __future__ import annotations
 
-from typing import Tuple
-
 from components.definitions.mmperc_params import MmpercParams
 
 
 # ================================================================
 # Resolution helpers
 # ================================================================
-def get_res(mmperc_params: MmpercParams) -> Tuple[float, float]:
+def get_res(mmperc_params: MmpercParams) -> tuple[float, float]:
     """
     Returns (res_x, res_y) in meters per pixel.
     res_x: meters per pixel along X (width)
@@ -23,7 +21,7 @@ def get_res(mmperc_params: MmpercParams) -> Tuple[float, float]:
 # ================================================================
 # World → Grid
 # ================================================================
-def xy_to_grid(x: float, y: float, mmperc_params: MmpercParams) -> Tuple[int, int]:
+def xy_to_grid(x: float, y: float, mmperc_params: MmpercParams) -> tuple[int, int]:
     """
     Convert world coordinates (x, y) in meters into BEV grid indices (ix, iy).
 
@@ -52,7 +50,7 @@ def xy_to_grid(x: float, y: float, mmperc_params: MmpercParams) -> Tuple[int, in
 # ================================================================
 
 
-def xy_to_grid_stride(x: float, y: float, mmperc_params: MmpercParams) -> Tuple[int, int]:
+def xy_to_grid_stride(x: float, y: float, mmperc_params: MmpercParams) -> tuple[int, int]:
     """
     Convert world coordinates (x, y) into BEV grid indices (ix, iy)
     for a downsampled grid with the given stride.
@@ -79,7 +77,7 @@ def xy_to_grid_stride(x: float, y: float, mmperc_params: MmpercParams) -> Tuple[
 # ================================================================
 # Grid → World
 # ================================================================
-def grid_to_xy(ix: int, iy: int, mmperc_params: MmpercParams) -> Tuple[float, float]:
+def grid_to_xy(ix: int, iy: int, mmperc_params: MmpercParams) -> tuple[float, float]:
     """
     Convert BEV grid indices (ix, iy) back into world coordinates (x, y).
 

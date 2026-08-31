@@ -9,7 +9,6 @@ Usage:
 
 import argparse
 from pathlib import Path
-from typing import List, Tuple
 
 import cv2
 import numpy as np
@@ -166,7 +165,7 @@ class YOLOInference:
                 ", ".join(result.unexpected_keys),
             )
 
-    def preprocess(self, image_path: str, image_size: int = 640) -> Tuple[torch.Tensor, Tuple[int, int]]:
+    def preprocess(self, image_path: str, image_size: int = 640) -> tuple[torch.Tensor, tuple[int, int]]:
         """
         Load and preprocess image for inference.
 
@@ -192,7 +191,7 @@ class YOLOInference:
 
         return img_tensor, original_size
 
-    def postprocess(self, predictions: Tuple, original_size: Tuple[int, int], image_size: int = 640) -> List[dict]:
+    def postprocess(self, predictions: tuple, original_size: tuple[int, int], image_size: int = 640) -> list[dict]:
         """
         Post-process model predictions: decode, NMS, scale to original size.
 
@@ -294,7 +293,7 @@ class YOLOInference:
 
         return detections
 
-    def _apply_nms(self, detections: List[dict], iou_threshold: float = None) -> List[dict]:
+    def _apply_nms(self, detections: list[dict], iou_threshold: float = None) -> list[dict]:
         """Apply Non-Maximum Suppression"""
         if iou_threshold is None:
             iou_threshold = self.iou_threshold
@@ -320,7 +319,7 @@ class YOLOInference:
         return keep
 
     @staticmethod
-    def _compute_iou(box1: Tuple, box2: Tuple) -> float:
+    def _compute_iou(box1: tuple, box2: tuple) -> float:
         """Compute IoU between two boxes (x_min, y_min, x_max, y_max)"""
         x_min_inter = max(box1[0], box2[0])
         y_min_inter = max(box1[1], box2[1])
@@ -336,7 +335,7 @@ class YOLOInference:
         return inter_area / union_area if union_area > 0 else 0
 
     @torch.no_grad()
-    def infer(self, image_path: str, image_size: int = 640) -> List[dict]:
+    def infer(self, image_path: str, image_size: int = 640) -> list[dict]:
         """
         Run inference on image.
 
@@ -349,7 +348,7 @@ class YOLOInference:
         return detections
 
     @staticmethod
-    def draw_detections(image_path: str, detections: List[dict], output_path: str):
+    def draw_detections(image_path: str, detections: list[dict], output_path: str):
         """
         Draw bounding boxes and labels on image and save.
 

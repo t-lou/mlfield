@@ -2,7 +2,7 @@ import json
 import tarfile
 from enum import Enum
 from pathlib import Path, PurePosixPath
-from typing import Any, Dict, List, Tuple
+from typing import Any
 
 import numpy as np
 import torch
@@ -64,9 +64,9 @@ class A2D2Dataset(Dataset):
         self._root_parsing = "camera"
         self._tar = None
         self._members: frozenset[str] = frozenset()
-        self.color_to_class: Dict[Tuple[int, int, int], int] = {}
-        self.class_to_color: Dict[int, Tuple[int, int, int]] = {}
-        self.class_to_name: Dict[int, str] = {}
+        self.color_to_class: dict[tuple[int, int, int], int] = {}
+        self.class_to_color: dict[int, tuple[int, int, int]] = {}
+        self.class_to_name: dict[int, str] = {}
 
         if not self.path_tar.exists():
             raise RuntimeError(f"A2D2 tar archive not found: {self.path_tar}")
@@ -93,7 +93,7 @@ class A2D2Dataset(Dataset):
         # Single pass: collect extension stats and keep only cam_front_center members.
         needle = f"/{self._name}/"
         ext_counts = {".json": 0, ".png": 0, ".npz": 0}
-        filtered_members: List[str] = []
+        filtered_members: list[str] = []
         for p in all_members:
             for ext in ext_counts:
                 if p.endswith(ext):
@@ -109,7 +109,7 @@ class A2D2Dataset(Dataset):
 
         # Cluster to measurement time / frame in the same pass (avoid re-scanning).
         expected_extensions = {"camera": ".png", "label": ".png", "label3D": ".json", "lidar": "npz"}
-        self.clustered_paths: Dict[str, Dict[str, Dict[str, str]]] = {}
+        self.clustered_paths: dict[str, dict[str, dict[str, str]]] = {}
         for p in filtered_members:
             _, timestamp0, sensor_type, _, filename = p.split("/")
             frame_id = filename.replace("_", ".").split(".")[-2]
@@ -160,7 +160,7 @@ class A2D2Dataset(Dataset):
     def __len__(self) -> int:
         return len(self.indexing)
 
-    def __getitem__(self, idx: int) -> Dict[str, Any]:
+    def __getitem__(self, idx: int) -> dict[str, Any]:
         timestamp0, frame_id = self.indexing[idx]
         frame = self._load_frame(self.clustered_paths[timestamp0][frame_id])
 
@@ -190,11 +190,11 @@ class A2D2Dataset(Dataset):
         except Exception:
             pass
 
-    def find_fc_files(self) -> List[str]:
+    def find_fc_files(self) -> list[str]:
         """
         Find all front-center camera PNGs inside the tar.
         """
-        fc_frames: List[str] = []
+        fc_frames: list[str] = []
 
         for name in self._members:
             path = PurePosixPath(name)
@@ -218,7 +218,7 @@ class A2D2Dataset(Dataset):
             img = Image.open(fileobj).convert(mode)
         return np.array(img)
 
-    def load_lidar(self, path: PurePosixPath) -> Tuple[np.ndarray, np.ndarray]:
+    def load_lidar(self, path: PurePosixPath) -> tuple[np.ndarray, np.ndarray]:
         tar = self._get_tar()
         fileobj = tar.extractfile(str(path))
         if fileobj is None:
@@ -250,7 +250,7 @@ class A2D2Dataset(Dataset):
         with fileobj:
             data = json.load(fileobj)  # json.load reads from the handle itself, no BytesIO needed
 
-        boxes: List[List[float]] = [obj["center"] + obj["size"] + [obj["rot_angle"]] for obj in data.values()]
+        boxes: list[list[float]] = [obj["center"] + obj["size"] + [obj["rot_angle"]] for obj in data.values()]
 
         padded = np.zeros((self.params.num_gt_boxes, 7), dtype=np.float32)
         n = min(len(boxes), self.params.num_gt_boxes)
@@ -260,8 +260,8 @@ class A2D2Dataset(Dataset):
         return padded
 
     def _load_semantic_mapping(
-        self, tar: tarfile.TarFile, members: List[str]
-    ) -> Tuple[Dict[Tuple[int, int, int], int], Dict[int, Tuple[int, int, int]], Dict[int, str]]:
+        self, tar: tarfile.TarFile, members: list[str]
+    ) -> tuple[dict[tuple[int, int, int], int], dict[int, tuple[int, int, int]], dict[int, str]]:
         json_candidates = [name for name in members if name.endswith("class_list.json")]
         if len(json_candidates) != 1:
             raise FileNotFoundError("A2D2 class_list.json not found in tar or multiple candidates found.")
@@ -274,9 +274,9 @@ class A2D2Dataset(Dataset):
         with fileobj:
             data = json.load(fileobj)
 
-        color_to_class: Dict[Tuple[int, int, int], int] = {}
-        class_to_color: Dict[int, Tuple[int, int, int]] = {}
-        class_to_name: Dict[int, str] = {}
+        color_to_class: dict[tuple[int, int, int], int] = {}
+        class_to_color: dict[int, tuple[int, int, int]] = {}
+        class_to_name: dict[int, str] = {}
 
         for cid, (hex_color, name) in enumerate(data.items()):
             hex_color = hex_color.lstrip("#")
@@ -306,7 +306,7 @@ class A2D2Dataset(Dataset):
 
         return classes.reshape(H, W)
 
-    def _build_paths(self, fc_path: str) -> Dict[str, PurePosixPath]:
+    def _build_paths(self, fc_path: str) -> dict[str, PurePosixPath]:
         p = PurePosixPath(fc_path)
         parts = list(p.parts)
         if len(parts) < 4:
@@ -334,7 +334,7 @@ class A2D2Dataset(Dataset):
 
         return paths
 
-    def _load_frame(self, paths: dict[str, str]) -> Dict[str, np.ndarray]:
+    def _load_frame(self, paths: dict[str, str]) -> dict[str, np.ndarray]:
         # The paths are indexed with "camera", "label", "label3D", "lidar"
         sem_rgb = self.load_img(paths["label"], mode="RGB")
         sem_class = self.convert_semantic_rgb_to_class(sem_rgb)

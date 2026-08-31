@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
-from typing import Optional
 
 import numpy as np
 from components.mmperc.common.visualization import (
@@ -46,7 +45,7 @@ def load_npz(path: Path) -> dict:
 # ================================================================
 
 
-def visualize_2d(data: dict, score_thresh: float, output: Optional[Path]) -> None:
+def visualize_2d(data: dict, score_thresh: float, output: Path | None) -> None:
     import matplotlib.pyplot as plt
 
     points = np.asarray(data["points"])[:, :3]

@@ -8,7 +8,6 @@ These values define:
 """
 
 from dataclasses import dataclass
-from typing import Tuple
 
 
 @dataclass
@@ -20,12 +19,12 @@ class BevParams:
     # -----------------------------
     # Lidar region of interest (meters)
     # -----------------------------
-    x_range: Tuple[float, float] = (0.0, 128.0)  # forward/backward
-    y_range: Tuple[float, float] = (-48.0, 48.0)  # left/right
-    z_range: Tuple[float, float] = (-5.0, 3.0)  # vertical range
+    x_range: tuple[float, float] = (0.0, 128.0)  # forward/backward
+    y_range: tuple[float, float] = (-48.0, 48.0)  # left/right
+    z_range: tuple[float, float] = (-5.0, 3.0)  # vertical range
 
     # Combined point cloud range (x_min, y_min, z_min, x_max, y_max, z_max)
-    pc_range: Tuple[float, float, float, float, float, float] = (
+    pc_range: tuple[float, float, float, float, float, float] = (
         x_range[0],
         y_range[0],
         z_range[0],
@@ -46,7 +45,7 @@ class BevParams:
     # -----------------------------
     # Voxel size (meters)
     # -----------------------------
-    voxel_size: Tuple[float, float, float] = (
+    voxel_size: tuple[float, float, float] = (
         (x_range[1] - x_range[0]) / bev_w,
         (y_range[1] - y_range[0]) / bev_h,
         z_range[1] - z_range[0],  # vz (full height, pillar)

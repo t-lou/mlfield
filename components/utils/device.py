@@ -1,5 +1,4 @@
 import os
-from typing import Optional
 
 import torch
 
@@ -20,7 +19,7 @@ def get_device() -> torch.device:
     return device
 
 
-def resolve_num_workers(num_workers: Optional[int] = None, max_num_workers: int = 20) -> int:
+def resolve_num_workers(num_workers: int | None = None, max_num_workers: int = 20) -> int:
     """Return a usable number of DataLoader workers, preferring the CPU count by default."""
     if num_workers is not None:
         ret = max(0, int(num_workers))

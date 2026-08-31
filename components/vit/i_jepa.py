@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from typing import Dict, List
-
 import torch
 from torch import nn
 
@@ -176,7 +174,7 @@ class I_JEPA(nn.Module):
 
     def _sample_context_and_target_masks(
         self, batch_size: int, device: torch.device
-    ) -> tuple[torch.Tensor, List[torch.Tensor]]:
+    ) -> tuple[torch.Tensor, list[torch.Tensor]]:
         """
         Create per-image context masks and multiple per-image target masks.
 
@@ -203,7 +201,7 @@ class I_JEPA(nn.Module):
         )  # (B, N)
 
         # Sample all target masks at once for each target block
-        target_masks: List[torch.Tensor] = []
+        target_masks: list[torch.Tensor] = []
         for block_idx in range(self.cfg.num_target_blocks):
             target_masks_all = self._sample_rect_mask(
                 grid_h,
@@ -247,8 +245,8 @@ class I_JEPA(nn.Module):
     def _gather_padded_target_tokens(
         self,
         full_tokens: torch.Tensor,
-        target_masks: List[torch.Tensor],
-    ) -> tuple[List[torch.Tensor], List[torch.Tensor]]:
+        target_masks: list[torch.Tensor],
+    ) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
         """
         Gather per-block target tokens and pad each block to a common length.
         Fully vectorized to eliminate per-batch loops.
@@ -257,8 +255,8 @@ class I_JEPA(nn.Module):
             target_tokens: list[(B, max_Nt, D)]
             target_valid_masks: list[(B, max_Nt)] bool
         """
-        targets: List[torch.Tensor] = []
-        masks: List[torch.Tensor] = []
+        targets: list[torch.Tensor] = []
+        masks: list[torch.Tensor] = []
         device = full_tokens.device
         bsz = full_tokens.shape[0]
 
@@ -295,9 +293,9 @@ class I_JEPA(nn.Module):
         self,
         context_tokens: torch.Tensor,
         context_padding_mask: torch.Tensor | None,
-        target_masks: List[torch.Tensor],
+        target_masks: list[torch.Tensor],
         pos_spatial: torch.Tensor,
-    ) -> tuple[List[torch.Tensor], List[torch.Tensor]]:
+    ) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
         """Predict target-token latents from context tokens and target positions.
 
         Critical optimization: Process ALL target blocks in ONE forward pass through predictor.
@@ -311,9 +309,9 @@ class I_JEPA(nn.Module):
         pos_proj = self.pred_in_pos(pos_spatial)  # (1, N, D_pred)
 
         # Process all target blocks at once: gather queries and split results afterward
-        all_target_queries_list: List[torch.Tensor] = []
-        all_valid_masks_list: List[torch.Tensor] = []
-        block_max_counts: List[int] = []
+        all_target_queries_list: list[torch.Tensor] = []
+        all_valid_masks_list: list[torch.Tensor] = []
+        block_max_counts: list[int] = []
         idx_range = torch.arange(target_masks[0].shape[1], device=device).unsqueeze(0).expand(bsz, -1)
 
         for target_mask in target_masks:
@@ -370,8 +368,8 @@ class I_JEPA(nn.Module):
         pred_target_all = self.pred_out(z[:, context_z.shape[1] :, :])  # (B, sum(max_counts), D_embed)
 
         # Split predictions back into per-block tensors
-        preds: List[torch.Tensor] = []
-        pred_masks: List[torch.Tensor] = []
+        preds: list[torch.Tensor] = []
+        pred_masks: list[torch.Tensor] = []
         offset = 0
 
         for block_idx, max_count in enumerate(block_max_counts):
@@ -385,8 +383,8 @@ class I_JEPA(nn.Module):
         self,
         imgs: torch.Tensor,
         context_mask: torch.Tensor | None = None,
-        target_masks: List[torch.Tensor] | None = None,
-    ) -> Dict[str, object]:
+        target_masks: list[torch.Tensor] | None = None,
+    ) -> dict[str, object]:
         """
         Forward pass for I-JEPA architecture.
 

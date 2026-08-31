@@ -1,6 +1,5 @@
 import argparse
 from pathlib import Path
-from typing import List, Optional
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -20,9 +19,9 @@ IMAGE_PATHS = [
 
 
 def render_feature_grids(
-    rgbs: List[np.ndarray],
-    attn_maps: List[Optional[np.ndarray]],
-    token_maps: List[Optional[np.ndarray]],
+    rgbs: list[np.ndarray],
+    attn_maps: list[np.ndarray | None],
+    token_maps: list[np.ndarray | None],
     output_path: Path,
 ) -> None:
     if not rgbs:

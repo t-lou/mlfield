@@ -7,9 +7,9 @@ import tarfile
 from collections.abc import Iterator
 from enum import Enum
 from pathlib import Path
-from typing import Optional
 
 from components.definitions.mmperc_params import MmpercParams
+from components.utils.calibration import load_sensor_calibration
 from components.utils.logger import logger
 from torch.utils.data import Dataset, get_worker_info
 
@@ -127,6 +127,17 @@ class A2D2DatasetUnlabeled(Dataset):
         self._ensure_tars_open()
         assert self._tars
         assert any(sensor_type == "camera" for sensor_type, _ in self._tars.keys())
+
+        self._camera_calibrations: dict[str, object] = {}
+        for sensor_position in self._SENSOR_POSITIONS:
+            try:
+                self._camera_calibrations[sensor_position] = load_sensor_calibration(
+                    self.path_calib,
+                    sensor_name=sensor_position,
+                    sensor_type="camera",
+                )
+            except (FileNotFoundError, KeyError, ValueError):
+                self._camera_calibrations[sensor_position] = None
 
         # Open any camera file, collect the sequence ids and load json for timestamps.
         camera_key = next(key for key in self._tars if key[0] == "camera")
@@ -307,7 +318,7 @@ class A2D2DatasetUnlabeled(Dataset):
 
     # -- CAN signal interpolation -------------------------------------------------------------------
 
-    def _find_nearest_last_can_signal(self, signal_name: str, timestamp: int) -> Optional[float]:
+    def _find_nearest_last_can_signal(self, signal_name: str, timestamp: int) -> float | None:
         """Find the last nearest CAN signal value for a given timestamp (binary search)."""
         ts_list = self._can_ts_cache[signal_name]
         idx = bisect.bisect_right(ts_list, timestamp) - 1
@@ -368,6 +379,22 @@ class A2D2DatasetUnlabeled(Dataset):
                 result[(sensor_type, sensor_position)] = self._decode_camera(raw)
             else:
                 result[(sensor_type, sensor_position)] = self._decode_lidar(raw)
+
+        cam_meta: dict[str, dict] = {}
+        for sensor_position in self._SENSOR_POSITIONS:
+            calibration = self._camera_calibrations.get(sensor_position)
+            if calibration is None:
+                continue
+            pose = np.asarray(calibration.pose.sensor_from_vehicle, dtype=np.float32).reshape(-1)
+            cam_meta[sensor_position] = {
+                "camera_id": sensor_position,
+                "pose": pose,
+                "intrinsics": np.asarray(calibration.intrinsic, dtype=np.float32)
+                if calibration.intrinsic is not None
+                else None,
+                "resolution": calibration.resolution,
+            }
+        result["cam_meta"] = cam_meta
 
         # Find the last nearest CAN in signals, if mode is REFINE, also add CAN out signals
         timestamp = self.timestamps[index]
