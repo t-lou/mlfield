@@ -15,7 +15,7 @@ def sample_rect_mask_cpu(
     ar_min: float,
     ar_max: float,
     num_masks: int = 1,
-    device: torch.device = torch.device("cpu"),
+    device: torch.device | None = None,
 ) -> torch.Tensor:
     """Sample rectangular boolean masks on a patch grid (CPU-optimized version).
 
@@ -34,6 +34,9 @@ def sample_rect_mask_cpu(
     Returns:
         Tensor of shape (num_masks, grid_h * grid_w) with bool dtype
     """
+    if device is None:
+        device = torch.device("cpu")
+
     total = grid_h * grid_w
 
     # Batch sample areas and aspects
@@ -91,7 +94,7 @@ def generate_masks_for_batch(
     aspect_ratio_min: float,
     aspect_ratio_max: float,
     num_target_blocks: int = 4,
-    device: torch.device = torch.device("cpu"),
+    device: torch.device | None = None,
 ) -> tuple[torch.Tensor, list[torch.Tensor]]:
     """Generate context and target masks for a batch (CPU-friendly, for DataLoader prefetch).
 
@@ -109,6 +112,9 @@ def generate_masks_for_batch(
         - context_masks: (B, H*W) bool
         - target_masks: list[(B, H*W) bool]
     """
+    if device is None:
+        device = torch.device("cpu")
+
     # Batch sample all context masks at once
     context_masks_all = sample_rect_mask_cpu(
         grid_h,
@@ -123,7 +129,7 @@ def generate_masks_for_batch(
 
     # Sample all target masks at once for each target block
     target_masks: list[torch.Tensor] = []
-    for block_idx in range(num_target_blocks):
+    for _block_idx in range(num_target_blocks):
         target_masks_all = sample_rect_mask_cpu(
             grid_h,
             grid_w,

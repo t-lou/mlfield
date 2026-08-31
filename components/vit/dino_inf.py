@@ -18,8 +18,8 @@ class DINOPartID(Enum):
 def _to_part_id(value: str) -> DINOPartID:
     try:
         return DINOPartID[value.upper()]
-    except KeyError:
-        raise ValueError(f"{value!r} is not a valid DINOPartID")
+    except KeyError as err:
+        raise ValueError(f"{value!r} is not a valid DINOPartID") from err
 
 
 def load_from_checkpoint(config: DINOConfig, ckpt_path: Path, device: torch.device, part_name: str) -> torch.nn.Module:

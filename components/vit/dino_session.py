@@ -27,7 +27,7 @@ class DINOLoss(nn.Module):
         self.center_momentum = center_momentum
         self.register_buffer("center", torch.zeros(1, out_dim))
 
-    def forward(self, student_outputs, teacher_outputs, global_crop_indices=[0, 1]):
+    def forward(self, student_outputs, teacher_outputs, global_crop_indices=None):
         """Compute the DINO loss between student and teacher outputs.
 
         Args:
@@ -35,6 +35,9 @@ class DINOLoss(nn.Module):
             teacher_outputs: List of tensors from the teacher model for each global crop.
             global_crop_indices: Indices of the global crops in the student outputs.
         """
+        if global_crop_indices is None:
+            global_crop_indices = [0, 1]
+
         student_out = [s.float() / self.student_temp for s in student_outputs]
         teacher_out = [(t.float() - self.center.float()) / self.teacher_temp for t in teacher_outputs]
 

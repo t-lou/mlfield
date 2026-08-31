@@ -36,7 +36,7 @@ def initialize_model_from_checkpoint(model: torch.nn.Module, ckpt_path: str, out
     """Initialize a model from a checkpoint, updating the model architecture as needed."""
 
     ckpt = torch.load(ckpt_path, map_location="cpu")
-    ckpt_state = ckpt["model"] if "model" in ckpt else ckpt
+    ckpt_state = ckpt.get("model", ckpt)
 
     model_state = model.state_dict()
 
@@ -81,7 +81,7 @@ def initialize_model_from_checkpoint(model: torch.nn.Module, ckpt_path: str, out
             report["random_initialized"].append(key)
 
     # Case 4: checkpoint keys not used
-    for key in ckpt_state.keys():
+    for key in ckpt_state:
         if key not in used_ckpt_keys:
             report["unused_checkpoint_keys"].append(key)
             report["warnings"].append(f"Checkpoint key unused: {key}")

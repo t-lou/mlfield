@@ -81,10 +81,7 @@ class MultiCameraEncoder(nn.Module):
                     if isinstance(meta, list):
                         batch_pose = []
                         for item in meta:
-                            if isinstance(item, dict):
-                                pose = item.get("pose")
-                            else:
-                                pose = None
+                            pose = item.get("pose") if isinstance(item, dict) else None
                             if pose is None:
                                 batch_pose.append(pose_vec.detach().clone())
                             else:

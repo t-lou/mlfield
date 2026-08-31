@@ -202,7 +202,7 @@ class I_JEPA(nn.Module):
 
         # Sample all target masks at once for each target block
         target_masks: list[torch.Tensor] = []
-        for block_idx in range(self.cfg.num_target_blocks):
+        for _block_idx in range(self.cfg.num_target_blocks):
             target_masks_all = self._sample_rect_mask(
                 grid_h,
                 grid_w,

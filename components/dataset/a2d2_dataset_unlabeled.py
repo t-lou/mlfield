@@ -1,4 +1,5 @@
 import bisect
+import contextlib
 import io
 import json
 import os
@@ -126,7 +127,7 @@ class A2D2DatasetUnlabeled(Dataset):
 
         self._ensure_tars_open()
         assert self._tars
-        assert any(sensor_type == "camera" for sensor_type, _ in self._tars.keys())
+        assert any(sensor_type == "camera" for sensor_type, _ in self._tars)
 
         self._camera_calibrations: dict[str, object] = {}
         for sensor_position in self._SENSOR_POSITIONS:
@@ -263,10 +264,8 @@ class A2D2DatasetUnlabeled(Dataset):
 
     def _close_tars(self) -> None:
         for tar in self._tars.values():
-            try:
+            with contextlib.suppress(Exception):
                 tar.close()
-            except Exception:  # noqa: BLE001
-                pass
         self._tars = {}
         self._tar_index = {}
 
@@ -282,10 +281,8 @@ class A2D2DatasetUnlabeled(Dataset):
 
     def __del__(self) -> None:
         """Close all opened tars."""
-        try:
+        with contextlib.suppress(Exception):
             self._close_tars()
-        except Exception:  # noqa: BLE001
-            pass
 
     def __getstate__(self) -> dict:
         # Never pickle open tar handles across a process boundary (e.g. the `spawn` start method) -

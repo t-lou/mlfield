@@ -22,10 +22,7 @@ class FpsLogger:
             end_time = time.time()
             elapsed = end_time - self._start_time
 
-            if elapsed > 0:
-                fps = self._num / elapsed
-            else:
-                fps = float("inf")
+            fps = self._num / elapsed if elapsed > 0 else float("inf")
 
             logger.info(f"FPS: {fps:.2f}")
 

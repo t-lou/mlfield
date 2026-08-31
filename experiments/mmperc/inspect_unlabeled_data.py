@@ -44,7 +44,7 @@ if __name__ == "__main__":
             print(f"  {signal_name}: {value}")
 
     data_per_sensor = {}
-    keys_sensor = [k for k in data.keys() if isinstance(k, tuple) and len(k) == 2 and k[0] in ["camera", "lidar"]]
+    keys_sensor = [k for k in data if isinstance(k, tuple) and len(k) == 2 and k[0] in ["camera", "lidar"]]
     for sensor_type, sensor_position in keys_sensor:
         if sensor_type not in data_per_sensor:
             data_per_sensor[sensor_type] = {}
