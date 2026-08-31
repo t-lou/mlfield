@@ -7,7 +7,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 # -----------------------------
 RUN apt-get update && apt-get upgrade -y \
     && apt-get install -y --no-install-recommends \
-    curl git build-essential ca-certificates direnv tree python3 python3-venv \
+    curl git build-essential ca-certificates direnv tree vim nano python3 python3-venv \
     && rm -rf /var/lib/apt/lists/*
 
 # -----------------------------
