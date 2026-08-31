@@ -1,4 +1,6 @@
 import argparse
+from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 
 import torch
@@ -10,6 +12,67 @@ from components.vit.teacher_models import create_teacher_model
 from components.vit.vit_encoder import VitEncoder
 from scipy.optimize import linear_sum_assignment
 from torch.utils.data import DataLoader
+
+
+class DetrVariant(Enum):
+    """DETR scale variants with encoder/decoder dimensions.
+
+    Controls:
+    - embed_dim: Embedding dimension for transformer layers
+    - num_layers: Number of encoder/decoder layers
+    - num_queries: Number of object queries in decoder
+    - num_heads: Number of attention heads
+    """
+
+    S = (192, 3, 50, 6)  # Small: 192-dim, 3 layers, 50 queries
+    M = (384, 6, 100, 6)  # Medium: 384-dim, 6 layers, 100 queries
+    L = (512, 9, 150, 8)  # Large: 512-dim, 9 layers, 150 queries
+    XL = (768, 12, 300, 12)  # Extra Large: 768-dim, 12 layers, 300 queries
+
+    def __init__(self, embed_dim, num_layers, num_queries, num_heads):
+        self.embed_dim = embed_dim
+        self.num_layers = num_layers
+        self.num_queries = num_queries
+        self.num_heads = num_heads
+
+
+@dataclass(frozen=True)
+class DetrArchConfig:
+    """Architecture configuration for flexible DETR models."""
+
+    variant: DetrVariant = DetrVariant.S
+    vit_patch_size: int = 16
+    vit_base_res: int = 224
+
+    @property
+    def embed_dim(self):
+        return self.variant.embed_dim
+
+    @property
+    def num_layers(self):
+        return self.variant.num_layers
+
+    @property
+    def num_queries(self):
+        return self.variant.num_queries
+
+    @property
+    def num_heads(self):
+        return self.variant.num_heads
+
+
+@dataclass(frozen=True)
+class DetrTrainConfig:
+    """Configuration for DETR training."""
+
+    arch: DetrArchConfig = DetrArchConfig(variant=DetrVariant.S)
+    image_size: int = 640
+    batch_size: int = 32
+    num_classes: int = 80
+    learning_rate: float = 1e-3
+    weight_decay: float = 1e-4
+    epochs: int = 100
+    warmup_epochs: int = 5
 
 
 class DetrEncoder(nn.Module):
@@ -232,19 +295,66 @@ class SetCriterion(nn.Module):
 
 
 class DeTr(nn.Module):
+    """Flexible DETR model that scales to different variants (s/m/l/xl).
+
+    DETR (Detection Transformer) combines:
+    - Vision Transformer backbone for image encoding
+    - Transformer encoder for processing image features
+    - Transformer decoder with learnable object queries
+    - Prediction head for classification and bounding box regression
+
+    Variants scale the transformer dimensions and number of queries.
+    """
+
     def __init__(
         self,
-        backbone: VitEncoder,
-        encoder: DetrEncoder,
-        decoder: DetrDecoder,
-        head: DetrHead,
+        num_classes: int = 80,
+        arch: DetrArchConfig = None,
         teacher_model: nn.Module | None = None,
     ):
+        """Initialize flexible DETR model.
+
+        Args:
+            num_classes: Number of object classes
+            arch: Architecture config for scaling (default: Small variant)
+            teacher_model: Optional teacher model for knowledge distillation
+        """
         super().__init__()
-        self.backbone = backbone
-        self.encoder = encoder
-        self.decoder = decoder
-        self.head = head
+        if arch is None:
+            arch = DetrArchConfig(variant=DetrVariant.S)
+        self.arch = arch
+        self.num_classes = num_classes
+
+        # Vision Transformer backbone (without CLS token for DETR)
+        self.backbone = VitEncoder(
+            base_res=arch.vit_base_res,
+            patch_size=arch.vit_patch_size,
+            embed_dim=arch.embed_dim,
+            depth=arch.num_layers,
+            num_heads=arch.num_heads,
+            add_cls_token=False,
+        )
+
+        # Transformer encoder: processes image feature sequence
+        self.encoder = DetrEncoder(
+            embed_dim=arch.embed_dim,
+            num_layers=arch.num_layers,
+            num_heads=arch.num_heads,
+        )
+
+        # Transformer decoder: generates object predictions
+        self.decoder = DetrDecoder(
+            embed_dim=arch.embed_dim,
+            num_queries=arch.num_queries,
+            num_layers=arch.num_layers,
+            num_heads=arch.num_heads,
+        )
+
+        # Prediction head: classifies and regresses bounding boxes
+        self.head = DetrHead(
+            num_classes=num_classes,
+            embed_dim=arch.embed_dim,
+        )
 
         self.teacher_model = teacher_model
         if self.teacher_model is not None:
@@ -252,7 +362,31 @@ class DeTr(nn.Module):
             for p in self.teacher_model.parameters():
                 p.requires_grad = False
 
+    @classmethod
+    def from_variant(cls, variant: DetrVariant, num_classes: int = 80, teacher_model: nn.Module | None = None):
+        """Create DETR model from a predefined variant.
+
+        Args:
+            variant: DetrVariant enum (S, M, L, XL)
+            num_classes: Number of classes
+            teacher_model: Optional teacher for distillation
+
+        Returns:
+            DeTr instance
+        """
+        arch = DetrArchConfig(variant=variant)
+        return cls(num_classes=num_classes, arch=arch, teacher_model=teacher_model)
+
     def forward(self, imgs):
+        """Forward pass with optional teacher distillation.
+
+        Args:
+            imgs: Input images (B, 3, H, W)
+
+        Returns:
+            outputs: Detection predictions (class logits and bounding boxes)
+            distill_loss: Distillation loss (0 if teacher not available)
+        """
         feats = self.backbone.forward_detr(imgs)  # (B, C, H, W)
         B, C, H, W = feats.shape
         feats_seq = feats.flatten(2).transpose(1, 2)  # (B, HW, C)
@@ -341,6 +475,7 @@ def _evaluate_validation_proxy(
 
 def train(
     data_root: str = "./data/kaggle/coco/coco2017/",
+    variant: str = "s",
     teacher_model_name: str = "none",
     teacher_checkpoint_path: str | None = None,
     teacher_variant: str = "base",
@@ -354,16 +489,16 @@ def train(
     seed: int = 42,
     use_amp: bool = True,
 ):
-    """
-    Train DeTr with optional knowledge distillation (not implemented)
+    """Train flexible DETR with optional knowledge distillation.
 
-    This implements a simplified but functional training loop that:
+    This implements a functional training loop that:
     - loads COCO train/val splits
     - optimizes detection loss plus optional distillation loss
     - runs validation and saves checkpoints
 
     Args:
         data_root: Root directory for COCO dataset
+        variant: DETR variant to train ('s', 'm', 'l', 'xl')
         teacher_model_name: Teacher model to use ('none', 'mae', 'dino', 'ijepa')
         teacher_checkpoint_path: Path to teacher checkpoint (if None, uses default)
         teacher_variant: Variant of teacher model to use (e.g., 'imagenet', 'small', 'base')
@@ -373,16 +508,24 @@ def train(
         learning_rate: Initial learning rate for SGD optimizer
         save_dir: Directory to save model checkpoints
         distill_weight: Weight for the distillation loss term
-        max_steps: Maximum number of training steps (default: -1, meaning no limit)
         num_workers: Number of DataLoader workers
-        seed: Random seed for model init and data shuffling. Keep this fixed across
-            teacher_model_name variants so the only difference between runs is the
-            teacher, not random init/shuffling noise.
+        seed: Random seed for model init and data shuffling
         use_amp: Enable automatic mixed precision. Only takes effect on CUDA; on
             CPU/MPS training runs in full precision regardless.
     """
 
     torch.manual_seed(seed)
+
+    # Map variant string to DetrVariant enum
+    variant_map = {
+        "s": DetrVariant.S,
+        "m": DetrVariant.M,
+        "l": DetrVariant.L,
+        "xl": DetrVariant.XL,
+    }
+    if variant.lower() not in variant_map:
+        raise ValueError(f"Invalid variant '{variant}'. Choices: {list(variant_map.keys())}")
+    detr_variant = variant_map[variant.lower()]
 
     image_size = 640
     num_classes = 80
@@ -454,11 +597,11 @@ def train(
     train_loader = DataLoader(train_dataset, **train_loader_kwargs)
     val_loader = DataLoader(val_dataset, **val_loader_kwargs)
 
+    # Create model with flexible architecture
+    arch = DetrArchConfig(variant=detr_variant)
     model = DeTr(
-        backbone=VitEncoder(add_cls_token=False),
-        encoder=DetrEncoder(),
-        decoder=DetrDecoder(),
-        head=DetrHead(num_classes=num_classes),
+        num_classes=num_classes,
+        arch=arch,
         teacher_model=teacher_model,
     ).to(device)
 
@@ -468,9 +611,9 @@ def train(
     optimizer = torch.optim.SGD(model.parameters(), lr=learning_rate, momentum=0.937, weight_decay=weight_decay)
 
     if teacher_model is None:
-        logger.info("No teacher model - training baseline DeTr")
+        logger.info(f"Training DETR-{variant} (no teacher) - baseline")
     else:
-        logger.info(f"✓ Using {teacher_model.model_name} teacher - training WITH knowledge distillation")
+        logger.info(f"Training DETR-{variant} with {teacher_model.model_name} teacher")
         logger.info("  Benefit: Faster convergence, better generalization")
 
     if start_epoch > 0:
@@ -558,9 +701,16 @@ def train(
 
 
 def main():
-    parser = argparse.ArgumentParser(description="DeTr with Optional Knowledge Distillation")
+    parser = argparse.ArgumentParser(description="Flexible DETR with Optional Knowledge Distillation")
     parser.add_argument(
         "--data-root", type=str, default="./data/kaggle/coco/coco2017", help="Root directory for COCO dataset"
+    )
+    parser.add_argument(
+        "--variant",
+        type=str,
+        default="s",
+        choices=["s", "m", "l", "xl"],
+        help="DETR variant to train: s (small), m (medium), l (large), xl (extra large)",
     )
     parser.add_argument(
         "--teacher",
@@ -600,6 +750,7 @@ def main():
 
     train(
         data_root=args.data_root,
+        variant=args.variant,
         teacher_model_name=args.teacher,
         teacher_checkpoint_path=args.teacher_checkpoint,
         teacher_variant=args.teacher_variant,
