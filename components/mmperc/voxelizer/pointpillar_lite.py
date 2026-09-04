@@ -20,7 +20,6 @@ class PointpillarLite:
         max_points_per_pillar: int = 20,
         max_pillars: int = 12000,
     ) -> None:
-
         x_range: tuple[float, float] = params.bev_params.x_range
         y_range: tuple[float, float] = params.bev_params.y_range
         z_range: tuple[float, float] = params.bev_params.z_range

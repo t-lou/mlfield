@@ -7,7 +7,6 @@ from components.vit.dino_defs import DINOConfig
 
 class DINOTransform:
     def __init__(self, config: DINOConfig):
-
         logger.info(
             f"Initialize DINO transform, {config.num_teachers} teachers of size {config.teacher_base_res} "
             f"and {config.num_students} students of size {config.student_base_res}."

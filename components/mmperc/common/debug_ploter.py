@@ -5,14 +5,12 @@ import numpy as np
 
 
 def init_plot():
-
     path = Path("debug_plots")
     if not path.exists():
         path.mkdir(parents=True, exist_ok=True)
 
 
 def export_bbox_heatmap_debug(pred, gt, id_epoch=0, id_sample=0) -> None:
-
     pred_np = pred.detach().cpu().numpy()
     gt_np = gt.detach().cpu().numpy()
 
@@ -40,7 +38,6 @@ def export_bbox_heatmap_debug(pred, gt, id_epoch=0, id_sample=0) -> None:
 
 
 def export_semantic_debug(pred_logits, gt_sem, class_to_color, id_epoch=0, id_sample=0):
-
     # ---------------------------------------------------------
     # Convert tensors → numpy
     # pred_logits: (C, H, W)

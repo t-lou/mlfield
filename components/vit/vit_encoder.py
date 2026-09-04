@@ -28,75 +28,115 @@ class VitEncoder(nn.Module):
         >>> encoder = VitEncoder(config=config)
     """
 
-    def __init__(self, config: ViTConfig = None, **kwargs):
+    def __init__(
+        self,
+        config: ViTConfig | None = None,
+        *,
+        base_res: int | None = None,
+        patch_size: int | None = None,
+        embed_dim: int | None = None,
+        depth: int | None = None,
+        num_heads: int | None = None,
+        mlp_ratio: float | None = None,
+        attn_drop: float | None = None,
+        proj_drop: float | None = None,
+        drop_path_rate: float | None = None,
+        qkv_bias: bool | None = None,
+        add_cls_token: bool | None = None,
+    ):
         """Initialize ViT encoder.
 
         Args:
             config: ViTConfig instance for configuration
-            **kwargs: Legacy parameter support for backward compatibility
-                (base_res, patch_size, embed_dim, depth, etc.)
+            The explicit keyword parameters are supported for backward
+            compatibility. Prefer passing a ViTConfig for new code.
         """
         super().__init__()
 
-        # Handle legacy parameters for backward compatibility
+        # Keep accepting the historical keyword API. Architecture values are
+        # resolved here because they are properties of ViTConfig's variant and
+        # cannot be passed to ViTConfig as dataclass fields.
+        legacy_arch = {
+            name: value
+            for name, value in {
+                "embed_dim": embed_dim,
+                "depth": depth,
+                "num_heads": num_heads,
+                "mlp_ratio": mlp_ratio,
+            }.items()
+            if value is not None
+        }
+        config_overrides = {
+            name: value
+            for name, value in {
+                "base_res": base_res,
+                "patch_size": patch_size,
+                "attn_drop": attn_drop,
+                "proj_drop": proj_drop,
+                "drop_path_rate": drop_path_rate,
+                "qkv_bias": qkv_bias,
+                "add_cls_token": add_cls_token,
+            }.items()
+            if value is not None
+        }
         if config is None:
-            # Try to build config from legacy kwargs
-            if kwargs:
-                variant = ViTVariant.S  # default
-                # Extract known variant-level params if provided
-                config = ViTConfig.from_variant(variant, **kwargs)
-            else:
-                config = ViTConfig()
+            config = ViTConfig.from_variant(ViTVariant.S, **config_overrides)
+        elif config_overrides or legacy_arch:
+            raise TypeError("Cannot combine config with legacy keyword parameters")
 
         self.config = config
-        self.embed_dim = config.embed_dim
+        self.embed_dim = legacy_arch.get("embed_dim", config.embed_dim)
+        self._depth = legacy_arch.get("depth", config.depth)
+        self._num_heads = legacy_arch.get("num_heads", config.num_heads)
+        self._mlp_ratio = legacy_arch.get("mlp_ratio", config.mlp_ratio)
         self._patch_size = config.patch_size
+        self._add_cls_token = config.add_cls_token
 
         # Patch embedding
         self.patch_embed = PatchEmbed(
             patch_size=config.patch_size,
             in_chans=3,
-            embed_dim=config.embed_dim,
+            embed_dim=self.embed_dim,
         )
 
         # CLS token (optional)
-        if config.add_cls_token:
-            self.cls_token = nn.Parameter(torch.zeros(1, 1, config.embed_dim))
+        if self._add_cls_token:
+            self.cls_token = nn.Parameter(torch.zeros(1, 1, self.embed_dim))
         else:
             self.cls_token = None
 
         # Positional embedding
-        base_grid = config.base_res // config.patch_size
+        base_grid = config.base_res // self._patch_size
         self.register_buffer(
             "pos_embed",
             build_2d_sincos_position_embedding(
                 grid_size=base_grid,
-                embed_dim=config.embed_dim,
-                add_cls_token=config.add_cls_token,
+                embed_dim=self.embed_dim,
+                add_cls_token=self._add_cls_token,
             ),
         )
 
         # Transformer blocks with stochastic depth
-        dpr = [config.drop_path_rate * i / max(config.depth - 1, 1) for i in range(config.depth)]
+        dpr = [config.drop_path_rate * i / max(self._depth - 1, 1) for i in range(self._depth)]
         self.blocks = nn.ModuleList(
             [
                 VitBlock(
-                    dim=config.embed_dim,
-                    num_heads=config.num_heads,
-                    mlp_ratio=config.mlp_ratio,
+                    dim=self.embed_dim,
+                    num_heads=self._num_heads,
+                    mlp_ratio=self._mlp_ratio,
                     attn_drop=config.attn_drop,
                     proj_drop=config.proj_drop,
                     drop_path=dpr[i],
                     qkv_bias=config.qkv_bias,
                 )
-                for i in range(config.depth)
+                for i in range(self._depth)
             ]
         )
 
         # Final normalization
-        self.norm = nn.LayerNorm(config.embed_dim)
+        self.norm = nn.LayerNorm(self.embed_dim)
 
-        self.add_cls_token = config.add_cls_token
+        self.add_cls_token = self._add_cls_token
 
         # Initialize weights
         self._init_weights()

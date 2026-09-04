@@ -14,7 +14,6 @@ from torch.utils.data import DataLoader
 
 
 def main(params: MmpercParams, skip_eval: bool = False) -> None:
-
     train_config = params.train_config
     device = train_config.get_device()
 

@@ -203,7 +203,6 @@ class ModelInferenceWrapper:
         self.dtype = next(self.model.parameters()).dtype
 
     def infer_a2d2_dataset(self, params, out_dir: Path, K: int = 50):
-
         if not out_dir.exists():
             out_dir.mkdir(parents=True, exist_ok=True)
 

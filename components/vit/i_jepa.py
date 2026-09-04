@@ -35,6 +35,7 @@ class I_JEPA(nn.Module):
             proj_drop=config.proj_drop,
             drop_path_rate=config.drop_path_rate,
             qkv_bias=config.qkv_bias,
+            add_cls_token=False,
         )
         self.target_encoder = VitEncoder(
             base_res=config.image_size,
@@ -47,6 +48,7 @@ class I_JEPA(nn.Module):
             proj_drop=config.proj_drop,
             drop_path_rate=config.drop_path_rate,
             qkv_bias=config.qkv_bias,
+            add_cls_token=False,
         )
         # Predictor: context latent -> target latent
         self.pred_mask_token = nn.Parameter(torch.zeros(1, 1, config.predictor_dim))
@@ -422,7 +424,6 @@ class I_JEPA(nn.Module):
         context_tokens, context_padding_mask = self.context_encoder.forward_full(
             imgs,
             patch_keep_mask=context_mask,
-            add_cls_token=False,
             return_padding_mask=True,
         )
 
@@ -431,12 +432,11 @@ class I_JEPA(nn.Module):
             full_target_tokens = self.target_encoder.forward_full(
                 imgs,
                 patch_keep_mask=None,
-                add_cls_token=False,
             )
 
         h_patch = imgs.shape[2] // self.cfg.patch_size
         w_patch = imgs.shape[3] // self.cfg.patch_size
-        pos_all = self.context_encoder.interpolate_pos_encoding(h_patch, w_patch)[:, 1:, :]
+        pos_all = self.context_encoder.interpolate_pos_encoding(h_patch, w_patch)
 
         predicted_target_tokens, predicted_target_masks = self._predict_targets(
             context_tokens, context_padding_mask, target_masks, pos_all
