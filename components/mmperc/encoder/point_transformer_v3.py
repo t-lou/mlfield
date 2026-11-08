@@ -47,13 +47,26 @@ class Point(dict):
 # --------------------------------------------------------------------------- #
 # Serialization
 # --------------------------------------------------------------------------- #
+# def z_order_encode(gc: torch.Tensor, depth: int) -> torch.Tensor:
+#     gc = gc.long()
+#     code = torch.zeros_like(gc[:, 0])
+#     for i in range(depth):
+#         for d in range(3):
+#             code |= ((gc[:, d] >> i) & 1) << (3 * i + (2 - d))
+#     return code
+def _spread3(x):
+    x = x & 0x1FFFFF
+    x = (x | x << 32) & 0x1F00000000FFFF
+    x = (x | x << 16) & 0x1F0000FF0000FF
+    x = (x | x << 8) & 0x100F00F00F00F00F
+    x = (x | x << 4) & 0x10C30C30C30C30C3
+    x = (x | x << 2) & 0x1249249249249249
+    return x
+
+
 def z_order_encode(gc: torch.Tensor, depth: int) -> torch.Tensor:
     gc = gc.long()
-    code = torch.zeros_like(gc[:, 0])
-    for i in range(depth):
-        for d in range(3):
-            code |= ((gc[:, d] >> i) & 1) << (3 * i + (2 - d))
-    return code
+    return (_spread3(gc[:, 0]) << 2) | (_spread3(gc[:, 1]) << 1) | _spread3(gc[:, 2])
 
 
 def hilbert_encode(gc: torch.Tensor, depth: int) -> torch.Tensor:
@@ -180,22 +193,36 @@ class MLP(nn.Module):
         return self.drop(self.fc2(self.drop(F.gelu(self.fc1(x)))))
 
 
-def _pad_unpad(bincount: torch.Tensor, ps: int, device):
-    """Indices that pad each cloud to a multiple of `ps` (reusing the tail of the previous patch)."""
-    bc = bincount.tolist()
-    bc_pad = [-(-c // ps) * ps for c in bc]
-    off, off_pad = [0], [0]
-    for c, cp in zip(bc, bc_pad):
-        off.append(off[-1] + c)
-        off_pad.append(off_pad[-1] + cp)
-    pad = torch.arange(off_pad[-1], device=device)
-    unpad = torch.arange(off[-1], device=device)
-    for i in range(len(bc)):
-        unpad[off[i] : off[i + 1]] += off_pad[i] - off[i]
-        if bc[i] != bc_pad[i]:
-            r = bc[i] % ps
-            pad[off_pad[i + 1] - ps + r : off_pad[i + 1]] = pad[off_pad[i + 1] - 2 * ps + r : off_pad[i + 1] - ps]
-        pad[off_pad[i] : off_pad[i + 1]] -= off_pad[i] - off[i]
+# def _pad_unpad(bincount: torch.Tensor, ps: int, device):
+#     """Indices that pad each cloud to a multiple of `ps` (reusing the tail of the previous patch)."""
+#     bc = bincount.tolist()
+#     bc_pad = [-(-c // ps) * ps for c in bc]
+#     off, off_pad = [0], [0]
+#     for c, cp in zip(bc, bc_pad):
+#         off.append(off[-1] + c)
+#         off_pad.append(off_pad[-1] + cp)
+#     pad = torch.arange(off_pad[-1], device=device)
+#     unpad = torch.arange(off[-1], device=device)
+#     for i in range(len(bc)):
+#         unpad[off[i] : off[i + 1]] += off_pad[i] - off[i]
+#         if bc[i] != bc_pad[i]:
+#             r = bc[i] % ps
+#             pad[off_pad[i + 1] - ps + r : off_pad[i + 1]] = pad[off_pad[i + 1] - 2 * ps + r : off_pad[i + 1] - ps]
+#         pad[off_pad[i] : off_pad[i + 1]] -= off_pad[i] - off[i]
+#     return pad, unpad
+def _pad_unpad(bc: torch.Tensor, ps: int):
+    """bc: (B,) cloud sizes, all > 0 and >= ps."""
+    dev, B = bc.device, bc.numel()
+    bc_pad = (bc + ps - 1) // ps * ps
+    off = F.pad(bc.cumsum(0), (1, 0))
+    off_pad = F.pad(bc_pad.cumsum(0), (1, 0))
+    ids = torch.arange(B, device=dev)
+    cid_pad = torch.repeat_interleave(ids, bc_pad)
+    local = torch.arange(int(off_pad[-1]), device=dev) - off_pad[cid_pad]
+    local = torch.where(local >= bc[cid_pad], local - ps, local)  # reuse previous patch
+    pad = off[cid_pad] + local
+    cid = torch.repeat_interleave(ids, bc)
+    unpad = torch.arange(int(off[-1]), device=dev) - off[cid] + off_pad[cid]
     return pad, unpad
 
 
@@ -213,7 +240,7 @@ class SerializedAttention(nn.Module):
         N, C = feat.shape
         bincount = torch.bincount(point.batch.long())
         ps = int(min(self.patch_size, bincount.min().item()))  # patch can't exceed smallest cloud
-        pad, unpad = _pad_unpad(bincount, ps, feat.device)
+        pad, unpad = _pad_unpad(bincount, ps)
         order = point.serial_order[self.order_index][pad]
         inverse = unpad[point.serial_inverse[self.order_index]]
 
@@ -343,8 +370,12 @@ class PointTransformerV3Encoder(nn.Module):
         else:
             gc = torch.zeros(coord.shape[0], 3, dtype=torch.long, device=coord.device)
             for bi in batch.unique():
-                m = batch == bi
-                gc[m] = torch.floor((coord[m] - coord[m].min(0).values) / data["grid_size"]).long()
+                # m = batch == bi
+                # gc[m] = torch.floor((coord[m] - coord[m].min(0).values) / data["grid_size"]).long()
+                B = int(batch.max()) + 1
+                mn = torch.full((B, 3), float("inf"), device=coord.device, dtype=coord.dtype)
+                mn = mn.scatter_reduce(0, batch[:, None].expand(-1, 3), coord, "amin")
+                gc = torch.floor((coord - mn[batch]) / data["grid_size"] + 1e-6).long()
         return Point(coord=coord, feat=feat, grid_coord=gc, batch=batch)
 
     def forward(self, data: dict, return_all_stages: bool = False):
