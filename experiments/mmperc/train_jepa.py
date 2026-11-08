@@ -11,7 +11,7 @@ from components.definitions.mmperc_params import MmpercParams
 from components.mmperc.encoder.can_encoder import CANEncoder
 from components.mmperc.encoder.jepa_encoder import JEPAEncoder, LeJEPA
 from components.mmperc.encoder.multi_camera_encoder import MultiCameraEncoder
-from components.mmperc.encoder.point_transformer_v3 import PointTransformerV3BEV
+from components.mmperc.encoder.serialized_point_bev_encoder import SerializedPointBEVEncoder
 from components.mmperc.encoder.tiny_camera_encoder import TinyCameraEncoder
 from components.mmperc.fusion.latent_fusion import LatentFusion
 from components.utils.config import load_yaml
@@ -108,7 +108,7 @@ def build_model(params: MmpercParams) -> LeJEPA:
     camera_encoder = MultiCameraEncoder(
         {name: TinyCameraEncoder(params=params, sensor_name=name) for name in SENSOR_NAMES}
     )
-    lidar_encoder = PointTransformerV3BEV(params=params, sensor_names=SENSOR_NAMES)
+    lidar_encoder = SerializedPointBEVEncoder(params=params, sensor_names=SENSOR_NAMES)
     dim = params.bev_params.bev_channels
     can_encoder = CANEncoder(dim=dim)
     fusion = LatentFusion(

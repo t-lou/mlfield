@@ -44,7 +44,7 @@ class PointTransformerBlock(nn.Module):
         return tokens + self.ffn(tokens)
 
 
-class PointTransformerV3BEV(nn.Module):
+class SerializedPointBEVEncoder(nn.Module):
     """PTv3-inspired point encoder with a dense BEV output contract.
 
     This follows the useful PTv3 design principles without pretending to be a
@@ -219,5 +219,5 @@ class PointTransformerV3BEV(nn.Module):
             for name, points in points_by_sensor.items()
         ]
         if not transformed:
-            raise ValueError("No point clouds were provided to PointTransformerV3BEV")
+            raise ValueError("No point clouds were provided to SerializedPointBEVEncoder")
         return self._encode(torch.cat(transformed, dim=1))
