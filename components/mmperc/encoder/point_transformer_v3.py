@@ -369,8 +369,8 @@ class PointTransformerV3Encoder(nn.Module):
             gc = data["grid_coord"].long()
         else:
             gc = torch.zeros(coord.shape[0], 3, dtype=torch.long, device=coord.device)
-            for bi in batch.unique():
-                # m = batch == bi
+            for _bi in batch.unique():
+                # m = batch == _bi
                 # gc[m] = torch.floor((coord[m] - coord[m].min(0).values) / data["grid_size"]).long()
                 B = int(batch.max()) + 1
                 mn = torch.full((B, 3), float("inf"), device=coord.device, dtype=coord.dtype)

@@ -110,7 +110,7 @@ class ViTCameraEncoder(nn.Module):
 
         # Lateral projections to normalize intermediate features to embed_dim
         self.lateral_projs = nn.ModuleDict()
-        for i, layer_idx in enumerate(extract_layers):
+        for i in range(len(extract_layers)):
             self.lateral_projs[f"layer_{i}"] = nn.Linear(embed_dim, embed_dim, bias=False)
 
         # Geometric feature projection
@@ -171,7 +171,7 @@ class ViTCameraEncoder(nn.Module):
 
         # Reconstruct spatial feature maps at each scale
         skip_feats = {}
-        for i, layer_idx in enumerate(self.extract_layers):
+        for i in range(len(self.extract_layers)):
             feat_tokens = intermediate_features[f"layer_{i}"][:, 1:, :]  # Remove CLS
             proj_feat = self.lateral_projs[f"layer_{i}"](feat_tokens)
 
@@ -257,16 +257,10 @@ class ViTCameraEncoder(nn.Module):
                 state_dict = checkpoint
         elif ssl_type == "jepa":
             # iJEPA checkpoints typically have 'target_encoder' or 'encoder'
-            if "target_encoder" in checkpoint:
-                state_dict = checkpoint["target_encoder"]
-            else:
-                state_dict = checkpoint
+            state_dict = checkpoint.get("target_encoder", checkpoint)
         elif ssl_type == "mae":
             # MAE checkpoints usually have 'model' or direct state
-            if "model" in checkpoint:
-                state_dict = checkpoint["model"]
-            else:
-                state_dict = checkpoint
+            state_dict = checkpoint.get("model", checkpoint)
         else:
             raise ValueError(f"Unknown ssl_type: {ssl_type}")
 

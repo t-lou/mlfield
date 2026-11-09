@@ -37,7 +37,7 @@ class MultiCameraEncoder(nn.Module):
             pose_vec = cam_encoders[cam_id].cam_pose_vector
             self.register_buffer(f"_default_pose_{idx}", pose_vec.detach().clone())
 
-    def forward(
+    def forward( # noqa: C901
         self, images: dict[str, Tensor], cam_meta: dict[str, dict[str, Any]] | None = None
     ) -> tuple[dict[str, Tensor], dict[str, Tensor], dict[str, dict[str, Tensor]]]:
         """

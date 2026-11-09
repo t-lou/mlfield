@@ -44,7 +44,7 @@ def _build_semantic_class_weights(
 # ================================================================
 # Train or Eval Epoch
 # ================================================================
-def run_one_epoch(
+def run_one_epoch(  # noqa: C901
     model: torch.nn.Module,
     dataloader: DataLoader,
     device: torch.device,
