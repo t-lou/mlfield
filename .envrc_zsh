@@ -1,0 +1,16 @@
+runpy() {
+  local file="$1"
+  local module="${file%.py}"
+  module="${module//\//.}"
+  echo "Calling python3 -m ${module} ${@:2}"
+  python3 -m "$module" "${@:2}"
+}
+
+selectrandom() {
+  local n="$1"
+  local dir="$2"
+
+  find "$dir" -type f \
+    \( -iname "*.png" -o -iname "*.jpg" -o -iname "*.jpeg" \) |
+    shuf -n "$n"
+}
