@@ -63,9 +63,10 @@ def run_one_epoch(  # noqa: C901
         model.eval()
         mode = "eval"
 
-    if mode == "train" and device.type == "cuda":
-        amp_context = torch.autocast(device_type="cuda", dtype=torch.float16)
-        scaler = torch.amp.GradScaler("cuda", enabled=True)
+    supported_device_type: str | None = device.type if device.type in ("cuda", "mps") else None
+    if mode == "train" and supported_device_type is not None:
+        amp_context = torch.autocast(device_type=supported_device_type, dtype=torch.float16)
+        scaler = torch.amp.GradScaler(supported_device_type, enabled=True)
     else:
         amp_context = nullcontext()
         scaler = None
@@ -109,7 +110,7 @@ def run_one_epoch(  # noqa: C901
         if train:
             optimizer.zero_grad(set_to_none=True)
 
-        fwd_context = amp_context if train else (amp_context if device.type == "cuda" else nullcontext())
+        fwd_context = amp_context if train else (amp_context if device.type in ("cuda", "mps") else nullcontext())
         no_grad_context = nullcontext() if train else torch.no_grad()
 
         with no_grad_context, fwd_context:
@@ -165,7 +166,7 @@ def run_one_epoch(  # noqa: C901
             invalid_pred_pixels += pred_invalid.sum().item()
             total_sem_pixels += sem_gt.numel()
 
-        if train:
+        if scaler is not None:
             scaler.scale(loss).backward()
             scaler.step(optimizer)
             scaler.update()
