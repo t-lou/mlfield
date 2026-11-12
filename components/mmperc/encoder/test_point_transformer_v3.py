@@ -112,8 +112,11 @@ def test_permutation_equivariance():
             d2 = {k: v[perm] for k, v in data.items()}
             out = m(d2)
         if enc_mode:  # output order is sorted by voxel key -> compare as sets of (batch, coord, feat)
-            key = lambda p: torch.cat([p.batch[:, None].float(), p.coord, p.feat], 1)
-            a, b = key(ref), key(out)
+
+            def _key(p):
+                return torch.cat([p.batch[:, None].float(), p.coord, p.feat], 1)
+
+            a, b = _key(ref), _key(out)
             a = a[torch.lexsort(a.T.flip(0).unbind(0)[::-1])] if False else a
             ia = torch.argsort(
                 ref.batch * 1e6 + ref.coord[:, 0] * 1e3 + ref.coord[:, 1] * 50 + ref.coord[:, 2] * 2.5, stable=True

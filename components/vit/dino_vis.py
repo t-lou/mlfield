@@ -16,7 +16,7 @@ def _reshape_token_vector_to_grid(vec: torch.Tensor) -> torch.Tensor | None:
     return vec.reshape(side, side)
 
 
-def extract_maps_from_activations(
+def extract_maps_from_activations(  # noqa: C901
     attn_tensor: torch.Tensor | None,
     token_tensor: torch.Tensor | None,
     out_h: int,

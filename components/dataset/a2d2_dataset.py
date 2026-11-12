@@ -83,7 +83,7 @@ class A2D2Dataset(Dataset):
         self._sorted_keys = keys[order]
         self._sorted_classes = classes[order]
 
-    def _init_archive(self, split: Split) -> None:
+    def _init_archive(self, split: Split) -> None:  # noqa: C901
         with tarfile.open(self.path_tar, mode="r") as tar:
             all_members = [member.name for member in tar.getmembers()]
             self.color_to_class, self.class_to_color, self.class_to_name = self._load_semantic_mapping(tar, all_members)

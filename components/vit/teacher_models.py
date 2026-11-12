@@ -76,7 +76,7 @@ class MAETeacher(TeacherModel):
     for object detection tasks.
     """
 
-    def __init__(self, checkpoint_path: str | None = None, variant: str = "imagenet"):
+    def __init__(self, checkpoint_path: str | None = None, variant: str = "imagenet"):  # noqa: C901
         """
         Initialize MAE teacher model.
 
@@ -187,7 +187,7 @@ class DINOTeacher(TeacherModel):
     knowledge distillation. It produces features at multiple scales.
     """
 
-    def __init__(self, checkpoint_path: str | None = None, variant: str = "base"):
+    def __init__(self, checkpoint_path: str | None = None, variant: str = "base"):  # noqa: C901
         """
         Initialize DINO teacher model.
 
@@ -303,7 +303,7 @@ class IJEPATeacher(TeacherModel):
     from visible regions. It produces contextual features at multiple scales.
     """
 
-    def __init__(self, checkpoint_path: str | None = None, variant: str = "base"):
+    def __init__(self, checkpoint_path: str | None = None, variant: str = "base"):  # noqa: C901
         """
         Initialize I-JEPA teacher model.
 

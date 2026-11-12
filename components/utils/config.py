@@ -21,7 +21,7 @@ def _enum_to_value(d):
     return r
 
 
-def dump_yaml(obj: T, path: Path) -> None:
+def dump_yaml[T](obj: T, path: Path) -> None:
     """Dump a dataclass object to a YAML file, preserving field order and converting Enums to their values."""
     raw_dict = asdict(obj)
 
@@ -33,7 +33,7 @@ def dump_yaml(obj: T, path: Path) -> None:
         yaml.safe_dump(ordered_dict, f, sort_keys=False)
 
 
-def create_default(cls: type[T], path: Path) -> None:
+def create_default[T](cls: type[T], path: Path) -> None:
     """Create a default instance of a dataclass and dump it to a YAML file."""
     defaults = {}
     for f in fields(cls):
@@ -48,14 +48,14 @@ def create_default(cls: type[T], path: Path) -> None:
     dump_yaml(obj, path)
 
 
-def _get_field_types(cls: type[T]) -> dict[str, object]:
+def _get_field_types[T](cls: type[T]) -> dict[str, object]:
     try:
         return get_type_hints(cls)
     except Exception:
         return {f.name: f.type for f in fields(cls)}
 
 
-def load_yaml(path: Path, cls: type[T]) -> T:
+def load_yaml[T](path: Path, cls: type[T]) -> T:
     """Load a YAML file into a dataclass object, ignoring unknown fields."""
     if not path.exists():
         logger.info(f"Cannot find config {path}, with create with default values.")
@@ -78,7 +78,7 @@ def load_yaml(path: Path, cls: type[T]) -> T:
     return cls(**filtered)
 
 
-def load_yaml_recursive(data: dict, cls: type[T]) -> T:
+def load_yaml_recursive[T](data: dict, cls: type[T]) -> T:
     """Recursively convert a dict to a dataclass, handling nested dataclasses."""
     allowed = _get_field_types(cls)
     filtered = {}
