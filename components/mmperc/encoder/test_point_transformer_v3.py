@@ -1,6 +1,7 @@
 import itertools
 
 import torch
+
 from components.mmperc.encoder.point_transformer_v3 import (
     PointTransformerV3Encoder,
     _pad_unpad,

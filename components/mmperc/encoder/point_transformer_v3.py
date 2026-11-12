@@ -154,19 +154,19 @@ def build_neighbors(grid_coord: torch.Tensor, batch: torch.Tensor, kernel_size: 
     b = batch.long()
     S = int(gc.max()) + p + 1
 
-    def key(bb, c):
+    def _key(bb, c):
         return ((bb * S + c[:, 0]) * S + c[:, 1]) * S + c[:, 2]
 
-    sk, perm = key(b, gc).sort()
+    sk, perm = _key(b, gc).sort()
     r = torch.arange(-p, p + 1, device=gc.device)
     offs = torch.stack(torch.meshgrid(r, r, r, indexing="ij"), -1).reshape(-1, 3)
     out = []
     for o in offs:
-        q = key(b, gc + o)
+        q = _key(b, gc + o)
         pos = torch.searchsorted(sk, q).clamp_(max=N - 1)
         found = sk[pos] == q
         out.append(torch.where(found, perm[pos], torch.full_like(pos, N)))
-    return torch.stack(out, 1)
+    return torch.stack(out, 1).to(grid_coord.device)
 
 
 class SubMConv3d(nn.Module):
@@ -180,9 +180,9 @@ class SubMConv3d(nn.Module):
         nn.init.normal_(self.weight, std=(2.0 / (self.k3 * in_dim)) ** 0.5)
 
     def forward(self, feat: torch.Tensor, nbr: torch.Tensor) -> torch.Tensor:
-        padded = torch.cat([feat, feat.new_zeros(1, feat.shape[1])], 0)
+        padded = torch.cat([feat, feat.new_zeros(1, feat.shape[1])], 0).to(feat.device)
         x = padded[nbr].reshape(feat.shape[0], -1)  # (N, k^3 * C)
-        out = x @ self.weight
+        out = x @ self.weight.to(feat.device)
         return out if self.bias is None else out + self.bias
 
 
@@ -466,6 +466,7 @@ class PointTransformerV3Encoder(nn.Module):
             batch = torch.repeat_interleave(
                 torch.arange(len(off), device=off.device), torch.diff(off, prepend=off.new_zeros(1))
             )
+        batch = batch.to(feat.device)
         if "grid_coord" in data:
             gc = data["grid_coord"].long()
         else:
@@ -480,6 +481,7 @@ class PointTransformerV3Encoder(nn.Module):
         point = self._prepare(data)
         with torch.no_grad():
             nbr_stem = build_neighbors(point.grid_coord, point.batch, self.stem_kernel)
+
         point.feat = F.gelu(self.embed_norm(self.embed_conv(point.feat, nbr_stem)))
 
         for s in range(self.num_stages):
@@ -499,11 +501,15 @@ class PointTransformerV3Encoder(nn.Module):
 
 
 if __name__ == "__main__":
+    from components.utils.device import get_device
+
     torch.manual_seed(0)
     gs = 0.02
 
+    device = get_device()
+
     def make_cloud(n):
-        g = torch.unique(torch.randint(0, 50, (n, 3)), dim=0)
+        g = torch.unique(torch.randint(0, 50, (n, 3)), dim=0).to(device)
         return g.float() * gs, g
 
     clouds = [make_cloud(6000), make_cloud(3500)]
@@ -524,12 +530,12 @@ if __name__ == "__main__":
         dec_num_head=(2, 4, 8),
         dec_patch_size=(128,) * 3,
     )
-    enc = PointTransformerV3Encoder(enc_mode=True, **kw)
+    enc = PointTransformerV3Encoder(enc_mode=True, **kw).to(device)
     out = enc(data)
     print("encoder:", tuple(out.feat.shape), "points per cloud ->", out.batch.bincount().tolist())
 
-    model = PointTransformerV3Encoder(**kw)
+    model = PointTransformerV3Encoder(**kw).to(device)
     out = model(data)
-    print("encoder+decoder:", tuple(out.feat.shape))
+    print("encoder+decoder:", tuple(out.feat.cpu().shape))
     out.feat.mean().backward()
     print("params: %.2fM" % (sum(p.numel() for p in model.parameters()) / 1e6))
