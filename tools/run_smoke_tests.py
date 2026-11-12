@@ -11,7 +11,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 def run_smoke_tests(paths: list[Path]) -> None:
     """Run smoke tests for the given list of paths."""
     for raw_path in paths:
-        module_name = ".".join(raw_path.relative_to(REPO_ROOT).with_suffix("").parts)
+        module_name = ".".join(raw_path.resolve().relative_to(REPO_ROOT).with_suffix("").parts)
         wrapper = f"from {module_name} import _smoke_test\n_smoke_test()\n"
         subprocess.run(
             ["python3", "-c", wrapper],

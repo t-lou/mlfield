@@ -282,6 +282,8 @@ def _smoke_test():
     x = torch.rand(B, C_in, H, W)
 
     params = MmpercParams()
+    params.path_calibration = "./data/cams_lidars.json"
+    params.image_scale = 1.0  # ?
     encoder = ViTCameraEncoder(params=params)
 
     tokens, feat, skip_feats = encoder(x)

@@ -130,6 +130,7 @@ class PointPillarBEV(nn.Module):
 
 def _smoke_test():
     params = MmpercParams()
+    params.path_calibration = "./data/cams_lidars.json"
     model = PointPillarBEV(params=params, sensor_names=["front_center", "front_left"])
 
     B = 2

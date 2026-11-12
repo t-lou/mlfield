@@ -179,6 +179,7 @@ def _smoke_test():
     B, C_in, H, W = 2, 3, 256, 256
     x = torch.rand(B, C_in, H, W)
     params = MmpercParams()
+    params.path_calibration = "./data/cams_lidars.json"
     encoder = TinyCameraEncoder(params=params)
     tokens, feat, _ = encoder(x)
     assert tokens.shape[0] == B and tokens.shape[2] == params.bev_params.bev_channels
