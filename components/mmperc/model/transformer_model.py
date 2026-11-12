@@ -266,17 +266,20 @@ def _smoke_test():
     Smoke test for the model.
     """
     from components.definitions.mmperc_params import MmpercParams
+    from components.utils.device import get_device
+
+    device = get_device()
 
     params = MmpercParams()
     params.path_data = "./data/camera_lidar_semantic_bboxes.tar"
     params.path_calibration = "./data/cams_lidars.json"
     params.image_scale = 1.0  # ?
-    model = TransformerModel(params=params)
+    model = TransformerModel(params=params).to(device)
 
     # Create dummy inputs
     B, N, H_img, W_img = 2, 1000, 256, 256
-    points = torch.rand(B, N, 4)  # (B, N, 4)
-    images = torch.rand(B, 3, H_img, W_img)  # (B, 3, H_img, W_img)
+    points = torch.rand(B, N, 4).to(device)  # (B, N, 4)
+    images = torch.rand(B, 3, H_img, W_img).to(device)  # (B, 3, H_img, W_img)
 
     # Forward pass
     outputs = model(points=points, image=images)
@@ -284,7 +287,7 @@ def _smoke_test():
     # Print output shapes
     for key, value in outputs.items():
         print(f"{key}: {value.shape}")
-    print("SimpleModel smoke test passed.")
+    print("TransformerModel smoke test passed.")
 
 
 if __name__ == "__main__":
