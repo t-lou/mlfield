@@ -139,8 +139,8 @@ class ViTCameraEncoder(nn.Module):
         """
         B = x.shape[0]
         H_img, W_img = x.shape[2:]
-        H_patch = H_img // (self.patch_size * self.image_scale)
-        W_patch = W_img // (self.patch_size * self.image_scale)
+        H_patch = H_img // int(self.patch_size * self.image_scale)
+        W_patch = W_img // int(self.patch_size * self.image_scale)
 
         # Tokenize: patch embedding + positional encoding
         tokens = self.vit._tokenize(x)  # (B, 1 + H'*W', C) with CLS token
