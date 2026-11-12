@@ -12,6 +12,7 @@ from pathlib import Path
 import numpy as np
 import torch
 from torch import Tensor, nn
+from torch.nn import functional as F
 
 from components.definitions.mmperc_params import MmpercParams
 from components.utils.calibration import load_sensor_calibration
@@ -41,6 +42,7 @@ class ViTCameraEncoder(nn.Module):
     Args:
         params: MmpercParams configuration
         sensor_name: Camera sensor name for calibration loading
+        base_res: Maximum image side processed by the ViT
         patch_size: Patch size for ViT (default 16)
         embed_dim: Transformer embedding dimension (default 384)
         depth: Number of transformer blocks (default 12)
@@ -62,12 +64,18 @@ class ViTCameraEncoder(nn.Module):
         mlp_ratio: float = 4.0,
         drop_path_rate: float = 0.1,
         extract_layers: list[int] | None = None,
+        base_res: int = 224,
     ) -> None:
         super().__init__()
 
+        if base_res < patch_size or base_res % patch_size != 0:
+            raise ValueError(f"base_res must be a positive multiple of patch_size ({patch_size}), got {base_res}")
+
         self.embed_dim = embed_dim
+        self.base_res = base_res
         self.patch_size = patch_size
-        self.image_scale = params.image_scale
+
+        assert params.image_scale == 1.0, "Image scaling not support in ViT"
 
         # Load camera calibration for geometric features
         calibration_path = Path(params.path_calibration)
@@ -78,11 +86,11 @@ class ViTCameraEncoder(nn.Module):
         )
 
         K = self.camera_calibration.intrinsic.astype(np.float32)
-        self.fx = float(K[0, 0] * self.image_scale)
-        self.fy = float(K[1, 1] * self.image_scale)
-        self.cx = float(K[0, 2] * self.image_scale)
-        self.cy = float(K[1, 2] * self.image_scale)
-        self._camera_geometry_cache: dict[tuple[int, int, int, int], Tensor] = {}
+        self.fx = float(K[0, 0])
+        self.fy = float(K[1, 1])
+        self.cx = float(K[0, 2])
+        self.cy = float(K[1, 2])
+        self._camera_geometry_cache: dict[tuple[int, int, int, int, int, int], Tensor] = {}
 
         logger.info(f"ViTCameraEncoder: camera_calibration={self.camera_calibration}")
 
@@ -91,7 +99,7 @@ class ViTCameraEncoder(nn.Module):
 
         # ViT backbone
         self.vit = VitEncoder(
-            base_res=224,
+            base_res=base_res,
             patch_size=patch_size,
             embed_dim=embed_dim,
             depth=depth,
@@ -137,10 +145,22 @@ class ViTCameraEncoder(nn.Module):
                         - "s1": Mid scale
                         - "s2": Coarsest scale
         """
-        B = x.shape[0]
-        H_img, W_img = x.shape[2:]
-        H_patch = H_img // int(self.patch_size * self.image_scale)
-        W_patch = W_img // int(self.patch_size * self.image_scale)
+        B, _, H_source, W_source = x.shape
+        H_img, W_img = H_source, W_source
+        if max(H_source, W_source) > self.base_res:
+            resize_scale = self.base_res / max(H_source, W_source)
+            H_img = max(
+                self.patch_size,
+                min(self.base_res, round(H_source * resize_scale / self.patch_size) * self.patch_size),
+            )
+            W_img = max(
+                self.patch_size,
+                min(self.base_res, round(W_source * resize_scale / self.patch_size) * self.patch_size),
+            )
+            x = F.interpolate(x, size=(H_img, W_img), mode="bilinear", align_corners=False, antialias=True)
+
+        H_patch = H_img // self.patch_size
+        W_patch = W_img // self.patch_size
 
         # Tokenize: patch embedding + positional encoding
         tokens = self.vit._tokenize(x)  # (B, 1 + H'*W', C) with CLS token
@@ -162,7 +182,13 @@ class ViTCameraEncoder(nn.Module):
         tokens_spatial = x_feat[:, 1:, :]  # (B, H'*W', C)
 
         # Add geometric features (normalized image coordinates)
-        geom = self._camera_geometry((H_patch, W_patch), (H_img, W_img), x.device, x.dtype)
+        geom = self._camera_geometry(
+            (H_patch, W_patch),
+            (H_img, W_img),
+            (H_source, W_source),
+            x.device,
+            x.dtype,
+        )
         geom_feat = self.camera_pos_project(geom)
         tokens_spatial = tokens_spatial + self.camera_pos_scale * geom_feat.flatten(2).transpose(1, 2)
 
@@ -176,14 +202,20 @@ class ViTCameraEncoder(nn.Module):
             proj_feat = self.lateral_projs[f"layer_{i}"](feat_tokens)
 
             # Reshape to spatial dimensions
-            # Feature resolution: H_patch / (2^layer_scale), W_patch / (2^layer_scale)
+            # Transformer blocks preserve the patch grid; resize extracted levels
+            # explicitly to form the feature pyramid expected by downstream heads.
             scale_factor = 2 ** (len(self.extract_layers) - 1 - i)
-            H_feat = H_patch // scale_factor
-            W_feat = W_patch // scale_factor
+            H_feat = max(1, H_patch // scale_factor)
+            W_feat = max(1, W_patch // scale_factor)
 
-            # Reshape to (B, H_feat, W_feat, C) then to (B, C, H_feat, W_feat)
-            feat_spatial = proj_feat.reshape(B, H_feat, W_feat, self.embed_dim)
-            feat_spatial = feat_spatial.permute(0, 3, 1, 2)
+            feat_spatial = proj_feat.reshape(B, H_patch, W_patch, self.embed_dim).permute(0, 3, 1, 2)
+            if scale_factor > 1:
+                feat_spatial = F.interpolate(
+                    feat_spatial,
+                    size=(H_feat, W_feat),
+                    mode="bilinear",
+                    align_corners=False,
+                )
 
             skip_feats[f"s{i}"] = feat_spatial
 
@@ -197,6 +229,7 @@ class ViTCameraEncoder(nn.Module):
         self,
         feat_hw: tuple[int, int],
         img_hw: tuple[int, int],
+        source_hw: tuple[int, int],
         device: torch.device,
         dtype: torch.dtype,
     ) -> Tensor:
@@ -215,7 +248,8 @@ class ViTCameraEncoder(nn.Module):
         """
         H_feat, W_feat = feat_hw
         H_img, W_img = img_hw
-        cache_key = (H_feat, W_feat, H_img, W_img)
+        H_source, W_source = source_hw
+        cache_key = (H_feat, W_feat, H_img, W_img, H_source, W_source)
 
         if cache_key in self._camera_geometry_cache:
             cached = self._camera_geometry_cache[cache_key]
@@ -229,8 +263,10 @@ class ViTCameraEncoder(nn.Module):
         grid_y, grid_x = torch.meshgrid(y, x, indexing="ij")
 
         # Normalize to camera frame (undistorted)
-        u = (grid_x - self.cx) / self.fx
-        v = (grid_y - self.cy) / self.fy
+        scale_x = W_img / W_source
+        scale_y = H_img / H_source
+        u = (grid_x - self.cx * scale_x) / (self.fx * scale_x)
+        v = (grid_y - self.cy * scale_y) / (self.fy * scale_y)
 
         geom = torch.stack([u, v], dim=0).unsqueeze(0)
         self._camera_geometry_cache[cache_key] = geom.detach().to(device=device, dtype=dtype)
@@ -278,12 +314,12 @@ class ViTCameraEncoder(nn.Module):
 
 def _smoke_test():
     """Smoke test for ViTCameraEncoder."""
-    B, C_in, H, W = 2, 3, 256, 256
+    B, C_in, H, W = 2, 3, 1024, 512
     x = torch.rand(B, C_in, H, W)
 
     params = MmpercParams()
     params.path_calibration = "./data/cams_lidars.json"
-    params.image_scale = 1.0  # ?
+    params.image_scale = 1.0
     encoder = ViTCameraEncoder(params=params)
 
     tokens, feat, skip_feats = encoder(x)
@@ -291,6 +327,7 @@ def _smoke_test():
     # Check output shapes
     assert tokens.shape[0] == B and tokens.shape[2] == encoder.embed_dim, f"Got {tokens.shape}"
     assert feat.shape[0] == B and feat.shape[1] == encoder.embed_dim, f"Got {feat.shape}"
+    assert feat.shape[-2:] == (14, 7), f"Expected resized patch grid (14, 7), got {feat.shape[-2:]}"
     assert "s0" in skip_feats, "Missing s0 in skip_feats"
 
     print("✓ ViTCameraEncoder smoke test passed")

@@ -183,8 +183,9 @@ class _ViTCameraAdapter(nn.Module):
     def forward(self, image: Tensor) -> tuple[Tensor, Tensor, dict[str, Tensor]]:
         tokens, feat, _ = self.encoder(image)
         feat = self.feature_proj(feat)
-        s4_size = ((image.shape[-2] + 3) // 4, (image.shape[-1] + 3) // 4)
-        s2_size = ((image.shape[-2] + 1) // 2, (image.shape[-1] + 1) // 2)
+        feat_h, feat_w = feat.shape[-2:]
+        s4_size = (feat_h * 4, feat_w * 4)
+        s2_size = (feat_h * 8, feat_w * 8)
         s4 = self.s4_refine(F.interpolate(feat, size=s4_size, mode="bilinear", align_corners=False))
         s2 = self.s2_refine(F.interpolate(feat, size=s2_size, mode="bilinear", align_corners=False))
         return self.token_proj(tokens), feat, {"s4": s4, "s2": s2}
@@ -200,6 +201,8 @@ class TransformerModel(nn.Module):
 
         self._sensor_name = "front_center"
         channels = params.bev_params.bev_channels
+
+        assert params.image_scale == 1.0, "Image scaling not support in ViT"
 
         if params.use_lidar:
             self.lidar_encoder = _PointTransformerBEVEncoder(params, [self._sensor_name])
@@ -272,8 +275,8 @@ def _smoke_test():
 
     params = MmpercParams()
     params.path_data = "./data/camera_lidar_semantic_bboxes.tar"
+    params.image_scale = 1.0
     params.path_calibration = "./data/cams_lidars.json"
-    params.image_scale = 1.0  # ?
     model = TransformerModel(params=params).to(device)
 
     # Create dummy inputs
