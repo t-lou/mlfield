@@ -149,7 +149,7 @@ def _smoke_test():
     # Forward pass
     output = model(dummy_input)
 
-    expected_shape = (2, 128, 128, 128)  # Expected output shape after fusion
+    expected_shape = (2, 128, 64, 64)  # Output is downsampled by backbone stride before fusion
     assert output.shape == expected_shape, f"Expected shape {expected_shape}, got {output.shape}"
     print("TinyBEVBackbone smoke test passed.")
 

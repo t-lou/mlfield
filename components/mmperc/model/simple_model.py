@@ -183,6 +183,8 @@ def _smoke_test():
     from components.definitions.mmperc_params import MmpercParams
 
     params = MmpercParams()
+    params.path_data = "./data/camera_lidar_semantic_bboxes.tar"
+    params.path_calibration = "./data/cams_lidars.json"
     model = SimpleModel(params=params)
 
     # Create dummy inputs
@@ -191,7 +193,7 @@ def _smoke_test():
     images = torch.rand(B, 3, H_img, W_img)  # (B, 3, H_img, W_img)
 
     # Forward pass
-    outputs = model(points=points, images=images)
+    outputs = model(points=points, image=images)
 
     # Print output shapes
     for key, value in outputs.items():
