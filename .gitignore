@@ -11,3 +11,4 @@ logs
 *.yaml
 !default_*.yaml
 !.pre-commit-config.yaml
+**/.DS_Store
