@@ -6,9 +6,11 @@ import torch.optim as optim
 from components.dataset.a2d2_dataset import A2D2Dataset, Split, bev_collate
 from components.definitions.mmperc_params import MmpercParams
 from components.mmperc.model.simple_model import SimpleModel
+from components.mmperc.model.transformer_model import TransformerModel
 from components.mmperc.pipeline.train_a2d2 import train_model
 from components.utils.config import load_yaml
 from components.utils.logger import configure_logger
+from torch import nn
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch.utils.data import DataLoader
 
@@ -41,22 +43,29 @@ def main(params: MmpercParams, skip_eval: bool = False) -> None:
         prefetch_factor=train_config.prefetch_factor,
     )
 
-    model = SimpleModel(params=params).to(device)
-    optimizer = optim.Adam(model.parameters(), lr=1e-4, weight_decay=1e-5)
+    def train_one_model(model: nn.Module, ckpt_dir: str = "checkpoints") -> None:
+        model = model.to(device)
+        optimizer = optim.Adam(model.parameters(), lr=1e-4, weight_decay=1e-5)
 
-    # Add learning rate scheduler for better convergence
-    scheduler = CosineAnnealingLR(optimizer, T_max=train_config.num_epoch, eta_min=1e-6)
+        scheduler = CosineAnnealingLR(optimizer, T_max=train_config.num_epoch, eta_min=1e-6)
 
-    train_model(
-        model,
-        dataloader_train,
-        dataloader_eval,
-        optimizer,
-        scheduler,
-        device,
-        num_epochs=train_config.num_epoch,
-        skip_eval=skip_eval,
-    )
+        train_model(
+            model,
+            dataloader_train,
+            dataloader_eval,
+            optimizer,
+            scheduler,
+            device,
+            num_epochs=train_config.num_epoch,
+            ckpt_dir=ckpt_dir,
+            skip_eval=skip_eval,
+        )
+
+    _ = SimpleModel
+    _ = TransformerModel
+    # train_one_model(SimpleModel(params=params))
+    params.image_scale = 1.0
+    train_one_model(TransformerModel(params=params), ckpt_dir="checkpoints/transformer_model")
 
 
 if __name__ == "__main__":
