@@ -31,10 +31,37 @@ input point order (or the last encoder stage if enc_mode=True).
 """
 
 from collections.abc import Sequence
+from dataclasses import dataclass, replace
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
+
+@dataclass(frozen=True)
+class PointTransformerV3Config:
+    """Architecture and regularization settings for the PTv3 encoder."""
+
+    in_channels: int = 6
+    order: Sequence[str] = ("z", "z-trans", "hilbert", "hilbert-trans")
+    stride: Sequence[int] = (2, 2, 2, 2)
+    enc_depths: Sequence[int] = (2, 2, 2, 6, 2)
+    enc_channels: Sequence[int] = (32, 64, 128, 256, 512)
+    enc_num_head: Sequence[int] = (2, 4, 8, 16, 32)
+    enc_patch_size: Sequence[int] = (1024, 1024, 1024, 1024, 1024)
+    dec_depths: Sequence[int] = (2, 2, 2, 2)
+    dec_channels: Sequence[int] = (64, 64, 128, 256)
+    dec_num_head: Sequence[int] = (4, 4, 8, 16)
+    dec_patch_size: Sequence[int] = (1024, 1024, 1024, 1024)
+    mlp_ratio: float = 4.0
+    qk_norm: bool = False
+    attn_drop: float = 0.0
+    proj_drop: float = 0.0
+    drop_path: float = 0.3
+    shuffle_orders: bool = True
+    serial_depth: int = 16
+    stem_kernel: int = 5
+    enc_mode: bool = False
 
 
 # --------------------------------------------------------------------------- #
@@ -370,30 +397,31 @@ class GridUnpooling(nn.Module):
 # Model
 # --------------------------------------------------------------------------- #
 class PointTransformerV3Encoder(nn.Module):
-    def __init__(
-        self,
-        in_channels: int = 6,
-        order: Sequence[str] = ("z", "z-trans", "hilbert", "hilbert-trans"),
-        stride: Sequence[int] = (2, 2, 2, 2),
-        enc_depths: Sequence[int] = (2, 2, 2, 6, 2),
-        enc_channels: Sequence[int] = (32, 64, 128, 256, 512),
-        enc_num_head: Sequence[int] = (2, 4, 8, 16, 32),
-        enc_patch_size: Sequence[int] = (1024, 1024, 1024, 1024, 1024),
-        dec_depths: Sequence[int] = (2, 2, 2, 2),
-        dec_channels: Sequence[int] = (64, 64, 128, 256),
-        dec_num_head: Sequence[int] = (4, 4, 8, 16),
-        dec_patch_size: Sequence[int] = (1024, 1024, 1024, 1024),
-        mlp_ratio: float = 4.0,
-        qk_norm: bool = False,
-        attn_drop: float = 0.0,
-        proj_drop: float = 0.0,
-        drop_path: float = 0.3,
-        shuffle_orders: bool = True,
-        serial_depth: int = 16,
-        stem_kernel: int = 5,
-        enc_mode: bool = False,
-    ):
+    def __init__(self, config: PointTransformerV3Config | None = None):
         super().__init__()
+        config = config or PointTransformerV3Config()
+        self.config = config
+        in_channels = config.in_channels
+        order = config.order
+        stride = config.stride
+        enc_depths = config.enc_depths
+        enc_channels = config.enc_channels
+        enc_num_head = config.enc_num_head
+        enc_patch_size = config.enc_patch_size
+        dec_depths = config.dec_depths
+        dec_channels = config.dec_channels
+        dec_num_head = config.dec_num_head
+        dec_patch_size = config.dec_patch_size
+        mlp_ratio = config.mlp_ratio
+        qk_norm = config.qk_norm
+        attn_drop = config.attn_drop
+        proj_drop = config.proj_drop
+        drop_path = config.drop_path
+        shuffle_orders = config.shuffle_orders
+        serial_depth = config.serial_depth
+        stem_kernel = config.stem_kernel
+        enc_mode = config.enc_mode
+
         n = len(enc_depths)
         if stem_kernel <= 0 or stem_kernel % 2 == 0:
             raise ValueError("stem_kernel must be a positive odd integer")
@@ -572,7 +600,7 @@ if __name__ == "__main__":
     grid_coord = torch.cat([g for _, g in clouds])
     data = dict(coord=coord, feat=torch.cat([coord, torch.rand_like(coord)], 1), batch=batch, grid_coord=grid_coord)
 
-    kw = dict(
+    config = PointTransformerV3Config(
         in_channels=6,
         enc_depths=(2, 2, 2, 2),
         enc_channels=(32, 64, 128, 256),
@@ -584,11 +612,11 @@ if __name__ == "__main__":
         dec_num_head=(2, 4, 8),
         dec_patch_size=(128,) * 3,
     )
-    enc = PointTransformerV3Encoder(enc_mode=True, **kw).to(device)
+    enc = PointTransformerV3Encoder(replace(config, enc_mode=True)).to(device)
     out = enc(data)
     print("encoder:", tuple(out.feat.shape), "points per cloud ->", out.batch.bincount().tolist())
 
-    model = PointTransformerV3Encoder(**kw).to(device)
+    model = PointTransformerV3Encoder(config).to(device)
     out = model(data)
     print("encoder+decoder:", tuple(out.feat.cpu().shape))
     out.feat.mean().backward()

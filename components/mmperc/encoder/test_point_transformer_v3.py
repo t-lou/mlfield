@@ -1,8 +1,10 @@
 import itertools
+from dataclasses import replace
 
 import torch
 
 from components.mmperc.encoder.point_transformer_v3 import (
+    PointTransformerV3Config,
     PointTransformerV3Encoder,
     _pad_unpad,
     build_neighbors,
@@ -88,7 +90,7 @@ def make_data(sizes, gs=0.02):
     return dict(coord=coord, feat=torch.cat([coord, torch.rand_like(coord)], 1), batch=batch, grid_coord=gc)
 
 
-KW = dict(
+CONFIG = PointTransformerV3Config(
     in_channels=6,
     enc_depths=(2, 2, 2),
     enc_channels=(16, 32, 64),
@@ -105,19 +107,13 @@ KW = dict(
 def test_permutation_equivariance():
     data = make_data([3000, 1500, 700])
     for enc_mode in (False, True):
-        m = PointTransformerV3Encoder(enc_mode=enc_mode, **KW).eval()
+        m = PointTransformerV3Encoder(replace(CONFIG, enc_mode=enc_mode)).eval()
         with torch.no_grad():
             ref = m(data)
             perm = torch.randperm(len(data["coord"]))
             d2 = {k: v[perm] for k, v in data.items()}
             out = m(d2)
         if enc_mode:  # output order is sorted by voxel key -> compare as sets of (batch, coord, feat)
-
-            def _key(p):
-                return torch.cat([p.batch[:, None].float(), p.coord, p.feat], 1)
-
-            a, b = _key(ref), _key(out)
-            a = a[torch.lexsort(a.T.flip(0).unbind(0)[::-1])] if False else a
             ia = torch.argsort(
                 ref.batch * 1e6 + ref.coord[:, 0] * 1e3 + ref.coord[:, 1] * 50 + ref.coord[:, 2] * 2.5, stable=True
             )
@@ -133,7 +129,7 @@ def test_permutation_equivariance():
 
 def test_backward_and_train():
     data = make_data([2000, 900])
-    m = PointTransformerV3Encoder(**KW).train()
+    m = PointTransformerV3Encoder(CONFIG).train()
     out = m(data)
     out.feat.square().mean().backward()
     bad = [n for n, p in m.named_parameters() if p.grad is None or not torch.isfinite(p.grad).all()]
@@ -143,7 +139,7 @@ def test_backward_and_train():
 
 def test_small_cloud_and_grid_size():
     data = make_data([800, 30])  # second cloud smaller than the patch size
-    m = PointTransformerV3Encoder(**KW).eval()
+    m = PointTransformerV3Encoder(CONFIG).eval()
     with torch.no_grad():
         m(data)
         d = dict(

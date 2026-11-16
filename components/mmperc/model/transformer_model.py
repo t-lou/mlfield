@@ -6,19 +6,27 @@ from torch import Tensor, nn
 
 from components.definitions.mmperc_params import MmpercParams
 from components.mmperc.encoder.multi_camera_encoder import MultiCameraEncoder
-from components.mmperc.encoder.point_transformer_v3 import PointTransformerV3Encoder
+from components.mmperc.encoder.point_transformer_v3 import PointTransformerV3Config, PointTransformerV3Encoder
 from components.mmperc.encoder.vit_camera_encoder import ViTCameraEncoder
 from components.mmperc.fusion.futr_fusion import FuTrFusionBlock
 from components.mmperc.head.bbox2d_head import BBox3dHead
 from components.mmperc.head.semantics_head import FullResSemHead
 from components.utils.calibration import load_sensor_calibration
+from components.vit.vit_config import ViTConfig
 
 
 class _PointTransformerBEVEncoder(nn.Module):
     """Adapt PTv3's point features to the dense BEV contract used by fusion."""
 
-    def __init__(self, params: MmpercParams, sensor_names: list[str]) -> None:
+    def __init__(
+        self,
+        params: MmpercParams,
+        sensor_names: list[str],
+        config: PointTransformerV3Config,
+    ) -> None:
         super().__init__()
+        if config.in_channels != 4:
+            raise ValueError("TransformerModel's PTv3 config must use in_channels=4.")
         self.sensor_names = list(sensor_names)
         self.calibrations = {
             name: load_sensor_calibration(
@@ -39,7 +47,7 @@ class _PointTransformerBEVEncoder(nn.Module):
         self.out_h = self.bev_h // 2
         self.out_w = self.bev_w // 2
 
-        self.point_transformer = PointTransformerV3Encoder(in_channels=4)
+        self.point_transformer = PointTransformerV3Encoder(config)
         self.feature_proj = nn.Linear(self.point_transformer.out_channels, bev.bev_channels)
 
     @staticmethod
@@ -169,10 +177,24 @@ class _PointTransformerBEVEncoder(nn.Module):
 class _ViTCameraAdapter(nn.Module):
     """Project ViT outputs to the channel and skip-feature API expected downstream."""
 
-    def __init__(self, params: MmpercParams, sensor_name: str, out_channels: int) -> None:
+    def __init__(self, params: MmpercParams, sensor_name: str, out_channels: int, config: ViTConfig) -> None:
         super().__init__()
-        depth = 12
-        self.encoder = ViTCameraEncoder(params=params, sensor_name=sensor_name, depth=depth, extract_layers=[depth])
+        self.encoder = ViTCameraEncoder(
+            params=params,
+            sensor_name=sensor_name,
+            patch_size=config.patch_size,
+            embed_dim=config.embed_dim,
+            depth=config.depth,
+            num_heads=config.num_heads,
+            mlp_ratio=config.mlp_ratio,
+            drop_path_rate=config.drop_path_rate,
+            extract_layers=[config.depth],
+            base_res=config.base_res,
+            attn_drop=config.attn_drop,
+            proj_drop=config.proj_drop,
+            qkv_bias=config.qkv_bias,
+            add_cls_token=config.add_cls_token,
+        )
         self.out_channels = out_channels
         self.token_proj = nn.Linear(self.encoder.embed_dim, out_channels)
         self.feature_proj = nn.Conv2d(self.encoder.embed_dim, out_channels, kernel_size=1)
@@ -194,20 +216,31 @@ class _ViTCameraAdapter(nn.Module):
 class TransformerModel(nn.Module):
     """Multimodal model using PTv3 for LiDAR and ViT for camera features."""
 
-    def __init__(self, params: MmpercParams) -> None:
+    def __init__(
+        self,
+        params: MmpercParams,
+        vit_config: ViTConfig | None = None,
+        ptv3_config: PointTransformerV3Config | None = None,
+    ) -> None:
         super().__init__()
         if not params.use_lidar and not params.use_camera:
             raise ValueError("At least one of LiDAR or camera must be enabled.")
 
+        self.vit_config = vit_config if vit_config is not None else ViTConfig()
+        self.ptv3_config = ptv3_config if ptv3_config is not None else PointTransformerV3Config(in_channels=4)
         self._sensor_name = "front_center"
         channels = params.bev_params.bev_channels
 
         assert params.image_scale == 1.0, "Image scaling not support in ViT"
 
         if params.use_lidar:
-            self.lidar_encoder = _PointTransformerBEVEncoder(params, [self._sensor_name])
+            self.lidar_encoder = _PointTransformerBEVEncoder(
+                params,
+                [self._sensor_name],
+                self.ptv3_config,
+            )
         if params.use_camera:
-            camera_encoder = _ViTCameraAdapter(params, self._sensor_name, channels)
+            camera_encoder = _ViTCameraAdapter(params, self._sensor_name, channels, self.vit_config)
             self.cam_encoder = MultiCameraEncoder({self._sensor_name: camera_encoder})
 
         self._use_fusion = params.use_lidar and params.use_camera

@@ -65,6 +65,10 @@ class ViTCameraEncoder(nn.Module):
         drop_path_rate: float = 0.1,
         extract_layers: list[int] | None = None,
         base_res: int = 224,
+        attn_drop: float = 0.0,
+        proj_drop: float = 0.0,
+        qkv_bias: bool = False,
+        add_cls_token: bool = True,
     ) -> None:
         super().__init__()
 
@@ -106,8 +110,10 @@ class ViTCameraEncoder(nn.Module):
             num_heads=num_heads,
             mlp_ratio=mlp_ratio,
             drop_path_rate=drop_path_rate,
-            qkv_bias=False,
-            add_cls_token=True,
+            attn_drop=attn_drop,
+            proj_drop=proj_drop,
+            qkv_bias=qkv_bias,
+            add_cls_token=add_cls_token,
         )
 
         # Configure layer extraction for multi-scale features
@@ -178,8 +184,9 @@ class ViTCameraEncoder(nn.Module):
         # Apply final normalization
         x_feat = self.vit.norm(x_feat)
 
-        # Remove CLS token for spatial operations
-        tokens_spatial = x_feat[:, 1:, :]  # (B, H'*W', C)
+        # Exclude the CLS token when it is configured.
+        cls_offset = int(self.vit.add_cls_token)
+        tokens_spatial = x_feat[:, cls_offset:, :]  # (B, H'*W', C)
 
         # Add geometric features (normalized image coordinates)
         geom = self._camera_geometry(
@@ -198,7 +205,7 @@ class ViTCameraEncoder(nn.Module):
         # Reconstruct spatial feature maps at each scale
         skip_feats = {}
         for i in range(len(self.extract_layers)):
-            feat_tokens = intermediate_features[f"layer_{i}"][:, 1:, :]  # Remove CLS
+            feat_tokens = intermediate_features[f"layer_{i}"][:, cls_offset:, :]
             proj_feat = self.lateral_projs[f"layer_{i}"](feat_tokens)
 
             # Reshape to spatial dimensions
