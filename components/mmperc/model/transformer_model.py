@@ -12,7 +12,24 @@ from components.mmperc.fusion.futr_fusion import FuTrFusionBlock
 from components.mmperc.head.bbox2d_head import BBox3dHead
 from components.mmperc.head.semantics_head import FullResSemHead
 from components.utils.calibration import load_sensor_calibration
-from components.vit.vit_config import ViTConfig
+from components.vit.vit_config import ViTConfig, ViTVariant
+
+SMALL_GPU_VIT_CONFIG = ViTConfig(variant=ViTVariant.T)
+SMALL_GPU_PTV3_CONFIG = PointTransformerV3Config(
+    in_channels=4,
+    enc_depths=(1, 1, 1),
+    enc_channels=(16, 32, 64),
+    enc_num_head=(2, 4, 4),
+    enc_patch_size=(128, 128, 128),
+    stride=(2, 2),
+    dec_depths=(1, 1),
+    dec_channels=(16, 32),
+    dec_num_head=(2, 4),
+    dec_patch_size=(128, 128),
+    mlp_ratio=2.0,
+    drop_path=0.1,
+    stem_kernel=3,
+)
 
 
 class _PointTransformerBEVEncoder(nn.Module):
@@ -214,7 +231,11 @@ class _ViTCameraAdapter(nn.Module):
 
 
 class TransformerModel(nn.Module):
-    """Multimodal model using PTv3 for LiDAR and ViT for camera features."""
+    """Multimodal model using PTv3 for LiDAR and ViT for camera features.
+
+    For a reduced-capacity model, pass ``SMALL_GPU_VIT_CONFIG`` and
+    ``SMALL_GPU_PTV3_CONFIG``. A 4GB GPU may also require training with batch size 1.
+    """
 
     def __init__(
         self,

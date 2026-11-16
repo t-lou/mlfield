@@ -6,7 +6,7 @@ import torch.optim as optim
 from components.dataset.a2d2_dataset import A2D2Dataset, Split, bev_collate
 from components.definitions.mmperc_params import MmpercParams
 from components.mmperc.model.simple_model import SimpleModel
-from components.mmperc.model.transformer_model import TransformerModel
+from components.mmperc.model.transformer_model import SMALL_GPU_PTV3_CONFIG, SMALL_GPU_VIT_CONFIG, TransformerModel
 from components.mmperc.pipeline.train_a2d2 import train_model
 from components.utils.config import load_yaml
 from components.utils.logger import configure_logger
@@ -65,7 +65,10 @@ def main(params: MmpercParams, skip_eval: bool = False) -> None:
     _ = TransformerModel
     # train_one_model(SimpleModel(params=params))
     params.image_scale = 1.0
-    train_one_model(TransformerModel(params=params), ckpt_dir="checkpoints/transformer_model")
+    train_one_model(
+        TransformerModel(params=params, vit_config=SMALL_GPU_VIT_CONFIG, ptv3_config=SMALL_GPU_PTV3_CONFIG),
+        ckpt_dir="checkpoints/transformer_model",
+    )
 
 
 if __name__ == "__main__":
