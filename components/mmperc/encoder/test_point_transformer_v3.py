@@ -6,6 +6,7 @@ import torch
 from components.mmperc.encoder.point_transformer_v3 import (
     PointTransformerV3Config,
     PointTransformerV3Encoder,
+    SubMConv3d,
     _pad_unpad,
     build_neighbors,
     hilbert_encode,
@@ -69,6 +70,7 @@ def test_neighbors():
     b2 = torch.cat([b, b + 1])
     for k in (3, 5):
         nbr = build_neighbors(g2, b2, k)
+        assert torch.equal(nbr, build_neighbors(g2, b2, k, grid_bound=8))
         p = k // 2
         r = range(-p, p + 1)
         offs = list(itertools.product(r, r, r))
@@ -77,6 +79,19 @@ def test_neighbors():
             for j, o in enumerate(offs):
                 q = (int(b2[i]), *(int(g2[i][d]) + o[d] for d in range(3)))
                 assert int(nbr[i, j]) == lut.get(q, len(g2))
+
+
+def test_submanifold_convolution_matches_reference():
+    grid_coord = torch.unique(torch.randint(0, 5, (50, 3)), dim=0)
+    batch = torch.zeros(len(grid_coord), dtype=torch.long)
+    neighbors = build_neighbors(grid_coord, batch, 3)
+    feat = torch.randn(len(grid_coord), 4, requires_grad=True)
+    conv = SubMConv3d(4, 8, 3)
+
+    actual = conv(feat, neighbors)
+    padded = torch.cat([feat, feat.new_zeros(1, feat.shape[1])])
+    expected = sum(padded[neighbors[:, k]] @ conv.weight[k] for k in range(conv.k3)) + conv.bias
+    assert torch.allclose(actual, expected, rtol=1e-5, atol=1e-5)
 
 
 def make_data(sizes, gs=0.02):

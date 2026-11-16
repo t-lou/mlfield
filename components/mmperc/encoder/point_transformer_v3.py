@@ -172,28 +172,36 @@ def serialize(point: Point, order: Sequence[str], depth: int, shuffle_orders: bo
 # Submanifold sparse convolution via neighbour lookup
 # --------------------------------------------------------------------------- #
 @torch.no_grad()
-def build_neighbors(grid_coord: torch.Tensor, batch: torch.Tensor, kernel_size: int = 3) -> torch.Tensor:
+def build_neighbors(
+    grid_coord: torch.Tensor,
+    batch: torch.Tensor,
+    kernel_size: int = 3,
+    grid_bound: int | None = None,
+) -> torch.Tensor:
     """(N, k^3) indices of the neighbours among occupied voxels; N marks 'missing'."""
     assert kernel_size % 2 == 1
     N = grid_coord.shape[0]
     p = kernel_size // 2
-    gc = grid_coord.long() + p
+    gc = grid_coord.long()
     b = batch.long()
-    S = int(gc.max()) + p + 1
+    S = grid_bound if grid_bound is not None else int(gc.max()) + 2 * p + 1
 
     def _key(bb, c):
-        return ((bb * S + c[:, 0]) * S + c[:, 1]) * S + c[:, 2]
+        return ((bb * S + c[..., 0]) * S + c[..., 1]) * S + c[..., 2]
 
     sk, perm = _key(b, gc).sort()
     r = torch.arange(-p, p + 1, device=gc.device)
     offs = torch.stack(torch.meshgrid(r, r, r, indexing="ij"), -1).reshape(-1, 3)
-    out = []
-    for o in offs:
-        q = _key(b, gc + o)
-        pos = torch.searchsorted(sk, q).clamp_(max=N - 1)
-        found = sk[pos] == q
-        out.append(torch.where(found, perm[pos], torch.full_like(pos, N)))
-    return torch.stack(out, 1).to(grid_coord.device)
+    out = torch.empty((N, offs.shape[0]), dtype=torch.long, device=grid_coord.device)
+    for start in range(0, offs.shape[0], 16):
+        offset_chunk = offs[start : start + 16]
+        query_coord = gc[None, :, :] + offset_chunk[:, None, :]
+        valid = ((query_coord >= 0) & (query_coord < S)).all(dim=-1)
+        q = _key(b[None, :], query_coord.clamp(0, S - 1))
+        pos = torch.searchsorted(sk, q.reshape(-1)).reshape_as(q).clamp_(max=N - 1)
+        found = (sk[pos] == q) & valid
+        out[:, start : start + offset_chunk.shape[0]] = torch.where(found, perm[pos], torch.full_like(pos, N)).T
+    return out
 
 
 class SubMConv3d(nn.Module):
@@ -215,8 +223,10 @@ class SubMConv3d(nn.Module):
     def forward(self, feat: torch.Tensor, nbr: torch.Tensor) -> torch.Tensor:
         padded = torch.cat([feat, feat.new_zeros(1, feat.shape[1])], dim=0)
         out = feat.new_zeros(feat.shape[0], self.out_dim, dtype=feat.dtype)
-        for k in range(self.k3):
-            out = out + padded[nbr[:, k]] @ self.weight[k]
+        for start in range(0, self.k3, 8):
+            stop = min(start + 8, self.k3)
+            gathered = padded[nbr[:, start:stop]].permute(1, 0, 2)
+            out = out + torch.bmm(gathered, self.weight[start:stop]).sum(dim=0)
         if self.bias is not None:
             out = out + self.bias
         return out
@@ -562,7 +572,8 @@ class PointTransformerV3Encoder(nn.Module):
     def forward(self, data: dict) -> Point:
         point = self._prepare(data)
         with torch.no_grad():
-            nbr_stem = build_neighbors(point.grid_coord, point.batch, self.stem_kernel)
+            grid_bound = 1 << self.serial_depth
+            nbr_stem = build_neighbors(point.grid_coord, point.batch, self.stem_kernel, grid_bound)
 
         point.feat = F.gelu(self.embed_norm(self.embed_conv(point.feat, nbr_stem)))
 
@@ -570,7 +581,7 @@ class PointTransformerV3Encoder(nn.Module):
             if s > 0:
                 point = self.pools[s - 1](point)
             serialize(point, self.order, self.serial_depth, self.shuffle_orders and self.training)
-            point.nbr = build_neighbors(point.grid_coord, point.batch, 3)
+            point.nbr = build_neighbors(point.grid_coord, point.batch, 3, grid_bound)
             for blk in self.enc[s]:
                 point = blk(point)
 
