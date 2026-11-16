@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 
 class DropPath(nn.Module):
@@ -60,7 +61,6 @@ class VitBlock(nn.Module):
         self.dim = dim
         self.num_heads = num_heads
         self.head_dim = dim // num_heads
-        self.scale = self.head_dim**-0.5  # standard ViT scaling
 
         # --- LayerNorm before attention ---
         self.norm1 = nn.LayerNorm(dim)
@@ -106,21 +106,20 @@ class VitBlock(nn.Module):
         k = k.reshape(B, N, self.num_heads, self.head_dim).transpose(1, 2)
         v = v.reshape(B, N, self.num_heads, self.head_dim).transpose(1, 2)
 
-        # scaled dot-product attention
-        attn = (q @ k.transpose(-2, -1)) * self.scale
         if padding_mask is not None:
             padding_mask = padding_mask.to(torch.bool)
-            # mask out padded key positions for every query
-            key_mask = padding_mask[:, None, None, :]
-            attn = attn.masked_fill(key_mask, torch.finfo(attn.dtype).min)
-            # set padded query rows to zero so they do not contribute after residual
-            query_mask = padding_mask[:, None, :, None]
-            attn = attn.masked_fill(query_mask, 0.0)
+            # SDPA masks True entries out; padded query outputs are cleared below.
+            attn_mask = ~padding_mask[:, None, None, :]
+        else:
+            attn_mask = None
 
-        attn = attn.softmax(dim=-1)
-        attn = self.attn_drop(attn)  # attention dropout
-
-        out = attn @ v  # (B, heads, N, head_dim)
+        out = F.scaled_dot_product_attention(
+            q,
+            k,
+            v,
+            attn_mask=attn_mask,
+            dropout_p=self.attn_drop.p if self.training else 0.0,
+        )
         out = out.transpose(1, 2).reshape(B, N, D)
 
         if padding_mask is not None:

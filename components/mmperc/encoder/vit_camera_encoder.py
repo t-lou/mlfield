@@ -179,7 +179,7 @@ class ViTCameraEncoder(nn.Module):
             x_feat = blk(x_feat)
             if (i + 1) in self.extract_layers:
                 layer_idx = self.extract_layers.index(i + 1)
-                intermediate_features[f"layer_{layer_idx}"] = x_feat.clone()
+                intermediate_features[f"layer_{layer_idx}"] = x_feat
 
         # Apply final normalization
         x_feat = self.vit.norm(x_feat)

@@ -70,14 +70,13 @@ class _PointTransformerBEVEncoder(nn.Module):
     @staticmethod
     def _to_vehicle(calibration, points: Tensor) -> Tensor:
         xyz = points[..., :3]
-        ones = torch.ones(*xyz.shape[:-1], 1, device=points.device, dtype=points.dtype)
-        xyz_h = torch.cat([xyz, ones], dim=-1)
         transform = torch.as_tensor(
             calibration.pose.vehicle_from_sensor,
             device=points.device,
             dtype=points.dtype,
         )
-        return torch.cat([(xyz_h @ transform.T)[..., :3], points[..., 3:4]], dim=-1)
+        transformed_xyz = xyz @ transform[:3, :3].T + transform[:3, 3]
+        return torch.cat([transformed_xyz, points[..., 3:4]], dim=-1)
 
     def _voxelize(self, points: Tensor) -> tuple[dict[str, Tensor], Tensor]:
         batch_size, num_points, _ = points.shape
@@ -114,17 +113,13 @@ class _PointTransformerBEVEncoder(nn.Module):
                 dim=-1,
             )
             keys = (((batch * nx + grid_coord[:, 0]) * ny + grid_coord[:, 1]) * nz) + grid_coord[:, 2]
-            _, inverse = torch.unique(keys, sorted=True, return_inverse=True)
-            num_voxels = int(inverse.max()) + 1
+            _, inverse, counts = torch.unique(keys, sorted=True, return_inverse=True, return_counts=True)
+            num_voxels = counts.numel()
 
-            counts = xyz.new_zeros(num_voxels)
-            counts.index_add_(0, inverse, xyz.new_ones(xyz.shape[0]))
-            voxel_coord = xyz.new_zeros(num_voxels, 3)
             voxel_feat = raw_features.new_zeros(num_voxels, 4)
-            voxel_coord.index_add_(0, inverse, xyz)
             voxel_feat.index_add_(0, inverse, raw_features)
-            voxel_coord = voxel_coord / counts.unsqueeze(-1)
-            voxel_feat = voxel_feat / counts.unsqueeze(-1)
+            voxel_feat = voxel_feat / counts.unsqueeze(-1).to(voxel_feat.dtype)
+            voxel_coord = voxel_feat[:, :3]
 
             voxel_batch = torch.empty(num_voxels, dtype=torch.long, device=device)
             voxel_batch[inverse] = batch
@@ -169,7 +164,7 @@ class _PointTransformerBEVEncoder(nn.Module):
             if points.ndim != 3 or points.shape[-1] < 4:
                 raise ValueError(f"Expected {sensor_name} points with shape (B, N, >=4).")
             transformed.append(self._to_vehicle(self.calibrations[sensor_name], points))
-        points = torch.cat(transformed, dim=1)
+        points = transformed[0] if len(transformed) == 1 else torch.cat(transformed, dim=1)
 
         data, is_real = self._voxelize(points)
         encoded = self.point_transformer(data)
@@ -182,13 +177,12 @@ class _PointTransformerBEVEncoder(nn.Module):
         valid = (ix >= 0) & (ix < self.out_w) & (iy >= 0) & (iy < self.out_h)
 
         flat_index = batch[valid] * (self.out_h * self.out_w) + iy[valid] * self.out_w + ix[valid]
-        batch_size = points.shape[0]
-        bev_flat = features.new_zeros(batch_size * self.out_h * self.out_w, features.shape[-1])
-        counts = features.new_zeros(bev_flat.shape[0], 1)
+        num_cells = points.shape[0] * self.out_h * self.out_w
+        bev_flat = features.new_zeros(num_cells, features.shape[-1])
         bev_flat.index_add_(0, flat_index, features[valid])
-        counts.index_add_(0, flat_index, features.new_ones(flat_index.shape[0], 1))
+        counts = torch.bincount(flat_index, minlength=num_cells).to(features.dtype).unsqueeze(-1)
         bev_flat = bev_flat / counts.clamp_min(1)
-        return bev_flat.reshape(batch_size, self.out_h, self.out_w, -1).permute(0, 3, 1, 2).contiguous()
+        return bev_flat.reshape(points.shape[0], self.out_h, self.out_w, -1).permute(0, 3, 1, 2).contiguous()
 
 
 class _ViTCameraAdapter(nn.Module):
