@@ -174,16 +174,25 @@ class SubMConv3d(nn.Module):
 
     def __init__(self, in_dim: int, out_dim: int, kernel_size: int = 3, bias: bool = True):
         super().__init__()
-        self.in_dim, self.out_dim, self.k3 = in_dim, out_dim, kernel_size**3
-        self.weight = nn.Parameter(torch.empty(self.k3 * in_dim, out_dim))
+        if kernel_size <= 0 or kernel_size % 2 == 0:
+            raise ValueError("kernel_size must be a positive odd integer")
+
+        self.in_dim = in_dim
+        self.out_dim = out_dim
+        self.kernel_size = kernel_size
+        self.k3 = kernel_size**3
+        self.weight = nn.Parameter(torch.empty(self.k3, in_dim, out_dim))
         self.bias = nn.Parameter(torch.zeros(out_dim)) if bias else None
         nn.init.normal_(self.weight, std=(2.0 / (self.k3 * in_dim)) ** 0.5)
 
     def forward(self, feat: torch.Tensor, nbr: torch.Tensor) -> torch.Tensor:
-        padded = torch.cat([feat, feat.new_zeros(1, feat.shape[1])], 0).to(feat.device)
-        x = padded[nbr].reshape(feat.shape[0], -1)  # (N, k^3 * C)
-        out = x @ self.weight.to(feat.device)
-        return out if self.bias is None else out + self.bias
+        padded = torch.cat([feat, feat.new_zeros(1, feat.shape[1])], dim=0)
+        out = feat.new_zeros(feat.shape[0], self.out_dim, dtype=feat.dtype)
+        for k in range(self.k3):
+            out = out + padded[nbr[:, k]] @ self.weight[k]
+        if self.bias is not None:
+            out = out + self.bias
+        return out
 
 
 # --------------------------------------------------------------------------- #
@@ -326,10 +335,12 @@ class GridPooling(nn.Module):
         )
         coord = torch.zeros(M, 3, device=feat.device, dtype=point.coord.dtype).index_add_(0, inv, point.coord)
         coord = coord / counts[:, None].to(coord.dtype)
-        new_gc = torch.zeros(M, 3, dtype=torch.long, device=feat.device)
-        new_gc[inv] = gc
-        new_b = torch.zeros(M, dtype=torch.long, device=feat.device)
-        new_b[inv] = b
+
+        src = torch.arange(inv.numel(), device=inv.device)
+        first = torch.full((M,), inv.numel(), dtype=torch.long, device=inv.device)
+        first.scatter_reduce_(0, inv, src, reduce="amin", include_self=True)
+        new_gc = gc[first]
+        new_b = b[first]
 
         return Point(
             feat=F.gelu(self.norm(pooled)),
@@ -384,7 +395,10 @@ class PointTransformerV3Encoder(nn.Module):
     ):
         super().__init__()
         n = len(enc_depths)
+        if stem_kernel <= 0 or stem_kernel % 2 == 0:
+            raise ValueError("stem_kernel must be a positive odd integer")
         assert len(stride) == n - 1 and len(enc_channels) == n and len(enc_num_head) == n and len(enc_patch_size) == n
+        self.in_channels = in_channels
         self.order, self.shuffle_orders, self.serial_depth = list(order), shuffle_orders, serial_depth
         self.num_stages, self.enc_mode, self.stem_kernel = n, enc_mode, stem_kernel
         n_ord = len(self.order)
@@ -458,23 +472,63 @@ class PointTransformerV3Encoder(nn.Module):
                 nn.init.zeros_(m.bias)
 
     def _prepare(self, data: dict) -> Point:
-        coord, feat = data["coord"], data["feat"]
+        if "coord" not in data or "feat" not in data:
+            raise KeyError("data must contain 'coord' and 'feat'")
+
+        coord = data["coord"]
+        feat = data["feat"]
+
+        if coord.ndim != 2 or coord.shape[1] != 3:
+            raise ValueError("coord must have shape (N, 3)")
+        if feat.ndim != 2 or feat.shape[0] != coord.shape[0]:
+            raise ValueError("feat must have shape (N, C) with the same leading dimension as coord")
+        if feat.shape[1] != self.in_channels:
+            raise ValueError(f"Expected {self.in_channels} input channels, got {feat.shape[1]}")
+        if coord.shape[0] == 0:
+            raise ValueError("Empty point clouds are not supported")
+        if coord.device != feat.device:
+            raise ValueError("coord and feat must be on the same device")
+
         if "batch" in data:
-            batch = data["batch"].long()
+            batch = data["batch"].to(device=coord.device, dtype=torch.long)
+            if batch.ndim != 1 or batch.shape[0] != coord.shape[0]:
+                raise ValueError("batch must have shape (N,)")
+            if torch.any(batch < 0):
+                raise ValueError("batch IDs must be non-negative")
+        elif "offset" in data:
+            off = data["offset"].to(device=coord.device, dtype=torch.long)
+            if off.ndim != 1 or off.numel() == 0:
+                raise ValueError("offset must be a nonempty 1D tensor")
+            if off[-1] != coord.shape[0]:
+                raise ValueError("offset must end at the total number of points")
+            counts = torch.diff(off, prepend=off.new_zeros(1))
+            if torch.any(counts <= 0):
+                raise ValueError("offset must be strictly increasing; empty clouds are not supported")
+            batch = torch.repeat_interleave(torch.arange(off.numel(), device=coord.device), counts)
         else:
-            off = data["offset"].long()
-            batch = torch.repeat_interleave(
-                torch.arange(len(off), device=off.device), torch.diff(off, prepend=off.new_zeros(1))
-            )
-        batch = batch.to(feat.device)
+            raise KeyError("data must contain either 'batch' or 'offset'")
+
+        if torch.numel(batch) == 0:
+            raise ValueError("batch cannot be empty")
+
+        _, batch = torch.unique(batch, sorted=True, return_inverse=True)
+
         if "grid_coord" in data:
-            gc = data["grid_coord"].long()
+            gc = data["grid_coord"].to(device=coord.device, dtype=torch.long)
+            if gc.shape != coord.shape:
+                raise ValueError("grid_coord must have shape (N, 3)")
         else:
+            if "grid_size" not in data:
+                raise KeyError("data must contain either 'grid_coord' or 'grid_size'")
+            grid_size = float(data["grid_size"])
+            if not torch.isfinite(torch.tensor(grid_size)) or grid_size <= 0:
+                raise ValueError("grid_size must be a positive finite number")
             B = int(batch.max()) + 1
             mn = torch.full((B, 3), float("inf"), device=coord.device, dtype=coord.dtype)
             mn = mn.scatter_reduce(0, batch[:, None].expand(-1, 3), coord, "amin")
             # small epsilon guards against float rounding for points exactly on voxel boundaries
-            gc = torch.floor((coord - mn[batch]) / data["grid_size"] + 1e-4).long()
+            gc = torch.floor((coord - mn[batch]) / grid_size + 1e-4).long()
+
         return Point(coord=coord, feat=feat, grid_coord=gc, batch=batch)
 
     def forward(self, data: dict) -> Point:
