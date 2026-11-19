@@ -1,3 +1,5 @@
+from collections.abc import Sequence
+from dataclasses import replace
 from pathlib import Path
 
 import torch
@@ -33,13 +35,20 @@ SMALL_GPU_PTV3_CONFIG = PointTransformerV3Config(
 
 
 class _PointTransformerBEVEncoder(nn.Module):
-    """Adapt PTv3's point features to the dense BEV contract used by fusion."""
+    """Adapt PTv3 features to dense BEV.
+
+    ``lidar_feature_resolutions`` can be ``None`` (the default full-resolution
+    decoder output) or a sequence of encoder stage indices, for example ``(0, 2)``.
+    The latter builds one BEV map per selected stage, concatenates the maps, and
+    projects them back to ``bev.bev_channels``.
+    """
 
     def __init__(
         self,
         params: MmpercParams,
         sensor_names: list[str],
         config: PointTransformerV3Config,
+        lidar_feature_resolutions: int | Sequence[int] | None = None,
     ) -> None:
         super().__init__()
         if config.in_channels != 4:
@@ -64,8 +73,42 @@ class _PointTransformerBEVEncoder(nn.Module):
         self.out_h = self.bev_h // 2
         self.out_w = self.bev_w // 2
 
+        if lidar_feature_resolutions is not None:
+            resolutions = (
+                (lidar_feature_resolutions,)
+                if isinstance(lidar_feature_resolutions, int)
+                else tuple(lidar_feature_resolutions)
+            )
+            if not resolutions:
+                raise ValueError("lidar_feature_resolutions cannot be empty")
+            if any(stage < 0 for stage in resolutions):
+                raise ValueError("lidar_feature_resolutions stage indices must be non-negative")
+            if len(set(resolutions)) != len(resolutions):
+                raise ValueError("lidar_feature_resolutions cannot contain duplicate stages")
+            # In stage mode the encoder stages are consumed directly, so decoder
+            # stages are unnecessary.
+            config = replace(config, enc_mode=True)
+        else:
+            resolutions = None
+
+        self.resolutions = resolutions
         self.point_transformer = PointTransformerV3Encoder(config)
-        self.feature_proj = nn.Linear(self.point_transformer.out_channels, bev.bev_channels)
+        if resolutions is None:
+            self.feature_proj = nn.Linear(self.point_transformer.out_channels, bev.bev_channels)
+            self.resolution_proj = None
+        else:
+            if any(stage >= self.point_transformer.num_stages for stage in resolutions):
+                raise ValueError(
+                    f"Requested PTv3 stage exceeds available stages (0-{self.point_transformer.num_stages - 1})"
+                )
+            stage_channels = [config.enc_channels[stage] for stage in resolutions]
+            self.resolution_stage_proj = nn.ModuleList(
+                nn.Linear(stage_channels[i], bev.bev_channels) for i in range(len(resolutions))
+            )
+            self.resolution_proj = nn.Linear(
+                len(resolutions) * bev.bev_channels,
+                bev.bev_channels,
+            )
 
     @staticmethod
     def _to_vehicle(calibration, points: Tensor) -> Tensor:
@@ -168,21 +211,49 @@ class _PointTransformerBEVEncoder(nn.Module):
 
         data, is_real = self._voxelize(points)
         encoded = self.point_transformer(data)
-        features = self.feature_proj(encoded.feat[is_real])
+        num_cells = points.shape[0] * self.out_h * self.out_w
 
-        batch = encoded.batch[is_real]
-        xyz = encoded.coord[is_real]
+        if self.resolutions is None:
+            features = self.feature_proj(encoded.feat[is_real])
+            batch = encoded.batch[is_real]
+            xyz = encoded.coord[is_real]
+            maps = [self._scatter_bev(features, batch, xyz, num_cells)]
+        else:
+            stage_real = is_real
+            stage_masks = [stage_real]
+            for stage in encoded.encoder_stages[1:]:
+                inverse = stage.pooling_inverse
+                previous_real = stage_masks[-1].to(torch.float32)
+                num_coarse = stage.feat.shape[0]
+                coarse_real = torch.zeros(num_coarse, dtype=torch.float32, device=is_real.device)
+                coarse_real.index_add_(0, inverse, previous_real)
+                stage_real = coarse_real > 0
+                stage_masks.append(stage_real)
+
+            maps = []
+            for i, stage_index in enumerate(self.resolutions):
+                stage = encoded.encoder_stages[stage_index]
+                real = stage_masks[stage_index]
+                features = self.resolution_stage_proj[i](stage.feat[real])
+                maps.append(self._scatter_bev(features, stage.batch[real], stage.coord[real], num_cells))
+
+            maps = torch.cat(maps, dim=-1)
+            maps = self.resolution_proj(maps)
+
+        if self.resolutions is None:
+            maps = maps[0]
+        return maps.reshape(points.shape[0], self.out_h, self.out_w, -1).permute(0, 3, 1, 2).contiguous()
+
+    def _scatter_bev(self, features: Tensor, batch: Tensor, xyz: Tensor, num_cells: int) -> Tensor:
         ix = ((xyz[:, 0] - self.x_min) / (self.x_max - self.x_min) * self.out_w).long()
         iy = ((xyz[:, 1] - self.y_min) / (self.y_max - self.y_min) * self.out_h).long()
         valid = (ix >= 0) & (ix < self.out_w) & (iy >= 0) & (iy < self.out_h)
 
         flat_index = batch[valid] * (self.out_h * self.out_w) + iy[valid] * self.out_w + ix[valid]
-        num_cells = points.shape[0] * self.out_h * self.out_w
         bev_flat = features.new_zeros(num_cells, features.shape[-1])
         bev_flat.index_add_(0, flat_index, features[valid])
         counts = torch.bincount(flat_index, minlength=num_cells).to(features.dtype).unsqueeze(-1)
-        bev_flat = bev_flat / counts.clamp_min(1)
-        return bev_flat.reshape(points.shape[0], self.out_h, self.out_w, -1).permute(0, 3, 1, 2).contiguous()
+        return bev_flat / counts.clamp_min(1)
 
 
 class _ViTCameraAdapter(nn.Module):
@@ -229,6 +300,11 @@ class TransformerModel(nn.Module):
 
     For a reduced-capacity model, pass ``SMALL_GPU_VIT_CONFIG`` and
     ``SMALL_GPU_PTV3_CONFIG``. A 4GB GPU may also require training with batch size 1.
+
+    ``lidar_feature_resolutions`` selects LiDAR features at PTv3 encoder stages:
+    ``None`` uses the default decoded full-resolution output, an integer such as
+    ``0`` uses one stage, and a sequence such as ``(0, 2)`` concatenates selected
+    stage maps into the BEV channel contract.
     """
 
     def __init__(
@@ -236,6 +312,7 @@ class TransformerModel(nn.Module):
         params: MmpercParams,
         vit_config: ViTConfig | None = None,
         ptv3_config: PointTransformerV3Config | None = None,
+        lidar_feature_resolutions: int | Sequence[int] | None = None,
     ) -> None:
         super().__init__()
         if not params.use_lidar and not params.use_camera:
@@ -243,6 +320,7 @@ class TransformerModel(nn.Module):
 
         self.vit_config = vit_config if vit_config is not None else ViTConfig()
         self.ptv3_config = ptv3_config if ptv3_config is not None else PointTransformerV3Config(in_channels=4)
+        self.lidar_feature_resolutions = lidar_feature_resolutions
         self._sensor_name = "front_center"
         channels = params.bev_params.bev_channels
 
@@ -253,6 +331,7 @@ class TransformerModel(nn.Module):
                 params,
                 [self._sensor_name],
                 self.ptv3_config,
+                lidar_feature_resolutions=lidar_feature_resolutions,
             )
         if params.use_camera:
             camera_encoder = _ViTCameraAdapter(params, self._sensor_name, channels, self.vit_config)
@@ -325,20 +404,36 @@ def _smoke_test():
     params.path_data = "./data/camera_lidar_semantic_bboxes.tar"
     params.image_scale = 1.0
     params.path_calibration = "./data/cams_lidars.json"
-    model = TransformerModel(params=params).to(device)
 
     # Create dummy inputs
     B, N, H_img, W_img = 2, 1000, 256, 256
     points = torch.rand(B, N, 4).to(device)  # (B, N, 4)
     images = torch.rand(B, 3, H_img, W_img).to(device)  # (B, 3, H_img, W_img)
 
-    # Forward pass
-    outputs = model(points=points, image=images)
+    output_shapes = []
+    configs = (
+        ("implicit strides", replace(SMALL_GPU_PTV3_CONFIG, stride=None)),
+        ("explicit strides", SMALL_GPU_PTV3_CONFIG),
+    )
+    for label, ptv3_config in configs:
+        model = (
+            TransformerModel(
+                params=params,
+                vit_config=SMALL_GPU_VIT_CONFIG,
+                ptv3_config=ptv3_config,
+            )
+            .to(device)
+            .eval()
+        )
+        with torch.no_grad():
+            outputs = model(points=points, image=images)
+        shapes = {key: tuple(value.shape) for key, value in outputs.items()}
+        print(f"{label}: {shapes}")
+        output_shapes.append(shapes)
 
-    # Print output shapes
-    for key, value in outputs.items():
-        print(f"{key}: {value.shape}")
-    print("TransformerModel smoke test passed.")
+    if output_shapes[0] != output_shapes[1]:
+        raise RuntimeError(f"PTv3 implicit and explicit stride outputs differ: {output_shapes}")
+    print("TransformerModel stride smoke test passed.")
 
 
 if __name__ == "__main__":

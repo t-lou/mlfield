@@ -27,7 +27,9 @@ Input dict:
   batch      (N,) long     or  offset (B,) long (cumulative point counts)
 
 Output: Point (dict with attribute access). `point.feat` is (N, dec_channels[0]) in the
-input point order (or the last encoder stage if enc_mode=True).
+input point order (or the last encoder stage if enc_mode=True). When available,
+`point.encoder_stages` contains copies of the point features and coordinates after
+each encoder resolution stage.
 """
 
 from collections.abc import Sequence
@@ -44,7 +46,7 @@ class PointTransformerV3Config:
 
     in_channels: int = 6
     order: Sequence[str] = ("z", "z-trans", "hilbert", "hilbert-trans")
-    stride: Sequence[int] = (2, 2, 2, 2)
+    stride: Sequence[int] | None = None
     enc_depths: Sequence[int] = (2, 2, 2, 6, 2)
     enc_channels: Sequence[int] = (32, 64, 128, 256, 512)
     enc_num_head: Sequence[int] = (2, 4, 8, 16, 32)
@@ -373,11 +375,14 @@ class GridPooling(nn.Module):
         coord = torch.zeros(M, 3, device=feat.device, dtype=point.coord.dtype).index_add_(0, inv, point.coord)
         coord = coord / counts[:, None].to(coord.dtype)
 
-        src = torch.arange(inv.numel(), device=inv.device)
-        first = torch.full((M,), inv.numel(), dtype=torch.long, device=inv.device)
-        first.scatter_reduce_(0, inv, src, reduce="amin", include_self=True)
-        new_gc = gc[first]
-        new_b = b[first]
+        # Decode the unique voxel keys instead of reducing int64 point indices.
+        # Metal does not support the int64 atomic operation used by scatter_reduce_
+        # for selecting a representative point.
+        new_b = uniq // (S**3)
+        new_gc = torch.stack(
+            ((uniq // (S**2)) % S, (uniq // S) % S, uniq % S),
+            dim=1,
+        )
 
         return Point(
             feat=F.gelu(self.norm(pooled)),
@@ -410,10 +415,12 @@ class PointTransformerV3Encoder(nn.Module):
     def __init__(self, config: PointTransformerV3Config | None = None):
         super().__init__()
         config = config or PointTransformerV3Config()
+        n = len(config.enc_depths)
+        stride = tuple(config.stride) if config.stride is not None else (2,) * (n - 1)
+        config = replace(config, stride=stride)
         self.config = config
         in_channels = config.in_channels
         order = config.order
-        stride = config.stride
         enc_depths = config.enc_depths
         enc_channels = config.enc_channels
         enc_num_head = config.enc_num_head
@@ -432,10 +439,10 @@ class PointTransformerV3Encoder(nn.Module):
         stem_kernel = config.stem_kernel
         enc_mode = config.enc_mode
 
-        n = len(enc_depths)
         if stem_kernel <= 0 or stem_kernel % 2 == 0:
             raise ValueError("stem_kernel must be a positive odd integer")
-        assert len(stride) == n - 1 and len(enc_channels) == n and len(enc_num_head) == n and len(enc_patch_size) == n
+        if len(stride) != n - 1 or len(enc_channels) != n or len(enc_num_head) != n or len(enc_patch_size) != n:
+            raise ValueError("stride must have one value per stage transition; encoder settings must match stages")
         self.in_channels = in_channels
         self.order, self.shuffle_orders, self.serial_depth = list(order), shuffle_orders, serial_depth
         self.num_stages, self.enc_mode, self.stem_kernel = n, enc_mode, stem_kernel
@@ -515,7 +522,12 @@ class PointTransformerV3Encoder(nn.Module):
 
         coord = data["coord"]
         feat = data["feat"]
+        self._validate_coord_and_feat(coord, feat)
+        batch = self._prepare_batch(data, coord)
+        grid_coord = self._prepare_grid_coord(data, coord, batch)
+        return Point(coord=coord, feat=feat, grid_coord=grid_coord, batch=batch)
 
+    def _validate_coord_and_feat(self, coord: torch.Tensor, feat: torch.Tensor) -> None:
         if coord.ndim != 2 or coord.shape[1] != 3:
             raise ValueError("coord must have shape (N, 3)")
         if feat.ndim != 2 or feat.shape[0] != coord.shape[0]:
@@ -527,6 +539,8 @@ class PointTransformerV3Encoder(nn.Module):
         if coord.device != feat.device:
             raise ValueError("coord and feat must be on the same device")
 
+    @staticmethod
+    def _prepare_batch(data: dict, coord: torch.Tensor) -> torch.Tensor:
         if "batch" in data:
             batch = data["batch"].to(device=coord.device, dtype=torch.long)
             if batch.ndim != 1 or batch.shape[0] != coord.shape[0]:
@@ -550,24 +564,26 @@ class PointTransformerV3Encoder(nn.Module):
             raise ValueError("batch cannot be empty")
 
         _, batch = torch.unique(batch, sorted=True, return_inverse=True)
+        return batch
 
+    @staticmethod
+    def _prepare_grid_coord(data: dict, coord: torch.Tensor, batch: torch.Tensor) -> torch.Tensor:
         if "grid_coord" in data:
-            gc = data["grid_coord"].to(device=coord.device, dtype=torch.long)
-            if gc.shape != coord.shape:
+            grid_coord = data["grid_coord"].to(device=coord.device, dtype=torch.long)
+            if grid_coord.shape != coord.shape:
                 raise ValueError("grid_coord must have shape (N, 3)")
-        else:
-            if "grid_size" not in data:
-                raise KeyError("data must contain either 'grid_coord' or 'grid_size'")
-            grid_size = float(data["grid_size"])
-            if not torch.isfinite(torch.tensor(grid_size)) or grid_size <= 0:
-                raise ValueError("grid_size must be a positive finite number")
-            B = int(batch.max()) + 1
-            mn = torch.full((B, 3), float("inf"), device=coord.device, dtype=coord.dtype)
-            mn = mn.scatter_reduce(0, batch[:, None].expand(-1, 3), coord, "amin")
-            # small epsilon guards against float rounding for points exactly on voxel boundaries
-            gc = torch.floor((coord - mn[batch]) / grid_size + 1e-4).long()
+            return grid_coord
 
-        return Point(coord=coord, feat=feat, grid_coord=gc, batch=batch)
+        if "grid_size" not in data:
+            raise KeyError("data must contain either 'grid_coord' or 'grid_size'")
+        grid_size = float(data["grid_size"])
+        if not torch.isfinite(torch.tensor(grid_size)) or grid_size <= 0:
+            raise ValueError("grid_size must be a positive finite number")
+        num_batches = int(batch.max()) + 1
+        mn = torch.full((num_batches, 3), float("inf"), device=coord.device, dtype=coord.dtype)
+        mn = mn.scatter_reduce(0, batch[:, None].expand(-1, 3), coord, "amin")
+        # small epsilon guards against float rounding for points exactly on voxel boundaries
+        return torch.floor((coord - mn[batch]) / grid_size + 1e-4).long()
 
     def forward(self, data: dict) -> Point:
         point = self._prepare(data)
@@ -576,6 +592,7 @@ class PointTransformerV3Encoder(nn.Module):
             nbr_stem = build_neighbors(point.grid_coord, point.batch, self.stem_kernel, grid_bound)
 
         point.feat = F.gelu(self.embed_norm(self.embed_conv(point.feat, nbr_stem)))
+        encoder_stages = []
 
         for s in range(self.num_stages):
             if s > 0:
@@ -584,7 +601,17 @@ class PointTransformerV3Encoder(nn.Module):
             point.nbr = build_neighbors(point.grid_coord, point.batch, 3, grid_bound)
             for blk in self.enc[s]:
                 point = blk(point)
+            encoder_stages.append(
+                Point(
+                    feat=point.feat,
+                    coord=point.coord,
+                    grid_coord=point.grid_coord,
+                    batch=point.batch,
+                    pooling_inverse=point.pooling_inverse if s > 0 else None,
+                )
+            )
 
+        point.encoder_stages = encoder_stages
         if not self.enc_mode:
             for up, blocks in zip(self.dec_up, self.dec):
                 point = up(point)

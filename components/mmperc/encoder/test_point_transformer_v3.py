@@ -4,6 +4,8 @@ from dataclasses import replace
 import torch
 
 from components.mmperc.encoder.point_transformer_v3 import (
+    GridPooling,
+    Point,
     PointTransformerV3Config,
     PointTransformerV3Encoder,
     SubMConv3d,
@@ -94,6 +96,22 @@ def test_submanifold_convolution_matches_reference():
     assert torch.allclose(actual, expected, rtol=1e-5, atol=1e-5)
 
 
+def test_grid_pooling_decodes_unique_keys():
+    grid_coord = torch.tensor([[0, 0, 0], [1, 0, 0], [2, 1, 0], [0, 0, 0]])
+    batch = torch.tensor([0, 0, 0, 1])
+    point = Point(
+        feat=torch.randn(4, 3),
+        coord=grid_coord.float(),
+        grid_coord=grid_coord,
+        batch=batch,
+    )
+    pooled = GridPooling(3, 4, stride=2).eval()(point)
+
+    assert torch.equal(pooled.grid_coord, torch.tensor([[0, 0, 0], [1, 0, 0], [0, 0, 0]]))
+    assert torch.equal(pooled.batch, torch.tensor([0, 0, 1]))
+    assert pooled.feat.shape == (3, 4)
+
+
 def make_data(sizes, gs=0.02):
     cs, gcs, bs = [], [], []
     for i, n in enumerate(sizes):
@@ -150,6 +168,33 @@ def test_backward_and_train():
     bad = [n for n, p in m.named_parameters() if p.grad is None or not torch.isfinite(p.grad).all()]
     assert not bad, bad
     assert out.feat.shape == (len(data["coord"]), 16)
+
+
+def test_encoder_stage_outputs():
+    data = make_data([2000, 900])
+    m = PointTransformerV3Encoder(replace(CONFIG, enc_mode=True)).eval()
+    out = m(data)
+    assert len(out.encoder_stages) == len(CONFIG.enc_depths)
+    assert [stage.feat.shape[1] for stage in out.encoder_stages] == list(CONFIG.enc_channels)
+    assert all(stage.feat.shape[0] == stage.coord.shape[0] == stage.batch.shape[0] for stage in out.encoder_stages)
+
+
+def test_omitted_strides_match_explicit_default_strides():
+    data = make_data([1200, 600])
+    implicit_config = replace(CONFIG, stride=None)
+    explicit_config = replace(CONFIG, stride=(2,) * (len(CONFIG.enc_depths) - 1))
+
+    implicit = PointTransformerV3Encoder(implicit_config).eval()
+    explicit = PointTransformerV3Encoder(explicit_config).eval()
+    implicit.load_state_dict(explicit.state_dict())
+
+    with torch.no_grad():
+        implicit_out = implicit(data)
+        explicit_out = explicit(data)
+
+    assert implicit.config.stride == explicit.config.stride
+    assert torch.equal(implicit_out.coord, explicit_out.coord)
+    assert torch.allclose(implicit_out.feat, explicit_out.feat)
 
 
 def test_small_cloud_and_grid_size():
