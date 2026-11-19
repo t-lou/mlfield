@@ -31,6 +31,7 @@ def train_model(
     num_epochs: int = 1,
     ckpt_dir="checkpoints",
     skip_eval: bool = False,
+    debug_plot_every: int = 0,
 ):
     debug_ploter.init_plot()
     ensure_dir(ckpt_dir)
@@ -72,6 +73,7 @@ def train_model(
                 device=device,
                 epoch=epoch,
                 num_epochs=start_epoch + num_epochs,
+                debug_plot_every=debug_plot_every,
             )
 
             # Save epoch checkpoint
@@ -89,6 +91,7 @@ def train_model(
                     device=device,
                     epoch=epoch,
                     num_epochs=start_epoch + num_epochs,
+                    debug_plot_every=debug_plot_every,
                 )
 
     except Exception as e:
@@ -110,6 +113,7 @@ def train_one_epoch(
     scheduler: torch.optim.lr_scheduler.LRScheduler | None = None,
     epoch: int = 0,
     num_epochs: int = 1,
+    debug_plot_every: int = 0,
 ):
     run_one_epoch(
         model=model,
@@ -120,6 +124,7 @@ def train_one_epoch(
         epoch=epoch,
         num_epochs=num_epochs,
         train=True,
+        debug_plot_every=debug_plot_every,
     )
 
 
@@ -130,6 +135,7 @@ def evaluate_one_epoch(
     device: torch.device,
     epoch: int = 0,
     num_epochs: int = 1,
+    debug_plot_every: int = 0,
 ):
     run_one_epoch(
         model=model,
@@ -139,4 +145,5 @@ def evaluate_one_epoch(
         epoch=epoch,
         num_epochs=num_epochs,
         train=False,
+        debug_plot_every=debug_plot_every,
     )

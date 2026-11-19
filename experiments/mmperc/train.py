@@ -18,6 +18,7 @@ from torch.utils.data import DataLoader
 def main(params: MmpercParams, skip_eval: bool = False) -> None:
     train_config = params.train_config
     device = train_config.get_device()
+    pin_memory = train_config.pin_memory and device.type == "cuda"
 
     dataset_train = A2D2Dataset(params=params, split=Split.TRAIN)
     dataloader_train = DataLoader(
@@ -26,7 +27,7 @@ def main(params: MmpercParams, skip_eval: bool = False) -> None:
         shuffle=train_config.shuffle,
         collate_fn=partial(bev_collate, params=params),
         num_workers=train_config.num_workers,
-        pin_memory=train_config.pin_memory,
+        pin_memory=pin_memory,
         persistent_workers=train_config.persistent_workers,
         prefetch_factor=train_config.prefetch_factor,
     )
@@ -38,7 +39,7 @@ def main(params: MmpercParams, skip_eval: bool = False) -> None:
         shuffle=False,
         collate_fn=partial(bev_collate, params=params),
         num_workers=train_config.num_workers,
-        pin_memory=train_config.pin_memory,
+        pin_memory=pin_memory,
         persistent_workers=train_config.persistent_workers,
         prefetch_factor=train_config.prefetch_factor,
     )

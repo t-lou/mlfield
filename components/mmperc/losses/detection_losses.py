@@ -1,3 +1,5 @@
+import logging
+
 import torch
 import torch.nn.functional as F
 
@@ -11,9 +13,9 @@ def focal_loss(pred, gt, alpha=2.0, beta=4.0):
     """
     assert pred.shape == gt.shape, f"pred shape {pred.shape} != gt shape {gt.shape}"
 
-    # debug grid indexing
-    logger.debug("GT max at:", torch.nonzero(gt[0, 0] == gt[0, 0].max()))
-    logger.debug("Pred max at:", torch.nonzero(pred[0, 0] == pred[0, 0].max()))
+    if logger.isEnabledFor(logging.DEBUG):
+        logger.debug("GT max at: %s", torch.nonzero(gt[0, 0] == gt[0, 0].max()))
+        logger.debug("Pred max at: %s", torch.nonzero(pred[0, 0] == pred[0, 0].max()))
 
     pos_inds = gt.eq(1).float()
     neg_inds = gt.lt(1).float()
@@ -28,10 +30,7 @@ def focal_loss(pred, gt, alpha=2.0, beta=4.0):
     neg_loss = -torch.log(1 - pred) * torch.pow(pred, alpha) * neg_weights * neg_inds
 
     num_pos = pos_inds.sum()
-    if num_pos == 0:
-        return neg_loss.sum()
-
-    return (pos_loss.sum() + neg_loss.sum()) / num_pos
+    return (pos_loss.sum() + neg_loss.sum()) / num_pos.clamp_min(1)
 
 
 def l1_loss(pred, gt, mask):
