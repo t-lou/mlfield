@@ -277,7 +277,7 @@ def synthetic_corpus(n=3000, seed=0):
 def make_optimizer(model, lr, weight_decay=0.01):
     """Kein Weight Decay auf Biases und LayerNorm (Standard bei BERT)."""
     decay, no_decay = [], []
-    for n, p in model.named_parameters():
+    for _n, p in model.named_parameters():
         (no_decay if p.ndim < 2 else decay).append(p)
     return torch.optim.AdamW(
         [{"params": decay, "weight_decay": weight_decay}, {"params": no_decay, "weight_decay": 0.0}],
@@ -406,7 +406,7 @@ def main():
         probe = args.probe or "the cat [MASK] the ball ."
     else:
         with open(args.text, encoding="utf-8") as f:
-            lines = [l.strip() for l in f if l.strip()]
+            lines = [line.strip() for line in f if line.strip()]
         probe = args.probe
     random.shuffle(lines)
     n_val = max(1, int(len(lines) * args.val_frac))

@@ -251,10 +251,13 @@ class A2D2DatasetUnlabeled(Dataset):
                 if not path.exists():
                     logger.warning(f"Path {path} not found")
                     continue
+                tar = None
                 try:
-                    tar = tarfile.open(path, mode="r")
+                    tar = tarfile.open(path, mode="r")  # noqa: SIM115 - retained until _close_tars()
                     members = {member.name: member for member in tar.getmembers()}
                 except Exception as exc:  # noqa: BLE001 - tolerate a single bad tar, don't crash the run
+                    if tar is not None:
+                        tar.close()
                     logger.warning(f"Failed to open/index {path}: {exc}")
                     continue
                 logger.info(f"Path {path} found")

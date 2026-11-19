@@ -214,7 +214,7 @@ class YOLOInference:
         scale_x = orig_w / image_size
         scale_y = orig_h / image_size
 
-        for scale_idx, (pred, stride) in enumerate(zip(pred_list, scales)):
+        for scale_idx, (pred, _stride) in enumerate(zip(pred_list, scales)):
             batch_size, channels, grid_h, grid_w = pred.shape
             pred = pred.permute(0, 2, 3, 1).reshape(batch_size, grid_h, grid_w, 3, -1)
 

@@ -44,6 +44,43 @@ def _zero_camera_tensor(ref_hw: tuple[int, int] | None = None) -> torch.Tensor:
     return torch.zeros((3, hw[0], hw[1]), dtype=torch.float32)
 
 
+def _append_sensor_sample(
+    sample: dict,
+    sensor_name: str,
+    cameras: dict[str, list[torch.Tensor]],
+    lidar_points: dict[str, list[torch.Tensor]],
+    cam_meta: dict[str, list[dict[str, object]]],
+    ref_hw: tuple[int, int] | None,
+) -> tuple[int, int] | None:
+    camera = sample.get(("camera", sensor_name))
+    if camera is not None:
+        camera_tensor = torch.as_tensor(camera, dtype=torch.float32).permute(2, 0, 1) / 255.0
+        if ref_hw is None:
+            ref_hw = camera_tensor.shape[-2:]
+        cameras[sensor_name].append(camera_tensor)
+    else:
+        if ref_hw is None:
+            ref_hw = (1, 1)
+        cameras[sensor_name].append(_zero_camera_tensor(ref_hw))
+
+    lidar = sample.get(("lidar", sensor_name))
+    if lidar is not None:
+        lidar_points[sensor_name].append(_points_from_npz(lidar))
+    else:
+        lidar_points[sensor_name].append(torch.zeros((1, 4), dtype=torch.float32))
+
+    meta = (sample.get("cam_meta") or {}).get(sensor_name)
+    if meta is None:
+        meta = {
+            "camera_id": sensor_name,
+            "pose": np.eye(4, dtype=np.float32).reshape(-1).tolist(),
+            "intrinsics": None,
+            "resolution": ref_hw,
+        }
+    cam_meta[sensor_name].append(meta)
+    return ref_hw
+
+
 def ssl_collate(
     samples: list[dict],
 ) -> tuple[
@@ -60,32 +97,7 @@ def ssl_collate(
     ref_hw: tuple[int, int] | None = None
     for sample in samples:
         for sensor_name in SENSOR_NAMES:
-            camera = sample.get(("camera", sensor_name))
-            if camera is not None:
-                camera_tensor = torch.as_tensor(camera, dtype=torch.float32).permute(2, 0, 1) / 255.0
-                if ref_hw is None:
-                    ref_hw = camera_tensor.shape[-2:]
-                cameras[sensor_name].append(camera_tensor)
-            else:
-                if ref_hw is None:
-                    ref_hw = (1, 1)
-                cameras[sensor_name].append(_zero_camera_tensor(ref_hw))
-
-            lidar = sample.get(("lidar", sensor_name))
-            if lidar is not None:
-                lidar_points[sensor_name].append(_points_from_npz(lidar))
-            else:
-                lidar_points[sensor_name].append(torch.zeros((1, 4), dtype=torch.float32))
-
-            meta = (sample.get("cam_meta") or {}).get(sensor_name)
-            if meta is None:
-                meta = {
-                    "camera_id": sensor_name,
-                    "pose": np.eye(4, dtype=np.float32).reshape(-1).tolist(),
-                    "intrinsics": None,
-                    "resolution": ref_hw,
-                }
-            cam_meta[sensor_name].append(meta)
+            ref_hw = _append_sensor_sample(sample, sensor_name, cameras, lidar_points, cam_meta, ref_hw)
 
         can_in = sample.get("can_in")
         if can_in is None:

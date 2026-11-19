@@ -145,7 +145,8 @@ class A2D2Dataset(Dataset):
 
     def _get_tar(self) -> tarfile.TarFile:
         if self._tar is None:
-            self._tar = tarfile.open(self.path_tar, mode="r")
+            # Keep one lazy handle per dataset process; __getstate__ and __del__ manage its lifecycle.
+            self._tar = tarfile.open(self.path_tar, mode="r")  # noqa: SIM115
         return self._tar
 
     def __getstate__(self) -> dict:

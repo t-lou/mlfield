@@ -797,6 +797,73 @@ def _evaluate_validation_proxy(model, data_loader, device, distill_weight):
     return average_loss, match_rate, average_detection_loss, average_distill_loss
 
 
+def _load_teacher_model(teacher_model_name, teacher_checkpoint_path, teacher_variant, device):
+    if teacher_model_name.lower() == "none":
+        return None
+
+    logger.info(f"Creating {teacher_model_name} teacher model...")
+    teacher_model = create_teacher_model(
+        teacher_name=teacher_model_name,
+        checkpoint_path=teacher_checkpoint_path,
+        variant=teacher_variant,
+    )
+    if teacher_model is None:
+        logger.warning(f"Failed to load {teacher_model_name} teacher, training without distillation")
+        return None
+
+    teacher_model = teacher_model.to(device)
+    logger.info(f"✓ {teacher_model.model_name} teacher loaded")
+    return teacher_model
+
+
+def _create_detection_loaders(data_root, config, num_workers, seed):
+    resolved_num_workers = resolve_num_workers(num_workers)
+    train_dataset = COCOLikeDetectionDataset(data_root, split="train", image_size=config.image_size)
+    val_dataset = COCOLikeDetectionDataset(data_root, split="val", image_size=config.image_size)
+    train_loader_kwargs = {
+        "batch_size": config.batch_size,
+        "shuffle": True,
+        "pin_memory": torch.cuda.is_available(),
+        "collate_fn": _collate_coco_detection,
+        "generator": torch.Generator().manual_seed(seed),
+    }
+    val_loader_kwargs = {
+        "batch_size": config.batch_size,
+        "shuffle": False,
+        "pin_memory": torch.cuda.is_available(),
+        "collate_fn": _collate_coco_detection,
+    }
+
+    if resolved_num_workers > 0:
+        worker_options = {
+            "num_workers": resolved_num_workers,
+            "prefetch_factor": 2,
+            "persistent_workers": True,
+        }
+        train_loader_kwargs.update(worker_options)
+        val_loader_kwargs.update(worker_options)
+    else:
+        train_loader_kwargs["num_workers"] = 0
+        val_loader_kwargs["num_workers"] = 0
+
+    return DataLoader(train_dataset, **train_loader_kwargs), DataLoader(val_dataset, **val_loader_kwargs)
+
+
+def _restore_training_state(model, optimizer, save_dir, start_epoch, device):
+    if start_epoch <= 0:
+        return
+
+    checkpoint_path = Path(save_dir) / f"epoch_{start_epoch:03d}.pth"
+    assert checkpoint_path.exists(), f"Checkpoint for start_epoch={start_epoch} not found: {checkpoint_path}"
+    checkpoint = torch.load(str(checkpoint_path), map_location=device)
+    model.load_state_dict(checkpoint["model_state_dict"], strict=False)
+    if "optimizer_state_dict" in checkpoint:
+        optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+    else:
+        logger.warning("Checkpoint has no optimizer_state_dict - resuming with fresh optimizer state")
+    logger.info(f"Resuming training from epoch {start_epoch} using checkpoint: {checkpoint_path}")
+
+
 def train(
     data_root: str = "./data/kaggle/coco/coco2017/",
     variant: str = "s",
@@ -860,59 +927,8 @@ def train(
 
     Path(save_dir).mkdir(parents=True, exist_ok=True)
 
-    # Create teacher model (or None if no distillation)
-    teacher_model = None
-    if teacher_model_name.lower() != "none":
-        logger.info(f"Creating {teacher_model_name} teacher model...")
-        teacher_model = create_teacher_model(
-            teacher_name=teacher_model_name,
-            checkpoint_path=teacher_checkpoint_path,
-            variant=teacher_variant,
-        )
-        if teacher_model is not None:
-            teacher_model = teacher_model.to(device)
-            logger.info(f"✓ {teacher_model.model_name} teacher loaded")
-        else:
-            logger.warning(f"Failed to load {teacher_model_name} teacher, training without distillation")
-
-    resolved_num_workers = resolve_num_workers(num_workers)
-    train_dataset = COCOLikeDetectionDataset(data_root, split="train", image_size=config.image_size)
-    val_dataset = COCOLikeDetectionDataset(data_root, split="val", image_size=config.image_size)
-    train_loader_kwargs = {
-        "batch_size": config.batch_size,
-        "shuffle": True,
-        "pin_memory": torch.cuda.is_available(),
-        "collate_fn": _collate_coco_detection,
-        "generator": torch.Generator().manual_seed(seed),
-    }
-    val_loader_kwargs = {
-        "batch_size": config.batch_size,
-        "shuffle": False,
-        "pin_memory": torch.cuda.is_available(),
-        "collate_fn": _collate_coco_detection,
-    }
-
-    if resolved_num_workers > 0:
-        train_loader_kwargs.update(
-            {
-                "num_workers": resolved_num_workers,
-                "prefetch_factor": 2,
-                "persistent_workers": True,
-            }
-        )
-        val_loader_kwargs.update(
-            {
-                "num_workers": resolved_num_workers,
-                "prefetch_factor": 2,
-                "persistent_workers": True,
-            }
-        )
-    else:
-        train_loader_kwargs["num_workers"] = 0
-        val_loader_kwargs["num_workers"] = 0
-
-    train_loader = DataLoader(train_dataset, **train_loader_kwargs)
-    val_loader = DataLoader(val_dataset, **val_loader_kwargs)
+    teacher_model = _load_teacher_model(teacher_model_name, teacher_checkpoint_path, teacher_variant, device)
+    train_loader, val_loader = _create_detection_loaders(data_root, config, num_workers, seed)
 
     model = YOLOv8(
         num_classes=config.num_classes,
@@ -934,16 +950,7 @@ def train(
         logger.info(f"✓ Using {teacher_model.model_name} teacher - training WITH knowledge distillation")
         logger.info("  Benefit: Faster convergence, better generalization")
 
-    if start_epoch > 0:
-        checkpoint_path = Path(save_dir) / f"epoch_{start_epoch:03d}.pth"
-        assert checkpoint_path.exists(), f"Checkpoint for start_epoch={start_epoch} not found: {checkpoint_path}"
-        checkpoint = torch.load(str(checkpoint_path), map_location=device)
-        model.load_state_dict(checkpoint["model_state_dict"], strict=False)
-        if "optimizer_state_dict" in checkpoint:
-            optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-        else:
-            logger.warning("Checkpoint has no optimizer_state_dict - resuming with fresh optimizer state")
-        logger.info(f"Resuming training from epoch {start_epoch} using checkpoint: {checkpoint_path}")
+    _restore_training_state(model, optimizer, save_dir, start_epoch, device)
 
     # last_epoch=-1 means "start of schedule"; on resume we advance it to start_epoch - 1
     # so the cosine schedule continues from where it left off instead of restarting.
@@ -959,8 +966,7 @@ def train(
         running_detection_loss = 0.0
         running_distill_loss = 0.0
 
-        i_step = 0
-        for images, targets, _ in train_loader:
+        for i_step, (images, targets, _) in enumerate(train_loader, start=1):
             images = images.to(device)
             optimizer.zero_grad(set_to_none=True)
 
@@ -974,7 +980,6 @@ def train(
             running_detection_loss += float(detection_loss.item())
             running_distill_loss += float(distill_loss.item())
 
-            i_step += 1
             if max_steps > 0 and i_step >= max_steps:
                 logger.info(f"Reached max_steps={max_steps} for epoch {epoch + 1}, stopping early.")
                 break

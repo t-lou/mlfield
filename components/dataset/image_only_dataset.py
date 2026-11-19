@@ -184,7 +184,8 @@ class ImageOnlyTarDataset(_ThreadedBatchMixin, torch.utils.data.Dataset):
             handles = {}
             local.handles = handles
         if tar_idx not in handles:
-            handles[tar_idx] = open(self._tar_paths[tar_idx], "rb")
+            # Reuse a thread-local handle so seek/read pairs cannot race.
+            handles[tar_idx] = open(self._tar_paths[tar_idx], "rb")  # noqa: SIM115
         return handles[tar_idx]
 
     def _load_one(self, idx: int):

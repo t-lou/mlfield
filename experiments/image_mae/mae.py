@@ -284,11 +284,7 @@ def train(
         logger.info(f"Starting epoch {epoch}")
 
         for step, batch in enumerate(loader, start=1):
-            if isinstance(batch, (tuple, list)):
-                imgs = batch[0]
-            else:
-                imgs = batch
-
+            imgs = batch[0] if isinstance(batch, (tuple, list)) else batch
             imgs = imgs.to(device, non_blocking=True)
             optimizer.zero_grad(set_to_none=True)
 
