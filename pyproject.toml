@@ -5,17 +5,23 @@ src = ["components", "experiments", "tools"]
 
 [tool.ruff.lint]
 select = [
-    "E",   # pycodestyle
-    "F",   # pyflakes
-    "I",   # isort
-    "B",   # flake8-bugbear
-    "UP",  # pyupgrade
-    "SIM", # flake8-simplify
-    "C90", # mccabe
+    "E",    # pycodestyle
+    "F",    # pyflakes
+    "W",    # pycodestyle warnings
+    "I",    # isort
+    "A",    # flake8-builtins
+    "B",    # flake8-bugbear
+    "C90",  # mccabe
+    "DTZ",  # flake8-datetimez
+    "ISC",  # flake8-implicit-str-concat
+    "RSE",  # flake8-raise
+    "TID",  # flake8-tidy-imports
+    "UP",   # pyupgrade
+    "SIM",  # flake8-simplify
 ]
 ignore = [
-    "E501",  # formatter handles long lines
-    "B905",  # zip without strict param is sometimes intentional in data pipelines
+    "E501",  # formatter handles line wrapping
+    "B905",  # zip without strict is intentional in some data pipelines
 ]
 
 [tool.ruff.format]

@@ -20,7 +20,7 @@ def configure_logger(logger_name: str, level: str = "INFO") -> logging.Logger:
     logger.propagate = False  # Avoid duplicate logs
 
     # Build log file path
-    start_time = datetime.now().strftime("%Y%m%d_%H%M%S")
+    start_time = datetime.now().astimezone().strftime("%Y%m%d_%H%M%S")
     log_file = f"logs/{logger_name}_{start_time}.log"
 
     # Formatter

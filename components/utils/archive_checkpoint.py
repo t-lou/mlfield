@@ -50,7 +50,7 @@ def archive_existing_model(path: str):
     Archive an existing model file before training starts.
     """
     if os.path.exists(path):
-        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        timestamp = datetime.now().astimezone().strftime("%Y-%m-%d_%H-%M-%S")
         archive_dir = os.path.join(os.path.dirname(path), "archive")
         ensure_dir(archive_dir)
 

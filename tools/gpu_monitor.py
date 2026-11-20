@@ -23,7 +23,7 @@ def monitor_gpu(interval=2):
     print("Starting GPU monitor…")
     while True:
         print("\n" + "=" * 60)
-        print("GPU Status @", datetime.datetime.now().strftime("%H:%M:%S"))
+        print("GPU Status @", datetime.datetime.now().astimezone().strftime("%H:%M:%S"))
         print("=" * 60)
 
         stats = get_gpu_stats()
