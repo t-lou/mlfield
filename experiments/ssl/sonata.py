@@ -101,6 +101,8 @@ class SonataConfig:
     # cross-view correspondences (on origin_coord of up-cast points)
     match_k: int = 8
     match_radius: float = 0.32
+    # memory cap: at most this many up-cast points per loss term go through the heads / losses
+    max_loss_points: int = 20_000
     # loss weights
     mask_loss_weight: float = 2.0
     roll_mask_loss_weight: float = 2.0
@@ -379,47 +381,72 @@ class Sonata(nn.Module):
 
         # student, masked global views (same point/pooling order as the teacher's)
         sg = self._encode(self.student, gviews, masked=True)
-        s_mask_logits = self.student.mask_head(sg.feat)
+
+        # masked points (optionally sub-sampled) -> mask head; shared by mask and roll-mask loss
+        sel = self._subsample(sg.mask.nonzero().squeeze(1))
+        s_mask_logits = self.student.mask_head(sg.feat[sel])
+        sel_view, sel_scene, sel_origin = sg.view[sel], sg.scene[sel], sg.origin[sel]
 
         # 1) mask loss: same view, masked points only
-        sel = sg.mask
-        l_mask = soft_ce(s_mask_logits[sel], q_mask[sel], c.student_temp)
+        l_mask = soft_ce(s_mask_logits, q_mask[sel], c.student_temp)
 
         # 2) roll-mask loss: masked points of view v vs teacher view v+1
         roll = []
         for v in range(Vg):
             w = (v + 1) % Vg
-            ids = (sg.view == v) & sg.mask
-            idt = sg.view == w
-            ids, idt = ids.nonzero().squeeze(1), idt.nonzero().squeeze(1)
+            ids = (sel_view == v).nonzero().squeeze(1)
+            idt = (t.view == w).nonzero().squeeze(1)
             if ids.numel() == 0:
                 continue
             loss = self._matched_loss(
-                s_mask_logits[ids], q_mask[idt], sg.origin[ids], sg.scene[ids], t.origin[idt], t.scene[idt]
+                s_mask_logits[ids], q_mask[idt], sel_origin[ids], sel_scene[ids], t.origin[idt], t.scene[idt]
             )
             if loss is not None:
                 roll.append(loss)
         l_roll = self._mean(roll, s_mask_logits)
 
         # 3) unmask loss: local views vs every teacher global view
-        l_unmask = s_mask_logits.sum() * 0.0
+        # (the unmask head always participates so the parameter set is identical on every step)
+        l_unmask = sum(p.sum() for p in self.student.unmask_head.parameters()) * 0.0
         if lviews:
             sl = self._encode(self.student, lviews, masked=False)
-            s_un_logits = self.student.unmask_head(sl.feat)
+            keep = self._subsample(torch.arange(sl.feat.shape[0], device=sl.feat.device))
+            s_un_logits = self.student.unmask_head(sl.feat[keep])
+            l_view, l_scene, l_origin = sl.view[keep], sl.scene[keep], sl.origin[keep]
             un = []
             for l_ in range(len(lviews)):
-                ids = (sl.view == l_).nonzero().squeeze(1)
+                ids = (l_view == l_).nonzero().squeeze(1)
+                if ids.numel() == 0:
+                    continue
                 for w in range(Vg):
                     idt = (t.view == w).nonzero().squeeze(1)
                     loss = self._matched_loss(
-                        s_un_logits[ids], q_unmask[idt], sl.origin[ids], sl.scene[ids], t.origin[idt], t.scene[idt]
+                        s_un_logits[ids], q_unmask[idt], l_origin[ids], l_scene[ids], t.origin[idt], t.scene[idt]
                     )
                     if loss is not None:
                         un.append(loss)
-            l_unmask = self._mean(un, s_un_logits)
+            if un:
+                l_unmask = l_unmask + torch.stack(un).mean()
 
         total = c.mask_loss_weight * l_mask + c.roll_mask_loss_weight * l_roll + c.unmask_loss_weight * l_unmask
-        return dict(loss=total, mask=l_mask.detach(), roll_mask=l_roll.detach(), unmask=l_unmask.detach())
+        # collapse monitors: sharp targets (low entropy) and balanced prototype usage (-> 1.0)
+        tgt_entropy = -(q_mask * q_mask.clamp_min(1e-12).log()).sum(-1).mean()
+        usage = q_mask.mean(0)
+        usage_ppl = torch.exp(-(usage * usage.clamp_min(1e-12).log()).sum()) / usage.numel()
+        return dict(
+            loss=total,
+            mask=l_mask.detach(),
+            roll_mask=l_roll.detach(),
+            unmask=l_unmask.detach(),
+            target_entropy=tgt_entropy,
+            proto_usage=usage_ppl,
+        )
+
+    def _subsample(self, idx: torch.Tensor) -> torch.Tensor:
+        cap = self.cfg.max_loss_points
+        if cap <= 0 or idx.numel() <= cap:
+            return idx
+        return idx[torch.randperm(idx.numel(), device=idx.device)[:cap]]
 
     @torch.no_grad()
     def ema_update(self, momentum: float) -> None:
@@ -556,9 +583,9 @@ class SonataTrainer:
 
             if self.step % c.log_every == 0:
                 logger.info(
-                    "step %d | loss %.4f (mask %.4f roll %.4f unmask %.4f) | gn %.2f | lr %.2e | ema %.5f | T_t %.3f",
+                    "step %d | loss %.4f (mask %.4f roll %.4f unmask %.4f) | H_tgt %.2f usage %.2f | gn %.2f | lr %.2e | ema %.5f | T_t %.3f",
                     self.step, logs["loss"], logs["mask"], logs["roll_mask"], logs["unmask"],
-                    float(grad_norm), lr, mom, tt,
+                    logs["target_entropy"], logs["proto_usage"], float(grad_norm), lr, mom, tt,
                 )  # fmt: skip
             if self.step % c.save_every == 0 or self.step == c.max_steps:
                 self.save(os.path.join(c.out_dir, f"step_{self.step:07d}.pt"))
