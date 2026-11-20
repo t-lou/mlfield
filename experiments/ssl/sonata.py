@@ -49,7 +49,6 @@ Usage
 
 from __future__ import annotations
 
-import logging
 import math
 import os
 from collections.abc import Iterable
@@ -58,25 +57,15 @@ from dataclasses import dataclass, field, replace
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
-try:
-    from .point_transformer_v3 import (
-        Point,
-        PointTransformerV3Config,
-        PointTransformerV3Encoder,
-        build_neighbors,
-        serialize,
-    )
-except ImportError:  # running as a plain script next to point_transformer_v3.py
-    from point_transformer_v3 import (
-        Point,
-        PointTransformerV3Config,
-        PointTransformerV3Encoder,
-        build_neighbors,
-        serialize,
-    )
-
-log = logging.getLogger("sonata")
+from components.mmperc.encoder.point_transformer_v3 import (
+    Point,
+    PointTransformerV3Config,
+    PointTransformerV3Encoder,
+    build_neighbors,
+    serialize,
+)
+from components.utils.device import get_device
+from components.utils.logger import configure_logger, logger
 
 
 # --------------------------------------------------------------------------- #
@@ -418,8 +407,8 @@ class Sonata(nn.Module):
             sl = self._encode(self.student, lviews, masked=False)
             s_un_logits = self.student.unmask_head(sl.feat)
             un = []
-            for l in range(len(lviews)):
-                ids = (sl.view == l).nonzero().squeeze(1)
+            for l_ in range(len(lviews)):
+                ids = (sl.view == l_).nonzero().squeeze(1)
                 for w in range(Vg):
                     idt = (t.view == w).nonzero().squeeze(1)
                     loss = self._matched_loss(
@@ -562,11 +551,11 @@ class SonataTrainer:
                 self.opt.step()
                 self.model.ema_update(mom)
             else:
-                log.warning("step %d: non-finite grad norm, update skipped", self.step)
+                logger.warning("step %d: non-finite grad norm, update skipped", self.step)
             self.step += 1
 
             if self.step % c.log_every == 0:
-                log.info(
+                logger.info(
                     "step %d | loss %.4f (mask %.4f roll %.4f unmask %.4f) | gn %.2f | lr %.2e | ema %.5f | T_t %.3f",
                     self.step, logs["loss"], logs["mask"], logs["roll_mask"], logs["unmask"],
                     float(grad_norm), lr, mom, tt,
@@ -592,3 +581,21 @@ class SonataTrainer:
     def export_backbone(self, path: str) -> None:
         """Teacher backbone weights (what Sonata releases for downstream fine-tuning / probing)."""
         torch.save(self.model.teacher.backbone.state_dict(), path)
+
+
+if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--cfg", type=str, default=None, help="path to a SonataConfig JSON file")
+    parser.add_argument(
+        "--out", type=str, default="sonata_teacher_backbone.pt", help="output path for the teacher backbone weights"
+    )
+    args = parser.parse_args()
+
+    cfg = SonataConfig() if args.cfg is None else SonataConfig(**torch.load(args.cfg))
+    configure_logger("sonata")
+
+    device = get_device()
+
+    model = Sonata(cfg).to(device)
