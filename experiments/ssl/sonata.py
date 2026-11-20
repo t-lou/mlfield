@@ -49,9 +49,10 @@ Usage
 
 from __future__ import annotations
 
+import logging
 import math
 import os
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field, replace
 
 import torch
@@ -66,6 +67,8 @@ from components.mmperc.encoder.point_transformer_v3 import (
 )
 from components.utils.device import get_device
 from components.utils.logger import configure_logger, logger
+
+log = logging.getLogger("sonata")
 
 
 # --------------------------------------------------------------------------- #
@@ -442,6 +445,25 @@ class Sonata(nn.Module):
             proto_usage=usage_ppl,
         )
 
+    @torch.no_grad()
+    def extract_features(self, view: dict, up_levels: int | None = None, use_teacher: bool = True) -> Encoded:
+        """Downstream features for one batched view (same dict format as in training).
+
+        Runs the (teacher by default) backbone in eval mode and unpools ``up_levels`` stages
+        (default: all the way to the input resolution). With the default, ``result.feat`` is
+        (N, sum(enc_channels)) in the *input point order*. Training mode is restored afterwards.
+        """
+        net = (self.teacher if use_teacher else self.student).backbone
+        was_training = net.training
+        net.eval()
+        try:
+            data, origin, view_id, scene = concat_views([view])
+            top = net(data)
+            up = len(net.config.enc_channels) - 1 if up_levels is None else up_levels
+            return upcast(top, up, origin, view_id, scene, None)
+        finally:
+            net.train(was_training)
+
     def _subsample(self, idx: torch.Tensor) -> torch.Tensor:
         cap = self.cfg.max_loss_points
         if cap <= 0 or idx.numel() <= cap:
@@ -478,6 +500,7 @@ class SonataTrainConfig:
     teacher_temp_warmup_steps: int = 5_000
     amp: bool = True  # bf16 autocast (cuda / cpu only)
     log_every: int = 20
+    eval_every: int = 0  # 0 = never; calls ``eval_fn(model, step)`` every this many steps
     save_every: int = 2_000
     out_dir: str = "checkpoints/sonata"
     resume: str | None = None
@@ -500,8 +523,18 @@ def to_device(obj, device):
 class SonataTrainer:
     """Single-process trainer. ``loader`` is any iterable yielding the dicts described above."""
 
-    def __init__(self, model: Sonata, loader: Iterable[dict], cfg: SonataTrainConfig, device="cuda"):
+    def __init__(
+        self,
+        model: Sonata,
+        loader: Iterable[dict],
+        cfg: SonataTrainConfig,
+        device="cuda",
+        eval_fn: Callable[[Sonata, int], dict | None] | None = None,
+    ):
+        """``eval_fn(model, step) -> dict | None`` is e.g. a linear probe built on
+        ``model.extract_features``; it runs every ``cfg.eval_every`` steps and its result is logged."""
         self.model = model.to(device)
+        self.eval_fn = eval_fn
         self.loader, self.cfg, self.device = loader, cfg, torch.device(device)
         self.step = 0
         self.epoch = 0
@@ -587,6 +620,15 @@ class SonataTrainer:
                     self.step, logs["loss"], logs["mask"], logs["roll_mask"], logs["unmask"],
                     logs["target_entropy"], logs["proto_usage"], float(grad_norm), lr, mom, tt,
                 )  # fmt: skip
+            if self.eval_fn is not None and c.eval_every and self.step % c.eval_every == 0:
+                self.model.eval()
+                try:
+                    with torch.no_grad():
+                        res = self.eval_fn(self.model, self.step)
+                finally:
+                    self.model.train()
+                if res:
+                    logger.info("eval @ step %d: %s", self.step, res)
             if self.step % c.save_every == 0 or self.step == c.max_steps:
                 self.save(os.path.join(c.out_dir, f"step_{self.step:07d}.pt"))
 
