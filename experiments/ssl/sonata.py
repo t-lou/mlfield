@@ -652,15 +652,64 @@ class SonataTrainer:
         torch.save(self.model.teacher.backbone.state_dict(), path)
 
 
+def _smoke_test() -> None:
+    """Run a tiny CPU-only Sonata training step using synthetic point clouds."""
+    backbone = PointTransformerV3Config(
+        in_channels=3,
+        order=("z",),
+        enc_depths=(1, 1),
+        enc_channels=(4, 8),
+        enc_num_head=(1, 2),
+        enc_patch_size=(8, 8),
+        stride=(2,),
+        drop_path=0.0,
+        serial_depth=8,
+        stem_kernel=3,
+        enc_mode=True,
+    )
+    cfg = SonataConfig(
+        backbone=backbone,
+        up_cast_level=1,
+        num_prototypes=4,
+        head_hidden=8,
+        head_bottleneck=4,
+        mask_ratio=1.0,
+        mask_jitter=0.0,
+        match_radius=1.0,
+        max_loss_points=16,
+    )
+
+    with torch.random.fork_rng(devices=[]):
+        torch.manual_seed(0)
+        grid = torch.cartesian_prod(*(torch.arange(3) for _ in range(3)))
+        coord = grid.float() * 0.1
+        feat = torch.rand(grid.shape[0], backbone.in_channels)
+        view = dict(coord=coord, feat=feat, grid_coord=grid, batch=torch.zeros(grid.shape[0], dtype=torch.long))
+        model = Sonata(cfg)
+        losses = model({"global_views": [view, view], "local_views": [view]}, teacher_temp=0.04)
+        losses["loss"].backward()
+
+    assert all(torch.isfinite(value).all() for value in losses.values()), "Sonata smoke test produced non-finite losses"
+    assert any(p.grad is not None for p in model.student.parameters()), (
+        "Sonata smoke test produced no student gradients"
+    )
+    print("Sonata smoke test passed (CPU).")
+
+
 if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser()
+    parser.add_argument("--smoke", action="store_true", help="run a tiny CPU-only forward/backward smoke test")
     parser.add_argument("--cfg", type=str, default=None, help="path to a SonataConfig JSON file")
     parser.add_argument(
         "--out", type=str, default="sonata_teacher_backbone.pt", help="output path for the teacher backbone weights"
     )
     args = parser.parse_args()
+
+    if args.smoke:
+        _smoke_test()
+        raise SystemExit(0)
 
     cfg = SonataConfig() if args.cfg is None else SonataConfig(**torch.load(args.cfg))
     configure_logger("sonata")
