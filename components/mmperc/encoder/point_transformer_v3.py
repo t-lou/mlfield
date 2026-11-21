@@ -189,6 +189,8 @@ def build_neighbors(
         return ((bb * S + c[..., 0]) * S + c[..., 1]) * S + c[..., 2]
 
     sk, perm = _key(b, gc).sort()
+    sk = torch.cat((sk, sk.new_full((1,), torch.iinfo(sk.dtype).max)))
+    perm = torch.cat((perm, perm.new_full((1,), N)))
     r = torch.arange(-p, p + 1, device=gc.device)
     offs = torch.stack(torch.meshgrid(r, r, r, indexing="ij"), -1).reshape(-1, 3)
     out = torch.empty((N, offs.shape[0]), dtype=torch.long, device=grid_coord.device)
@@ -200,12 +202,12 @@ def build_neighbors(
         q_flat = q.reshape(-1)
         lo = torch.zeros_like(q_flat)
         hi = torch.full_like(q_flat, N)
-        for _ in range(32):
+        for _ in range(64):
             mid = (lo + hi) // 2
-            mid_key = sk[mid.clamp(max=N - 1)]
+            mid_key = sk[mid]
             lo = torch.where(mid_key < q_flat, mid + 1, lo)
             hi = torch.where(mid_key < q_flat, hi, mid)
-        pos = lo.reshape_as(q).clamp_(max=N - 1)
+        pos = lo.reshape_as(q)
         found = (sk[pos] == q) & valid
         out[:, start : start + offset_chunk.shape[0]] = torch.where(found, perm[pos], torch.full_like(pos, N)).T
     return out
