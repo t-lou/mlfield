@@ -30,6 +30,38 @@ Output: Point (dict with attribute access). `point.feat` is (N, dec_channels[0])
 input point order (or the last encoder stage if enc_mode=True). When available,
 `point.encoder_stages` contains copies of the point features and coordinates after
 each encoder resolution stage.
+
+High-level data flow (S = number of encoder stages, default 5)::
+
+    input ──► stem (SubMConv 5³ + BN + GELU)
+          ──► stage 0: serialize → neighbours → Block × enc_depths[0]
+          ──► GridPooling ──► stage 1: serialize → neighbours → Block × enc_depths[1]
+          ──► ...                                            (S - 1 pooling steps)
+          ──► [decoder, unless enc_mode] for each stage from deep to shallow:
+                GridUnpooling (back to the parent resolution) → Block × dec_depths[s]
+
+Every ``Block`` is pre-norm and consists of three residual branches:
+``xCPE`` (sparse conv for positional information) → serialized patch attention → MLP.
+
+Conventions used throughout:
+  * ``N``   number of points (or occupied voxels) at the current resolution.
+  * ``B``   number of point clouds in the batch.
+  * ``C``   channel width of the current stage.
+  * ``ps``  patch size, i.e. how many consecutive points (in serialized order) attend to
+    each other.
+  * Sparse neighbour tables use the value ``N`` as the "missing neighbour" sentinel; a
+    zero feature row is appended so that index ``N`` gathers zeros.
+
+The ``Point`` dict carries these keys over its lifetime (created by the stage that is
+named in brackets):
+  coord, feat, grid_coord, batch     (_prepare / GridPooling)
+  serial_order  (n_orders, N)        argsort of the serialization codes   (serialize)
+  serial_inverse (n_orders, N)       inverse permutation of serial_order  (serialize)
+  cloud_sizes   (B,), min_cloud      points per cloud / the smallest one  (serialize)
+  layout_cache                       per-stage cache of patch layouts     (serialize)
+  nbr           (N, k³)              submanifold neighbour table          (forward)
+  pooling_parent, pooling_inverse    link back to the finer level         (GridPooling)
+  encoder_stages                     per-stage snapshots                  (forward)
 """
 
 from collections.abc import Sequence
@@ -42,7 +74,47 @@ import torch.nn.functional as F
 
 @dataclass(frozen=True)
 class PointTransformerV3Config:
-    """Architecture and regularization settings for the PTv3 encoder."""
+    """Architecture and regularization settings for the PTv3 encoder.
+
+    Stage-wise sequences (``enc_*``) have one entry per encoder stage (``S`` entries).
+    Decoder sequences (``dec_*``) have ``S - 1`` entries and are indexed by the *encoder
+    stage they decode into*: ``dec_channels[0]`` is the width of the finest decoder
+    stage, which is also the width of the final output features.
+
+    Attributes:
+        in_channels: Number of input feature channels (``feat.shape[1]``), e.g. 6 for
+            xyz + rgb.
+        order: Serialization orders. Supported: ``"z"``, ``"hilbert"`` and their
+            ``"-trans"`` variants, which swap the axis roles (x<->z) before encoding.
+            Block ``i`` of a stage uses ``order[i % len(order)]``.
+        stride: Grid-pooling stride between consecutive stages (``S - 1`` values).
+            ``None`` means 2 for every transition.
+        enc_depths: Number of transformer blocks per encoder stage.
+        enc_channels: Channel width per encoder stage. The stem outputs
+            ``enc_channels[0]``.
+        enc_num_head: Attention heads per encoder stage (must divide the channel width).
+        enc_patch_size: Maximum patch size per encoder stage. The effective patch size is
+            clipped to the smallest cloud in the batch (see ``patch_layout``).
+        dec_depths: Number of blocks per decoder stage.
+        dec_channels: Channel width per decoder stage (finest stage first).
+        dec_num_head: Attention heads per decoder stage.
+        dec_patch_size: Maximum patch size per decoder stage.
+        mlp_ratio: Hidden width of the block MLP relative to the channel width.
+        qk_norm: Apply LayerNorm to per-head q and k (not part of canonical PTv3).
+        attn_drop: Dropout probability on attention weights (training only).
+        proj_drop: Dropout probability after the attention output projection and inside
+            the MLP.
+        drop_path: Maximum stochastic-depth rate. The rate grows linearly from 0 in the
+            first block to this value in the last block (separately for encoder and
+            decoder).
+        shuffle_orders: Randomly permute the order list for each stage during training so
+            successive blocks see different serialization orders. Ignored in eval mode.
+        serial_depth: Bits per axis for the serialization codes. Grid coordinates must lie
+            in ``[0, 2**serial_depth)``; at most 21 (int64 Morton codes). Also used as the
+            hash grid bound for neighbour lookup.
+        stem_kernel: Kernel size (odd) of the sparse convolution in the stem.
+        enc_mode: If True, build the encoder only and return the last encoder stage.
+    """
 
     in_channels: int = 6
     order: Sequence[str] = ("z", "z-trans", "hilbert", "hilbert-trans")
@@ -70,7 +142,14 @@ class PointTransformerV3Config:
 # Point container
 # --------------------------------------------------------------------------- #
 class Point(dict):
-    """dict with attribute access: point.feat, point.coord, point.batch, ..."""
+    """dict with attribute access: point.feat, point.coord, point.batch, ...
+
+    A thin container that is passed through the whole network. Layers read and write
+    entries by attribute (``point.feat = ...``) which keeps the call signatures short.
+    Missing keys raise ``AttributeError`` (not ``KeyError``) on attribute access so that
+    ``hasattr`` / ``getattr(..., default)`` behave as expected; dunder lookups are
+    rejected so copy / pickle protocols do not accidentally hit the dict.
+    """
 
     def __getattr__(self, k):
         if k.startswith("__"):
@@ -88,7 +167,13 @@ class Point(dict):
 # Serialization
 # --------------------------------------------------------------------------- #
 def _spread3(x: torch.Tensor) -> torch.Tensor:
-    """Spread 21 coordinate bits into positions separated by two zero positions."""
+    """Spread 21 coordinate bits into positions separated by two zero positions.
+
+    Bit ``i`` of ``x`` moves to bit ``3 * i`` of the result (``... b2 b1 b0`` becomes
+    ``... 00b2 00b1 00b0``), leaving room to interleave two further coordinates. Only the
+    low 21 bits are used, so the result fits into a non-negative int64 (63 bits). Written
+    with ``//`` and ``remainder`` instead of bit shifts so it runs on any backend.
+    """
     x = x.remainder(1 << 21)
     out = torch.zeros_like(x)
     for i in range(21):
@@ -97,16 +182,48 @@ def _spread3(x: torch.Tensor) -> torch.Tensor:
 
 
 def _interleave(x0, x1, x2):
+    """Morton-interleave three integer coordinates (``x0`` is the most significant axis).
+
+    The result has bit layout ``... x0_i x1_i x2_i ... x0_0 x1_0 x2_0``.
+    """
     return (_spread3(x0) * 4) + (_spread3(x1) * 2) + _spread3(x2)
 
 
 def z_order_encode(gc: torch.Tensor, depth: int) -> torch.Tensor:
+    """Z-order (Morton) code of integer grid coordinates.
+
+    Args:
+        gc: ``(N, 3)`` integer voxel coordinates.
+        depth: Bits per axis. Unused here (the interleave always spreads 21 bits) but kept
+            so that all encoders share the same signature.
+
+    Returns:
+        ``(N,)`` int64 codes; sorting by them visits the voxels along a Z-shaped curve.
+    """
     gc = gc.long()
     return _interleave(gc[:, 0], gc[:, 1], gc[:, 2])
 
 
 def hilbert_encode(gc: torch.Tensor, depth: int) -> torch.Tensor:
-    """3D Hilbert index via Skilling's transpose algorithm (vectorized, out-of-place)."""
+    """3D Hilbert index via Skilling's transpose algorithm (vectorized, out-of-place).
+
+    Compared with Z-order, the Hilbert curve never jumps: consecutive indices are always
+    spatially adjacent voxels, which gives better locality inside a patch.
+
+    Args:
+        gc: ``(N, 3)`` integer voxel coordinates in ``[0, 2**depth)``.
+        depth: Bits per axis.
+
+    Returns:
+        ``(N,)`` int64 Hilbert indices.
+
+    The algorithm works on the "transposed" Hilbert index in three steps:
+    (1) undo excess work, i.e. invert / exchange low bits for every bit plane from the
+    most significant one down, (2) Gray-encode the coordinates, (3) fix up the lowest bits
+    with a parity mask ``t``. Finally the transposed form is bit-interleaved into a single
+    integer. All per-point branches are expressed with ``torch.where`` so the code is
+    fully vectorized and never mutates its input.
+    """
     X = [gc[:, i].long() for i in range(3)]
     M = 1 << (depth - 1)
     # inverse undo excess work
@@ -137,7 +254,33 @@ def hilbert_encode(gc: torch.Tensor, depth: int) -> torch.Tensor:
 
 @torch.no_grad()
 def serialize(point: Point, order: Sequence[str], depth: int, shuffle_orders: bool) -> Point:
-    """Compute serialization orders + per-stage patch bookkeeping (cloud sizes, caches)."""
+    """Compute serialization orders + per-stage patch bookkeeping (cloud sizes, caches).
+
+    Every point gets one integer code per requested order. The batch index is placed in
+    the high bits, so sorting the codes keeps each cloud contiguous and ordered by cloud
+    id, while the low bits order the points along the space-filling curve inside a cloud.
+
+    Args:
+        point: Must contain ``grid_coord`` (N, 3) and ``batch`` (N,).
+        order: Names of the orders to compute, e.g. ``("z", "hilbert-trans")``. A
+            ``-trans`` suffix reverses the axis order (x<->z) before encoding, which yields
+            a differently oriented curve from the same base pattern.
+        depth: Bits per axis; coordinates must be in ``[0, 2**depth)`` and
+            ``depth <= 21``.
+        shuffle_orders: Randomly permute the rows of the code matrix (i.e. the assignment
+            of orders to blocks). Pass False at inference for deterministic behaviour.
+
+    Returns:
+        The same ``point`` with these entries added:
+
+        * ``serial_order``   ``(n_orders, N)``: ``argsort`` of the codes; entry ``[o, j]``
+          is the index of the point at position ``j`` of order ``o``.
+        * ``serial_inverse`` ``(n_orders, N)``: inverse permutation, i.e. the position of
+          each point in order ``o``.
+        * ``cloud_sizes``    ``(B,)``: points per cloud (ascending batch id).
+        * ``min_cloud``      smallest cloud size; upper bound for the patch size.
+        * ``layout_cache``   empty dict, filled lazily by ``patch_layout``.
+    """
     assert depth <= 21, "depth > 21 overflows int64 Morton codes"
     gc, batch = point.grid_coord.long(), point.batch.long()
     assert int(gc.min()) >= 0 and int(gc.max()) < (1 << depth), "grid_coord out of range for depth"
@@ -177,7 +320,35 @@ def build_neighbors(
     kernel_size: int = 3,
     grid_bound: int | None = None,
 ) -> torch.Tensor:
-    """(N, k^3) indices of the neighbours among occupied voxels; N marks 'missing'."""
+    """(N, k^3) indices of the neighbours among occupied voxels; N marks 'missing'.
+
+    For every voxel, look up the ``k³`` voxels of its ``k x k x k`` neighbourhood (same
+    cloud only) among the occupied ones. This is the "rulebook" of a submanifold sparse
+    convolution: the output sites equal the input sites, so only existing voxels are
+    gathered.
+
+    Lookup strategy: every voxel is packed into a single int64 key
+    ``((batch * S + x) * S + y) * S + z``; the keys are sorted once and each offset's
+    query keys are located with ``searchsorted`` (a vectorized binary search). Offsets are
+    processed in chunks of 16 to bound peak memory (``16 * N`` queries at a time).
+
+    Args:
+        grid_coord: ``(N, 3)`` integer voxel coordinates (must be >= 0).
+        batch: ``(N,)`` cloud id of every voxel.
+        kernel_size: Odd kernel size ``k``.
+        grid_bound: Side length ``S`` of the hash grid. Must exceed every coordinate
+            (plus padding). Defaults to ``max(grid_coord) + k``; passing a fixed bound
+            (e.g. ``2**serial_depth``) makes the keys independent of the data.
+
+    Returns:
+        ``(N, k³)`` long tensor. Column ``j`` corresponds to offset ``j`` of the
+        row-major ``(dx, dy, dz)`` enumeration over ``[-p, p]³`` (``p = k // 2``), the
+        same ordering that ``SubMConv3d.weight`` uses. Missing neighbours (empty voxel or
+        outside the grid) hold the sentinel ``N``.
+
+    Under ONNX export ``searchsorted`` is replaced by an explicit 64-step binary search,
+    since the operator is not exported reliably.
+    """
     assert kernel_size % 2 == 1
     N = grid_coord.shape[0]
     p = kernel_size // 2
@@ -189,7 +360,7 @@ def build_neighbors(
         return ((bb * S + c[..., 0]) * S + c[..., 1]) * S + c[..., 2]
 
     sk, perm = _key(b, gc).sort()
-    sk = torch.cat((sk, sk.new_full((1,), torch.iinfo(sk.dtype).max)))
+    sk = torch.cat((sk, sk.new_full((1,), torch.iinfo(sk.dtype).max)))  # sentinel so pos == N stays in bounds
     perm = torch.cat((perm, perm.new_full((1,), N)))
     r = torch.arange(-p, p + 1, device=gc.device)
     offs = torch.stack(torch.meshgrid(r, r, r, indexing="ij"), -1).reshape(-1, 3)
@@ -197,10 +368,11 @@ def build_neighbors(
     for start in range(0, offs.shape[0], 16):
         offset_chunk = offs[start : start + 16]
         query_coord = gc[None, :, :] + offset_chunk[:, None, :]
-        valid = ((query_coord >= 0) & (query_coord < S)).all(dim=-1)
+        valid = ((query_coord >= 0) & (query_coord < S)).all(dim=-1)  # neighbours outside the grid are missing
         q = _key(b[None, :], query_coord.clamp(0, S - 1))
         q_flat = q.reshape(-1)
         if torch.onnx.is_in_onnx_export():
+            # manual lower-bound binary search (equivalent to searchsorted, left side)
             lo = torch.zeros_like(q_flat)
             hi = torch.full_like(q_flat, N)
             for _ in range(64):
@@ -211,13 +383,31 @@ def build_neighbors(
             pos = lo.reshape_as(q)
         else:
             pos = torch.searchsorted(sk, q_flat).reshape_as(q)
-        found = (sk[pos] == q) & valid
+        found = (sk[pos] == q) & valid  # key must match exactly, otherwise the voxel is empty
         out[:, start : start + offset_chunk.shape[0]] = torch.where(found, perm[pos], torch.full_like(pos, N)).T
     return out
 
 
 class SubMConv3d(nn.Module):
-    """Submanifold sparse conv (stride 1) == spconv.SubMConv3d, via gather + matmul."""
+    """Submanifold sparse conv (stride 1) == spconv.SubMConv3d, via gather + matmul.
+
+    Output sites are identical to input sites, so the sparsity pattern never dilates.
+    Instead of a dense 3D grid, features are gathered through a precomputed neighbour
+    table (see ``build_neighbors``) and multiplied by one ``(in_dim, out_dim)`` weight
+    matrix per kernel offset:
+
+        out[i] = sum_j  feat[nbr[i, j]] @ W[j]  (+ bias)
+
+    with missing neighbours contributing zero.
+
+    Args:
+        in_dim: Input channels.
+        out_dim: Output channels.
+        kernel_size: Odd kernel size ``k``; the layer has ``k³`` offsets.
+        bias: Whether to add a learnable bias.
+
+    Weights are initialised with He-style normal noise using ``k³ * in_dim`` as fan-in.
+    """
 
     def __init__(self, in_dim: int, out_dim: int, kernel_size: int = 3, bias: bool = True):
         super().__init__()
@@ -233,11 +423,21 @@ class SubMConv3d(nn.Module):
         nn.init.normal_(self.weight, std=(2.0 / (self.k3 * in_dim)) ** 0.5)
 
     def forward(self, feat: torch.Tensor, nbr: torch.Tensor) -> torch.Tensor:
-        padded = torch.cat([feat, feat.new_zeros(1, feat.shape[1])], dim=0)
+        """Apply the sparse convolution.
+
+        Args:
+            feat: ``(N, in_dim)`` voxel features.
+            nbr: ``(N, k³)`` neighbour table from ``build_neighbors`` (sentinel ``N``).
+
+        Returns:
+            ``(N, out_dim)`` features. Offsets are processed 8 at a time so that the
+            gathered tensor ``(N, 8, in_dim)`` stays small instead of ``(N, k³, in_dim)``.
+        """
+        padded = torch.cat([feat, feat.new_zeros(1, feat.shape[1])], dim=0)  # row N = zeros for missing neighbours
         out = feat.new_zeros(feat.shape[0], self.out_dim, dtype=feat.dtype)
         for start in range(0, self.k3, 8):
             stop = min(start + 8, self.k3)
-            gathered = padded[nbr[:, start:stop]].permute(1, 0, 2)
+            gathered = padded[nbr[:, start:stop]].permute(1, 0, 2)  # (chunk, N, in_dim)
             out = out + torch.bmm(gathered, self.weight[start:stop]).sum(dim=0)
         if self.bias is not None:
             out = out + self.bias
@@ -248,7 +448,12 @@ class SubMConv3d(nn.Module):
 # Building blocks
 # --------------------------------------------------------------------------- #
 class DropPath(nn.Module):
-    """Stochastic depth, per point (as in the official code, which applies timm's DropPath to (N, C))."""
+    """Stochastic depth, per point (as in the official code, which applies timm's DropPath to (N, C)).
+
+    During training the whole residual branch is zeroed for a random subset of points
+    (probability ``p``) and surviving points are rescaled by ``1 / (1 - p)`` so the
+    expectation is unchanged. Identity in eval mode.
+    """
 
     def __init__(self, p: float = 0.0):
         super().__init__()
@@ -263,6 +468,14 @@ class DropPath(nn.Module):
 
 
 class MLP(nn.Module):
+    """Two-layer feed-forward network ``Linear -> GELU -> Linear`` with dropout.
+
+    Args:
+        dim: Input and output width.
+        hidden: Hidden width (typically ``mlp_ratio * dim``).
+        drop: Dropout probability applied after the activation and after the output layer.
+    """
+
     def __init__(self, dim, hidden, drop=0.0):
         super().__init__()
         self.fc1, self.fc2 = nn.Linear(dim, hidden), nn.Linear(hidden, dim)
@@ -273,7 +486,23 @@ class MLP(nn.Module):
 
 
 def _pad_unpad(bc: torch.Tensor, ps: int):
-    """bc: (B,) cloud sizes, all >= ps. Pad every cloud to a multiple of ps by re-using the previous patch."""
+    """bc: (B,) cloud sizes, all >= ps. Pad every cloud to a multiple of ps by re-using the previous patch.
+
+    Attention works on equally sized patches, so each cloud's length is rounded up to a
+    multiple of ``ps``. The missing slots are filled by re-using points of the preceding
+    patch of the same cloud (instead of zeros), so no mask is needed. Example with a cloud
+    of 5 points and ``ps = 4``: the padded cloud has 8 slots holding points
+    ``[0 1 2 3 | 4 1 2 3]``; the last patch therefore contains 4 valid-looking points.
+
+    Returns:
+        pad:   ``(N_pad,)`` index into the *serialized* (sorted) point sequence for every
+            padded slot.
+        unpad: ``(N,)`` position in the padded sequence of every sorted point (the
+            first/real occurrence), used to scatter results back.
+
+    Requires ``bc >= ps`` for every cloud (otherwise there is no previous patch to copy);
+    ``patch_layout`` guarantees this by clipping ``ps`` to the smallest cloud.
+    """
     dev, B = bc.device, bc.numel()
     bc_pad = (bc + ps - 1) // ps * ps
     off = F.pad(bc.cumsum(0), (1, 0))
@@ -290,7 +519,24 @@ def _pad_unpad(bc: torch.Tensor, ps: int):
 
 @torch.no_grad()
 def patch_layout(point: Point, max_patch: int, order_index: int):
-    """Cached (patch size, gather order into padded patches, scatter-back index)."""
+    """Cached (patch size, gather order into padded patches, scatter-back index).
+
+    Args:
+        point: Point with the bookkeeping from ``serialize``.
+        max_patch: Requested patch size; clipped to ``point.min_cloud``.
+        order_index: Which serialization order (row of ``serial_order``) to use.
+
+    Returns:
+        ps:      effective patch size.
+        order:   ``(N_pad,)`` original point indices laid out in padded, serialized order;
+            ``feat[order]`` can be reshaped to ``(num_patches, ps, C)``.
+        inverse: ``(N,)`` for every original point, its row in the padded layout; gathers
+            the attention output back to the original point order.
+
+    Results are memoised in ``point.layout_cache`` (keyed by order index and patch size),
+    so blocks of the same stage that share an order and patch size reuse the layout. The
+    cache lives on the ``Point`` of a stage and is reset by ``serialize``.
+    """
     ps = min(max_patch, point.min_cloud)  # a patch can't exceed the smallest cloud
     cache = point.layout_cache
     key = (order_index, ps)
@@ -307,6 +553,26 @@ def patch_layout(point: Point, max_patch: int, order_index: int):
 
 
 class SerializedAttention(nn.Module):
+    """Multi-head self-attention within patches of the serialized point sequence.
+
+    Points are sorted along a space-filling curve, cut into consecutive patches of
+    ``patch_size`` points, and full attention is computed inside each patch only. Because
+    the curve preserves locality, a patch is a compact spatial region, and the cost is
+    linear in ``N``. There is no positional encoding here; position information comes
+    from the xCPE conv in ``Block``. Padding duplicates (see ``_pad_unpad``) take part in
+    attention as ordinary points; no mask is applied.
+
+    Args:
+        dim: Channel width (must be divisible by ``heads``).
+        heads: Number of attention heads.
+        patch_size: Maximum patch size (clipped to the smallest cloud at run time).
+        order_index: Row of ``point.serial_order`` this layer uses; blocks of a stage cycle
+            through the orders so that patch borders differ from block to block.
+        qk_norm: LayerNorm over the head dimension of q and k (optional extension).
+        attn_drop: Dropout on attention probabilities (training only).
+        proj_drop: Dropout after the output projection.
+    """
+
     def __init__(self, dim, heads, patch_size, order_index, qk_norm=False, attn_drop=0.0, proj_drop=0.0):
         super().__init__()
         assert dim % heads == 0
@@ -319,6 +585,13 @@ class SerializedAttention(nn.Module):
         self.attn_drop, self.proj_drop = attn_drop, nn.Dropout(proj_drop)
 
     def forward(self, feat: torch.Tensor, point: Point) -> torch.Tensor:
+        """Args: ``feat`` (N, C) features in original point order; ``point`` with
+        serialization bookkeeping. Returns ``(N, C)`` attention output in original order.
+
+        Shape walk-through: ``(N, 3C)`` qkv -> gathered to padded serial order
+        ``(N_pad, 3C)`` -> ``(P, ps, 3, H, d)`` -> ``(3, P, H, ps, d)`` with ``P`` patches,
+        ``H`` heads, ``d = C / H``. SDPA then runs batched over ``(P, H)``.
+        """
         C = feat.shape[1]
         ps, order, inverse = patch_layout(point, self.patch_size, self.order_index)
         qkv = self.qkv(feat)[order]  # (N_pad, 3C)
@@ -326,11 +599,32 @@ class SerializedAttention(nn.Module):
         q, k, v = qkv.unbind(0)  # (P, H, ps, d)
         q, k = self.q_norm(q), self.k_norm(k)
         out = F.scaled_dot_product_attention(q, k, v, dropout_p=self.attn_drop if self.training else 0.0)
-        out = out.transpose(1, 2).reshape(-1, C)[inverse]
+        out = out.transpose(1, 2).reshape(-1, C)[inverse]  # back to (N, C) in original point order
         return self.proj_drop(self.proj(out))
 
 
 class Block(nn.Module):
+    """One PTv3 transformer block (pre-norm, three residual branches).
+
+    ``x = x + LN(Linear(SubMConv3x3x3(x)))``   xCPE: conditional positional encoding
+    ``x = x + DropPath(Attn(LN(x)))``          serialized patch attention
+    ``x = x + DropPath(MLP(LN(x)))``           feed-forward
+
+    The block reads ``point.feat`` and ``point.nbr`` (neighbour table of the current
+    resolution) plus the serialization bookkeeping, and updates ``point.feat``.
+
+    Args:
+        dim: Channel width.
+        heads: Attention heads.
+        patch_size: Maximum attention patch size.
+        order_index: Serialization order used by this block's attention.
+        mlp_ratio: MLP hidden width relative to ``dim``.
+        qk_norm: Enable q/k LayerNorm in attention.
+        attn_drop: Attention dropout.
+        proj_drop: Projection / MLP dropout.
+        drop_path: Stochastic depth rate of this specific block.
+    """
+
     def __init__(
         self,
         dim,
@@ -361,7 +655,23 @@ class Block(nn.Module):
 
 
 class GridPooling(nn.Module):
-    """Voxel pooling: Linear -> max over cells -> BN -> GELU; coords are averaged."""
+    """Voxel pooling: Linear -> max over cells -> BN -> GELU; coords are averaged.
+
+    Merges all points that fall into the same coarse voxel (``grid_coord // stride``, per
+    cloud) into one point of the next, coarser stage. Features are projected first and
+    then max-pooled per cell; continuous coordinates are averaged.
+
+    Args:
+        in_dim: Input channels.
+        out_dim: Output channels (width of the next stage).
+        stride: Integer downsampling factor of the voxel grid (>= 1).
+
+    Returns (from ``forward``): a new ``Point`` with ``feat`` (M, out_dim), ``coord``
+    (M, 3), ``grid_coord`` (M, 3) at the coarse resolution, ``batch`` (M,), plus
+    ``pooling_parent`` (the finer ``Point``) and ``pooling_inverse`` (N,) mapping each
+    fine point to its coarse cell; both are consumed by ``GridUnpooling``. The new points
+    are ordered by their packed voxel key (cloud, then x, y, z).
+    """
 
     def __init__(self, in_dim, out_dim, stride=2):
         super().__init__()
@@ -374,11 +684,12 @@ class GridPooling(nn.Module):
         gc = point.grid_coord.long() // self.stride
         b = point.batch.long()
         S = int(gc.max()) + 1
-        key = ((b * S + gc[:, 0]) * S + gc[:, 1]) * S + gc[:, 2]
+        key = ((b * S + gc[:, 0]) * S + gc[:, 1]) * S + gc[:, 2]  # unique id per (cloud, coarse voxel)
         uniq, inv, counts = torch.unique(key, return_inverse=True, return_counts=True)
         M = uniq.shape[0]
 
         feat = self.proj(point.feat)
+        # every cell has at least one point, so the -inf initial value is always overwritten
         pooled = torch.full((M, feat.shape[1]), float("-inf"), device=feat.device, dtype=feat.dtype).scatter_reduce(
             0, inv[:, None].expand_as(feat), feat, reduce="amax", include_self=True
         )
@@ -405,7 +716,22 @@ class GridPooling(nn.Module):
 
 
 class GridUnpooling(nn.Module):
-    """Decoder upsampling: parent.feat = proj_skip(parent.feat) + proj(child.feat)[inverse]."""
+    """Decoder upsampling: parent.feat = proj_skip(parent.feat) + proj(child.feat)[inverse].
+
+    Returns to the finer resolution recorded by ``GridPooling``. The coarse features are
+    projected and broadcast to every fine point of their cell (via ``pooling_inverse``),
+    then added to a projection of the fine point's own (skip-connection) features. Each
+    projection is ``Linear -> BatchNorm -> GELU``.
+
+    Args:
+        in_dim: Channels of the coarse (child) features.
+        skip_dim: Channels of the fine (parent) features, i.e. the encoder stage width.
+        out_dim: Output channels (width of the decoder stage).
+
+    Note that the parent ``Point`` is modified in place and returned: its ``feat`` is
+    replaced and its other entries (coordinates, serialization, neighbour table, link to
+    its own parent) are reused for the decoder blocks of that stage.
+    """
 
     def __init__(self, in_dim, skip_dim, out_dim):
         super().__init__()
@@ -422,6 +748,25 @@ class GridUnpooling(nn.Module):
 # Model
 # --------------------------------------------------------------------------- #
 class PointTransformerV3Encoder(nn.Module):
+    """Point Transformer V3 backbone: sparse stem, hierarchical encoder, optional decoder.
+
+    Despite its name the class also builds the U-Net decoder unless ``enc_mode=True``.
+    See ``PointTransformerV3Config`` for all hyper-parameters; the defaults reproduce the
+    canonical PTv3 layout (5 stages, depths 2-2-2-6-2, widths 32...512).
+
+    Attributes set on the instance:
+        out_channels: Width of ``output.feat`` (``dec_channels[0]``, or the last encoder
+            width when ``enc_mode=True``).
+        pools / enc: Grid poolings and encoder block lists (one list per stage).
+        dec_up / dec: Unpoolings and decoder block lists, ordered from the deepest stage
+            to the shallowest, i.e. in execution order.
+
+    Example:
+        >>> model = PointTransformerV3Encoder(PointTransformerV3Config(in_channels=6))
+        >>> out = model(dict(coord=coord, feat=feat, grid_coord=gc, batch=batch))
+        >>> out.feat.shape  # (N, 64)
+    """
+
     def __init__(self, config: PointTransformerV3Config | None = None):
         super().__init__()
         config = config or PointTransformerV3Config()
@@ -462,7 +807,9 @@ class PointTransformerV3Encoder(nn.Module):
         self.embed_conv = SubMConv3d(in_channels, enc_channels[0], stem_kernel, bias=False)
         self.embed_norm = nn.BatchNorm1d(enc_channels[0])
 
-        # encoder
+        # encoder: stage s = [GridPooling from s-1 (if s > 0)] + enc_depths[s] blocks.
+        # Stochastic-depth rates rise linearly over all encoder blocks; block i of a stage
+        # uses serialization order i % n_ord.
         dpr = torch.linspace(0, drop_path, sum(enc_depths)).tolist()
         self.pools = nn.ModuleList()
         self.enc = nn.ModuleList()
@@ -492,12 +839,14 @@ class PointTransformerV3Encoder(nn.Module):
         # decoder
         if not enc_mode:
             assert len(dec_depths) == len(dec_channels) == len(dec_num_head) == len(dec_patch_size) == n - 1
+            # dec_ch[s] = width at decoder stage s; the deepest "stage" is the encoder output
             dec_ch = list(dec_channels) + [enc_channels[-1]]
             ddpr = torch.linspace(0, drop_path, sum(dec_depths)).tolist()
             self.dec_up = nn.ModuleList()  # built from the deepest stage to the shallowest
             self.dec = nn.ModuleList()
             for s in reversed(range(n - 1)):
                 self.dec_up.append(GridUnpooling(dec_ch[s + 1], enc_channels[s], dec_ch[s]))
+                # drop-path rates of this stage's slice, reversed so the deepest blocks get the highest rate
                 dp = ddpr[sum(dec_depths[:s]) : sum(dec_depths[: s + 1])][::-1]
                 self.dec.append(
                     nn.ModuleList(
@@ -521,12 +870,19 @@ class PointTransformerV3Encoder(nn.Module):
 
     @staticmethod
     def _init_weights(m):
+        """Truncated-normal (std 0.02) init for Linear weights, zero biases.
+
+        Convolution weights keep the He-style init from ``SubMConv3d``; norm layers keep
+        their PyTorch defaults.
+        """
         if isinstance(m, nn.Linear):
             nn.init.trunc_normal_(m.weight, std=0.02)
             if m.bias is not None:
                 nn.init.zeros_(m.bias)
 
     def _prepare(self, data: dict) -> Point:
+        """Validate the input dict and turn it into a ``Point`` with ``coord``, ``feat``,
+        ``grid_coord`` and a contiguous ``batch`` vector."""
         if "coord" not in data or "feat" not in data:
             raise KeyError("data must contain 'coord' and 'feat'")
 
@@ -538,6 +894,7 @@ class PointTransformerV3Encoder(nn.Module):
         return Point(coord=coord, feat=feat, grid_coord=grid_coord, batch=batch)
 
     def _validate_coord_and_feat(self, coord: torch.Tensor, feat: torch.Tensor) -> None:
+        """Check shapes, channel count, emptiness and device agreement of coord / feat."""
         if coord.ndim != 2 or coord.shape[1] != 3:
             raise ValueError("coord must have shape (N, 3)")
         if feat.ndim != 2 or feat.shape[0] != coord.shape[0]:
@@ -551,6 +908,13 @@ class PointTransformerV3Encoder(nn.Module):
 
     @staticmethod
     def _prepare_batch(data: dict, coord: torch.Tensor) -> torch.Tensor:
+        """Return a ``(N,)`` long tensor of cloud ids.
+
+        Accepts either an explicit ``batch`` vector or cumulative ``offset`` values (e.g.
+        ``[6000, 9500]`` for two clouds of 6000 and 3500 points). Empty clouds are rejected.
+        Ids are re-mapped to the contiguous range ``0..B-1`` (order-preserving), so
+        arbitrary non-negative ids are allowed and the packed hash keys stay small.
+        """
         if "batch" in data:
             batch = data["batch"].to(device=coord.device, dtype=torch.long)
             if batch.ndim != 1 or batch.shape[0] != coord.shape[0]:
@@ -578,6 +942,12 @@ class PointTransformerV3Encoder(nn.Module):
 
     @staticmethod
     def _prepare_grid_coord(data: dict, coord: torch.Tensor, batch: torch.Tensor) -> torch.Tensor:
+        """Return ``(N, 3)`` long voxel indices.
+
+        Uses ``data["grid_coord"]`` when given. Otherwise voxelizes ``coord`` with
+        ``data["grid_size"]`` relative to each cloud's own minimum corner, so every cloud
+        starts at voxel 0. Note that several points may share a voxel in that case.
+        """
         if "grid_coord" in data:
             grid_coord = data["grid_coord"].to(device=coord.device, dtype=torch.long)
             if grid_coord.shape != coord.shape:
@@ -591,11 +961,29 @@ class PointTransformerV3Encoder(nn.Module):
             raise ValueError("grid_size must be a positive finite number")
         num_batches = int(batch.max()) + 1
         mn = torch.full((num_batches, 3), float("inf"), device=coord.device, dtype=coord.dtype)
-        mn = mn.scatter_reduce(0, batch[:, None].expand(-1, 3), coord, "amin")
+        mn = mn.scatter_reduce(0, batch[:, None].expand(-1, 3), coord, "amin")  # per-cloud minimum corner
         # small epsilon guards against float rounding for points exactly on voxel boundaries
         return torch.floor((coord - mn[batch]) / grid_size + 1e-4).long()
 
     def forward(self, data: dict) -> Point:
+        """Run the network.
+
+        Args:
+            data: Input dict (see the module docstring): ``coord``, ``feat``, and either
+                ``grid_coord`` or ``grid_size``, and either ``batch`` or ``offset``.
+
+        Returns:
+            ``Point`` whose ``feat`` is ``(N, out_channels)`` in the input point order
+            (decoder) or the coarsest-stage features (``enc_mode=True``). ``encoder_stages``
+            lists, for each encoder stage, a ``Point`` with that stage's ``feat``,
+            ``coord``, ``grid_coord``, ``batch`` and ``pooling_inverse`` (``None`` for the
+            first stage); the entries reference the tensors as they were after the
+            stage's last block and are not modified later.
+
+        Steps: (1) stem conv on the finest voxels, (2) for each stage pool (except the
+        first), serialize, build the 3x3x3 neighbour table, run the blocks, (3) unless
+        ``enc_mode``, walk back up with unpooling + decoder blocks.
+        """
         point = self._prepare(data)
         with torch.no_grad():
             grid_bound = 1 << self.serial_depth
@@ -607,6 +995,8 @@ class PointTransformerV3Encoder(nn.Module):
         for s in range(self.num_stages):
             if s > 0:
                 point = self.pools[s - 1](point)
+            # serialization and neighbour tables depend on the stage's resolution, so they are
+            # recomputed per stage and then shared by all blocks of that stage
             serialize(point, self.order, self.serial_depth, self.shuffle_orders and self.training)
             point.nbr = build_neighbors(point.grid_coord, point.batch, 3, grid_bound)
             for blk in self.enc[s]:
@@ -631,14 +1021,17 @@ class PointTransformerV3Encoder(nn.Module):
 
 
 if __name__ == "__main__":
+    # Smoke test: two random voxel clouds, encoder-only and full encoder+decoder, plus a
+    # backward pass and a parameter count.
     from components.utils.device import get_device
 
     torch.manual_seed(0)
-    gs = 0.02
+    gs = 0.02  # voxel size used to derive float coordinates from integer voxel indices
 
     device = get_device()
 
     def make_cloud(n):
+        # unique integer voxels in a 50^3 grid (one point per voxel) and matching coordinates
         g = torch.unique(torch.randint(0, 50, (n, 3)), dim=0).to(device)
         return g.float() * gs, g
 
@@ -648,6 +1041,7 @@ if __name__ == "__main__":
     grid_coord = torch.cat([g for _, g in clouds])
     data = dict(coord=coord, feat=torch.cat([coord, torch.rand_like(coord)], 1), batch=batch, grid_coord=grid_coord)
 
+    # small configuration: 4 stages, patch size 128
     config = PointTransformerV3Config(
         in_channels=6,
         enc_depths=(2, 2, 2, 2),
