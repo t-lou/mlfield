@@ -16,8 +16,8 @@ Self-distillation (DINO / DINOv2 style) with a PTv3 *encoder only* (no decoder).
         roll-mask loss  student masked view v  <-> teacher view v+1    (via correspondences)
         unmask loss     student local views    <-> teacher global views (via correspondences)
 
-Data contract (the loader is *not* part of this file)
------------------------------------------------------
+Data contract
+-------------
 Any iterable (e.g. ``torch.utils.data.DataLoader`` with your own collate_fn) yielding dicts::
 
     {
@@ -38,6 +38,10 @@ where each ``view`` is a batched point cloud dict::
                                 geometrically augmented relative to each other).
 
 Every (view, scene) pair must contain at least one point.
+
+The CLI training adapter treats the configured XYZ fields as coordinates and uses
+the other fields from the first PCD as feature channels. Later PCDs are aligned by
+field name; missing fields are zero-filled and additional fields are ignored.
 
 Usage
 -----
@@ -68,7 +72,7 @@ from components.mmperc.encoder.point_transformer_v3 import (
 )
 from components.utils.device import get_device
 from components.utils.logger import configure_logger, logger
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Dataset
 
 log = logging.getLogger("sonata")
 
@@ -651,15 +655,144 @@ class SonataTrainer:
 
     def export_backbone(self, path: str) -> None:
         """Teacher backbone weights (what Sonata releases for downstream fine-tuning / probing)."""
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
         torch.save(self.model.teacher.backbone.state_dict(), path)
 
 
-def build_test_loader(test_data_dir: str) -> DataLoader:
-    """Load raw PCD arrays in shuffled order, one point cloud per batch."""
-    dataset = PcdOnlyDataset(root_dirs=[test_data_dir])
-    if len(dataset) == 0:
-        raise ValueError(f"No .pcd files found in test data directory: {test_data_dir}")
-    return DataLoader(dataset, batch_size=1, shuffle=True)
+class SonataPCDDataset(Dataset):
+    """Convert unstructured PCD arrays into two global views and one local view."""
+
+    def __init__(
+        self,
+        root_dir: str,
+        points_per_cloud: int = 4096,
+        grid_size: float = 0.02,
+        coord_fields: tuple[str, str, str] = ("x", "y", "z"),
+    ):
+        if points_per_cloud < 1:
+            raise ValueError("points_per_cloud must be positive")
+        if not math.isfinite(grid_size) or grid_size <= 0:
+            raise ValueError("grid_size must be positive and finite")
+        if len(coord_fields) != 3:
+            raise ValueError("coord_fields must contain exactly three field names")
+
+        self.dataset = PcdOnlyDataset(root_dirs=[root_dir], include_fields=True)
+        if len(self.dataset) == 0:
+            raise ValueError(f"No .pcd files found in test data directory: {root_dir}")
+
+        first_cloud, self.fields = self.dataset[0]
+        self.fields = tuple(self.fields)
+        self.paths = self.dataset.datasets[0].pcd_paths
+        self.points_per_cloud = points_per_cloud
+        self.grid_size = grid_size
+
+        field_to_idx = {field.lower(): idx for idx, field in enumerate(self.fields)}
+        coord_names = tuple(name.strip().lower() for name in coord_fields)
+        missing = [name for name in coord_names if name not in field_to_idx]
+        if missing:
+            raise ValueError(
+                f"PCD fields {self.fields} do not include coordinate fields {coord_fields}; "
+                "use --coord-fields to specify the XYZ field names"
+            )
+        self.coord_names = coord_names
+        self.feature_fields = tuple(field for field in self.fields if field.lower() not in coord_names)
+        self.in_channels = len(self.feature_fields) or 3
+        self._warned_schemas: set[tuple[str, ...]] = set()
+        if first_cloud.ndim != 2 or first_cloud.shape[1] != len(self.fields):
+            raise ValueError(
+                f"PCD field metadata does not match data shape: fields={len(self.fields)}, shape={first_cloud.shape}"
+            )
+
+    def __len__(self):
+        return len(self.dataset)
+
+    def __getitem__(self, idx: int) -> dict:
+        array, fields = self.dataset[idx]
+        field_to_idx = {field.lower(): i for i, field in enumerate(fields)}
+        schema = tuple(field.lower() for field in fields)
+        expected_fields = {field.lower() for field in self.fields}
+        if set(schema) != expected_fields and schema not in self._warned_schemas:
+            missing = sorted(expected_fields - set(schema))
+            extra = sorted(set(schema) - expected_fields)
+            logger.warning(
+                "PCD %s has a different field schema; missing fields will be zero-filled and extra fields ignored "
+                "(missing=%s, extra=%s)",
+                self.paths[idx],
+                missing,
+                extra,
+            )
+            self._warned_schemas.add(schema)
+        if array.ndim != 2 or array.shape[1] != len(fields):
+            raise ValueError(f"PCD data shape {array.shape} does not match its {len(fields)} fields")
+
+        row_count = array.shape[0]
+        coordinates = torch.zeros((row_count, 3), dtype=torch.float32)
+        for axis, coord_field in enumerate(self.coord_names):
+            source_idx = field_to_idx.get(coord_field)
+            if source_idx is None:
+                raise ValueError(f"PCD at {self.paths[idx]} is missing coordinate field {coord_field!r}")
+            coordinates[:, axis] = torch.as_tensor(array[:, source_idx], dtype=torch.float32)
+        valid = torch.isfinite(coordinates).all(dim=1)
+        coordinates = coordinates[valid]
+        if coordinates.shape[0] == 0:
+            raise ValueError(f"PCD at {self.paths[idx]} contains no finite XYZ coordinates")
+
+        if self.feature_fields:
+            features = torch.zeros((row_count, len(self.feature_fields)), dtype=torch.float32)
+            for column, field in enumerate(self.feature_fields):
+                source_idx = field_to_idx.get(field.lower())
+                if source_idx is not None:
+                    features[:, column] = torch.as_tensor(array[:, source_idx], dtype=torch.float32)
+            features = torch.nan_to_num(features[valid])
+            features = (features - features.mean(dim=0, keepdim=True)) / features.std(
+                dim=0, keepdim=True, unbiased=False
+            ).clamp_min(1e-6)
+            features = features.clamp(-10, 10)
+        else:
+            features = coordinates
+
+        origin = coordinates - coordinates.mean(dim=0, keepdim=True)
+        count = origin.shape[0]
+        if count > self.points_per_cloud:
+            indices = torch.randperm(count)[: self.points_per_cloud]
+            origin, features = origin[indices], features[indices]
+
+        def make_view(indices: torch.Tensor) -> dict:
+            base_coord = origin[indices]
+            coord = base_coord + torch.randn_like(base_coord) * (self.grid_size * 0.1)
+            return {
+                "coord": coord,
+                "origin_coord": base_coord,
+                "feat": features[indices],
+                "grid_size": self.grid_size,
+                "batch": torch.zeros(indices.numel(), dtype=torch.long),
+            }
+
+        all_indices = torch.arange(origin.shape[0])
+        local_count = max(1, all_indices.numel() // 2)
+        local_indices = all_indices[torch.randperm(all_indices.numel())[:local_count]]
+        return {
+            "global_views": [make_view(all_indices), make_view(all_indices)],
+            "local_views": [make_view(local_indices)],
+        }
+
+
+def _single_item_collate(items: list[dict]) -> dict:
+    if len(items) != 1:
+        raise ValueError(f"Expected one PCD per batch, got {len(items)}")
+    return items[0]
+
+
+def build_train_loader(
+    data_dir: str,
+    points_per_cloud: int = 4096,
+    grid_size: float = 0.02,
+    coord_fields: tuple[str, str, str] = ("x", "y", "z"),
+) -> tuple[SonataPCDDataset, DataLoader]:
+    """Build a shuffled training loader from recursively collected PCD files."""
+    dataset = SonataPCDDataset(data_dir, points_per_cloud, grid_size, coord_fields)
+    loader = DataLoader(dataset, batch_size=1, shuffle=True, collate_fn=_single_item_collate)
+    return dataset, loader
 
 
 def _smoke_test() -> None:
@@ -718,6 +851,17 @@ if __name__ == "__main__":
         default="/Users/tlou/workspace/mlfield/data/gen",
         help="folder containing PCD test data (searched recursively)",
     )
+    parser.add_argument("--steps", type=int, default=1000, help="number of optimizer steps")
+    parser.add_argument("--points-per-cloud", type=int, default=4096, help="maximum points sampled per PCD view")
+    parser.add_argument("--grid-size", type=float, default=0.02, help="voxel size in coordinate units")
+    parser.add_argument(
+        "--coord-fields",
+        type=str,
+        default="x,y,z",
+        help="comma-separated names of the PCD coordinate fields",
+    )
+    parser.add_argument("--checkpoint-dir", type=str, default="checkpoints/sonata")
+    parser.add_argument("--resume", type=str, default=None, help="resume from a Sonata trainer checkpoint")
     parser.add_argument(
         "--out", type=str, default="sonata_teacher_backbone.pt", help="output path for the teacher backbone weights"
     )
@@ -726,16 +870,35 @@ if __name__ == "__main__":
     if args.smoke:
         _smoke_test()
         raise SystemExit(0)
+    if args.steps < 1:
+        parser.error("--steps must be positive")
 
     cfg = SonataConfig() if args.cfg is None else SonataConfig(**torch.load(args.cfg))
     configure_logger("sonata")
 
     device = get_device()
 
-    model = Sonata(cfg).to(device)
-    test_loader = build_test_loader(args.test_data_dir)
-    logger.info(
-        "Test loader ready: %d PCD files from %s (shuffled)",
-        len(test_loader.dataset),
+    coord_fields = tuple(field.strip() for field in args.coord_fields.split(","))
+    dataset, train_loader = build_train_loader(
         args.test_data_dir,
+        points_per_cloud=args.points_per_cloud,
+        grid_size=args.grid_size,
+        coord_fields=coord_fields,
     )
+    cfg = replace(cfg, backbone=replace(cfg.backbone, in_channels=dataset.in_channels))
+    trainer_cfg = SonataTrainConfig(
+        max_steps=args.steps,
+        out_dir=args.checkpoint_dir,
+        resume=args.resume,
+    )
+    trainer = SonataTrainer(Sonata(cfg), train_loader, trainer_cfg, device=device)
+    logger.info(
+        "Training on %d PCD files from %s (shuffled); feature fields=%s, input channels=%d",
+        len(dataset),
+        args.test_data_dir,
+        dataset.feature_fields,
+        dataset.in_channels,
+    )
+    trainer.fit()
+    trainer.export_backbone(args.out)
+    logger.info("Exported teacher backbone to %s", args.out)

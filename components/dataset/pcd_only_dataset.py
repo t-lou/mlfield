@@ -36,9 +36,11 @@ class PcdOnlyFolderDataset(_ThreadedBatchMixin, torch.utils.data.Dataset):
         root_dir: str,
         transform: Callable | None = None,
         prefetch_threads: int = DEFAULT_PREFETCH_THREAD,
+        include_fields: bool = False,
     ):
         self._transform = transform
         self._prefetch_threads = prefetch_threads
+        self._include_fields = include_fields
         self._pool: ThreadPoolExecutor | None = None
         self.pcd_paths = sorted(
             path for path in Path(root_dir).rglob("*") if path.is_file() and path.suffix.lower() == ".pcd"
@@ -55,7 +57,7 @@ class PcdOnlyFolderDataset(_ThreadedBatchMixin, torch.utils.data.Dataset):
         data = point_cloud.numpy()
         if self._transform:
             data = self._transform(data)
-        return data
+        return (data, tuple(point_cloud.fields)) if self._include_fields else data
 
     def __getitem__(self, idx):
         return self._load_one(idx)
@@ -64,8 +66,8 @@ class PcdOnlyFolderDataset(_ThreadedBatchMixin, torch.utils.data.Dataset):
 class PcdOnlyDataset(torch.utils.data.Dataset):
     """Combine point-cloud files from multiple folders into one dataset.
 
-    Files are expected to share the same fields. If point counts differ, use a
-    custom DataLoader collate function to pad or otherwise combine the arrays.
+    By default, samples contain only the point arrays. With ``include_fields=True``,
+    each sample also includes its field names so consumers can align varying schemas.
     """
 
     def __init__(
@@ -73,13 +75,14 @@ class PcdOnlyDataset(torch.utils.data.Dataset):
         root_dirs: list[str],
         transform: Callable | None = None,
         prefetch_threads: int = DEFAULT_PREFETCH_THREAD,
+        include_fields: bool = False,
     ):
         self.datasets: list[torch.utils.data.Dataset] = []
         for root_dir in root_dirs:
             path = Path(root_dir)
             if not path.is_dir():
                 raise ValueError(f"PCD dataset path is not a directory: {root_dir}")
-            self.datasets.append(PcdOnlyFolderDataset(root_dir, transform, prefetch_threads))
+            self.datasets.append(PcdOnlyFolderDataset(root_dir, transform, prefetch_threads, include_fields))
 
         self.dataset = torch.utils.data.ConcatDataset(self.datasets)
 
