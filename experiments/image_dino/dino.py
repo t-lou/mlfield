@@ -7,6 +7,7 @@ from components.dataset.image_only_dataset import ImageOnlyDataset
 from components.utils.config import load_yaml
 from components.utils.fps_logger import FpsLogger
 from components.utils.logger import configure_logger, logger
+from components.utils.onnx_export import export_onnx
 from components.vit.dino_defs import DINOConfig
 from components.vit.dino_session import DINOSession
 from components.vit.dino_transform import DINOTransform, dino_collate_fn
@@ -95,6 +96,15 @@ def train(config: DINOConfig, start_epoch: int = -1):
 
         dino_session.save(dir_ckpt / f"epoch_{epoch:03d}.pth")
         logger.info(f"Epoch {epoch:03d}, Loss: {loss.item():.4f}")
+
+    onnx_path = export_onnx(
+        dino_session.teacher.backbone,
+        (torch.zeros(1, 3, config.teacher_base_res, config.teacher_base_res, device=device),),
+        dir_ckpt / "image_dino_teacher_backbone.onnx",
+        input_names=("images",),
+        output_names=("cls_features",),
+    )
+    logger.info("Exported DINO teacher backbone to %s", onnx_path)
 
 
 if __name__ == "__main__":

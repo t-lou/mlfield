@@ -29,10 +29,20 @@ from components.dataset.image_only_dataset import ImageOnlyDataset
 from components.definitions.train_config import TrainConfig
 from components.utils.config import load_yaml
 from components.utils.logger import configure_logger, logger
+from components.utils.onnx_export import export_onnx
 from components.vit.mae import MAE
 from components.vit.mae_defs import MAE_MINI_CONFIG, MAEConfig
 from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
+
+
+class _EncoderExport(torch.nn.Module):
+    def __init__(self, model: MAE) -> None:
+        super().__init__()
+        self.model = model
+
+    def forward(self, images: torch.Tensor) -> torch.Tensor:
+        return self.model.forward_encoder_full(images)
 
 
 def make_dataloader_args(train_config: TrainConfig):
@@ -309,6 +319,15 @@ def train(
         checkpoint_path = get_checkpoint_path(epoch, dir_ckpts=config.train_config.dir_ckpts)
         model.save_checkpoint(checkpoint_path)
         logger.info(f"Saved checkpoint for epoch {epoch}: {checkpoint_path}")
+
+    onnx_path = export_onnx(
+        _EncoderExport(model),
+        (torch.zeros(1, config.in_chans, config.image_size, config.image_size, device=device),),
+        Path(config.train_config.dir_ckpts) / "image_mae_encoder.onnx",
+        input_names=("images",),
+        output_names=("encoded_tokens",),
+    )
+    logger.info("Exported MAE encoder to %s", onnx_path)
 
 
 def main() -> None:

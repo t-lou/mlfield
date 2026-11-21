@@ -96,6 +96,16 @@ python3 -m experiments.image_dino.dino
 runpy experiments/image_dino/dino.py
 ```
 
+### ONNX Encoder Exports
+
+After training finishes, the image DINO, I-JEPA, and MAE scripts export their inference encoders to the configured
+checkpoint directory (`image_dino_teacher_backbone.onnx`, `image_jepa_target_encoder.onnx`, and
+`image_mae_encoder.onnx`). Install `onnx` in the active environment to enable these exports. The files accept
+preprocessed NCHW images at the model's configured resolution and support a dynamic batch size.
+
+Sonata is not exported automatically: its point-transformer builds coordinate-dependent sparse neighborhoods and
+pooling graphs at runtime, which need a dedicated ONNX-compatible implementation.
+
 ---
 
 ### 📁 Dataset Configuration

@@ -11,10 +11,21 @@ from components.dataset.mask_prefetch import collate_fn_with_masks
 from components.utils.config import load_yaml
 from components.utils.fps_logger import FpsLogger
 from components.utils.logger import configure_logger, logger
+from components.utils.onnx_export import export_onnx
 from components.vit.i_jepa import I_JEPA
 from components.vit.i_jepa_defs import IJEPAConfig
+from torch import nn
 from torch.utils.data import DataLoader
 from torchvision import transforms
+
+
+class _TargetEncoderExport(nn.Module):
+    def __init__(self, model: I_JEPA) -> None:
+        super().__init__()
+        self.encoder = model.target_encoder
+
+    def forward(self, images: torch.Tensor) -> torch.Tensor:
+        return self.encoder.forward_full(images)
 
 
 def _build_transform(image_size: int):
@@ -196,6 +207,16 @@ def train(
         # SHARED FROM dino.py: epoch-level checkpointing and logging.
         _save_checkpoint(dir_ckpt / f"epoch_{epoch:03d}.pth", model, optimizer)
         logger.info(f"Epoch {epoch:03d}, Loss: {loss.item():.4f}")
+
+    model.target_encoder.eval()
+    onnx_path = export_onnx(
+        _TargetEncoderExport(model),
+        (torch.zeros(1, 3, config.image_size, config.image_size, device=device),),
+        dir_ckpt / "image_jepa_target_encoder.onnx",
+        input_names=("images",),
+        output_names=("patch_embeddings",),
+    )
+    logger.info("Exported I-JEPA target encoder to %s", onnx_path)
 
 
 if __name__ == "__main__":
