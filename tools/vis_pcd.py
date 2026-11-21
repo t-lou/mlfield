@@ -22,24 +22,50 @@ from pypcd4 import PointCloud
 
 
 def load_pcd(path: Path) -> tuple[np.ndarray, np.ndarray | None]:
-    """Return finite XYZ points and an optional finite intensity array."""
+    """Load finite XYZ coordinates and optional intensity values from a PCD.
+
+    Args:
+        path: Path to the PCD file to load.
+
+    Returns:
+        A tuple containing a contiguous ``(N, 3)`` float32 array and either a
+        contiguous ``(N,)`` intensity array or ``None``. Non-finite XYZ rows
+        (for example, placeholders in organized point clouds) are removed.
+
+    Raises:
+        FileNotFoundError: If ``path`` is not a regular file.
+        ValueError: If the PCD has no x/y/z fields or returns invalid data.
+        Exception: Other failures raised while decoding the PCD are left to the
+            caller so they can include file-specific context.
+    """
+    path = Path(path)
     if not path.is_file():
         raise FileNotFoundError(f"{path}: file does not exist")
 
-    pc = PointCloud.from_path(str(path))
+    try:
+        pc = PointCloud.from_path(str(path))
+    except Exception as exc:
+        raise ValueError(f"{path}: failed to read point cloud: {exc}") from exc
 
-    if not all(f in pc.fields for f in ("x", "y", "z")):
+    if not all(field in pc.fields for field in ("x", "y", "z")):
         raise ValueError(f"{path}: missing x/y/z fields (found {pc.fields})")
 
     has_intensity = "intensity" in pc.fields
     names = ("x", "y", "z", "intensity") if has_intensity else ("x", "y", "z")
-    data = pc.numpy(names).astype(np.float32, copy=False)
+    try:
+        data = np.asarray(pc.numpy(names))
+    except Exception as exc:
+        raise ValueError(f"{path}: failed to decode point-cloud fields: {exc}") from exc
+    try:
+        data = data.astype(np.float32, copy=False)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{path}: point-cloud fields are not numeric") from exc
     if data.ndim != 2 or data.shape[1] != len(names):
         raise ValueError(f"{path}: unexpected point-cloud data shape {data.shape}")
 
     # Organized clouds often contain NaN placeholders.
-    mask = np.isfinite(data[:, :3]).all(axis=1)
-    data = data[mask]
+    finite_xyz = np.isfinite(data[:, :3]).all(axis=1)
+    data = data[finite_xyz]
 
     xyz = np.ascontiguousarray(data[:, :3])
     intensity = data[:, 3] if has_intensity else None
@@ -50,24 +76,57 @@ def load_pcd(path: Path) -> tuple[np.ndarray, np.ndarray | None]:
 
 
 def build_mesh(xyz: np.ndarray, intensity: np.ndarray | None) -> tuple[pv.PolyData, str]:
+    """Build a PyVista point mesh and select a scalar field.
+
+    Args:
+        xyz: Point coordinates with shape ``(N, 3)``.
+        intensity: Optional intensity values with shape ``(N,)``. If the
+            array has no finite values, height is used instead.
+
+    Returns:
+        A pair of the constructed mesh and the name of its scalar field.
+
+    Raises:
+        ValueError: If XYZ or intensity has an invalid shape or size.
+    """
+    xyz = np.asarray(xyz)
     if xyz.ndim != 2 or xyz.shape[1] != 3:
         raise ValueError(f"invalid XYZ shape: {xyz.shape}")
     if len(xyz) == 0:
         raise ValueError("cannot build a mesh without points")
+    if not np.isfinite(xyz).all():
+        raise ValueError("XYZ coordinates must contain only finite values")
+
+    xyz = np.ascontiguousarray(xyz, dtype=np.float32)
 
     mesh = pv.PolyData(xyz)
-    if intensity is not None and np.isfinite(intensity).any():
-        mesh["intensity"] = intensity
-        return mesh, "intensity"
+    if intensity is not None:
+        intensity = np.asarray(intensity)
+        if intensity.ndim != 1 or len(intensity) != len(xyz):
+            raise ValueError(f"invalid intensity shape: {intensity.shape}; expected ({len(xyz)},)")
+        intensity = np.ascontiguousarray(intensity, dtype=np.float32)
+        if np.isfinite(intensity).any():
+            mesh["intensity"] = intensity
+            return mesh, "intensity"
     mesh["z"] = xyz[:, 2]
     return mesh, "z"
 
 
 def positive_float(value: str) -> float:
-    """Argparse type for values that must be greater than zero."""
+    """Parse an argparse value that must be finite and greater than zero.
+
+    Args:
+        value: String representation of a floating-point number.
+
+    Returns:
+        The validated positive number.
+
+    Raises:
+        argparse.ArgumentTypeError: If ``value`` is not a finite positive number.
+    """
     try:
         result = float(value)
-    except ValueError as exc:
+    except (TypeError, ValueError) as exc:
         raise argparse.ArgumentTypeError(f"invalid number: {value}") from exc
     if not np.isfinite(result) or result <= 0:
         raise argparse.ArgumentTypeError("value must be a finite number greater than zero")
@@ -75,9 +134,23 @@ def positive_float(value: str) -> float:
 
 
 def scalar_range(value: str) -> tuple[float, float]:
-    """Argparse type for a pair of scalar limits."""
+    """Parse an argparse scalar range in ``MIN,MAX`` form.
+
+    Args:
+        value: Comma-separated lower and upper limits.
+
+    Returns:
+        The validated ``(minimum, maximum)`` tuple.
+
+    Raises:
+        argparse.ArgumentTypeError: If the value is malformed or its limits are
+            non-finite or not strictly increasing.
+    """
     try:
-        low, high = (float(part) for part in value.split(","))
+        parts = value.split(",")
+        if len(parts) != 2:
+            raise ValueError
+        low, high = (float(part.strip()) for part in parts)
     except (TypeError, ValueError) as exc:
         raise argparse.ArgumentTypeError("expected MIN,MAX") from exc
     if not np.isfinite([low, high]).all():
@@ -87,12 +160,22 @@ def scalar_range(value: str) -> tuple[float, float]:
     return low, high
 
 
-def main() -> int:
+def parse_args() -> argparse.Namespace:
+    """Parse command-line arguments for the PCD viewer.
+
+    Returns:
+        Parsed arguments, including input paths and PyVista display options.
+    """
     ap = argparse.ArgumentParser(description="View PCD point clouds with pyvista.")
     ap.add_argument("files", nargs="+", type=Path, help="one or more .pcd files")
-    ap.add_argument("--point-size", type=positive_float, default=2.0)
-    ap.add_argument("--cmap", default="turbo", help="matplotlib colormap name")
-    ap.add_argument("--background", default="black")
+    ap.add_argument(
+        "--point-size",
+        type=positive_float,
+        default=2.0,
+        help="rendered point size (default: 2)",
+    )
+    ap.add_argument("--cmap", default="turbo", help="matplotlib colormap name (default: turbo)")
+    ap.add_argument("--background", default="black", help="plotter background color (default: black)")
     ap.add_argument("--no-axes", action="store_true", help="hide orientation axes")
     ap.add_argument("--screenshot", type=Path, help="save image and exit (off-screen)")
     ap.add_argument(
@@ -101,7 +184,19 @@ def main() -> int:
         metavar="MIN,MAX",
         help="fixed scalar range for coloring",
     )
-    args = ap.parse_args()
+    return ap.parse_args()
+
+
+def main() -> int:
+    """Load all requested clouds, render them, and return an exit status.
+
+    Invalid individual files are reported to stderr and skipped. The process
+    exits with status 1 only when no valid point-cloud data can be displayed.
+
+    Returns:
+        Zero on success, or one if no finite points were loaded.
+    """
+    args = parse_args()
 
     plotter = pv.Plotter(off_screen=args.screenshot is not None)
     try:
