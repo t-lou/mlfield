@@ -200,14 +200,17 @@ def build_neighbors(
         valid = ((query_coord >= 0) & (query_coord < S)).all(dim=-1)
         q = _key(b[None, :], query_coord.clamp(0, S - 1))
         q_flat = q.reshape(-1)
-        lo = torch.zeros_like(q_flat)
-        hi = torch.full_like(q_flat, N)
-        for _ in range(64):
-            mid = (lo + hi) // 2
-            mid_key = sk[mid]
-            lo = torch.where(mid_key < q_flat, mid + 1, lo)
-            hi = torch.where(mid_key < q_flat, hi, mid)
-        pos = lo.reshape_as(q)
+        if torch.onnx.is_in_onnx_export():
+            lo = torch.zeros_like(q_flat)
+            hi = torch.full_like(q_flat, N)
+            for _ in range(64):
+                mid = (lo + hi) // 2
+                mid_key = sk[mid]
+                lo = torch.where(mid_key < q_flat, mid + 1, lo)
+                hi = torch.where(mid_key < q_flat, hi, mid)
+            pos = lo.reshape_as(q)
+        else:
+            pos = torch.searchsorted(sk, q_flat).reshape_as(q)
         found = (sk[pos] == q) & valid
         out[:, start : start + offset_chunk.shape[0]] = torch.where(found, perm[pos], torch.full_like(pos, N)).T
     return out

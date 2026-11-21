@@ -40,8 +40,9 @@ where each ``view`` is a batched point cloud dict::
 Every (view, scene) pair must contain at least one point.
 
 The CLI training adapter treats the configured XYZ fields as coordinates and uses
-the other fields from the first PCD as feature channels. Later PCDs are aligned by
-field name; missing fields are zero-filled and additional fields are ignored.
+the other fields from the first point cloud as feature channels, excluding common
+label fields by default. Later point clouds are aligned by field name; missing
+fields are zero-filled and additional fields are ignored.
 
 Usage
 -----
@@ -76,6 +77,19 @@ from components.utils.onnx_export import export_onnx
 from torch.utils.data import DataLoader, Dataset
 
 log = logging.getLogger("sonata")
+
+DEFAULT_IGNORED_FIELDS = (
+    "label",
+    "labels",
+    "semantic",
+    "semantics",
+    "semantic_label",
+    "semantic_id",
+    "class",
+    "class_id",
+    "instance",
+    "instance_id",
+)
 
 
 # --------------------------------------------------------------------------- #
@@ -714,7 +728,7 @@ class SonataTrainer:
 
 
 class SonataPCDDataset(Dataset):
-    """Convert unstructured PCD arrays into two global views and one local view."""
+    """Convert unstructured PCD/PLY arrays into two global views and one local view."""
 
     def __init__(
         self,
@@ -722,6 +736,7 @@ class SonataPCDDataset(Dataset):
         points_per_cloud: int = 4096,
         grid_size: float = 0.02,
         coord_fields: tuple[str, str, str] = ("x", "y", "z"),
+        ignore_fields: tuple[str, ...] = DEFAULT_IGNORED_FIELDS,
     ):
         if points_per_cloud < 1:
             raise ValueError("points_per_cloud must be positive")
@@ -732,7 +747,7 @@ class SonataPCDDataset(Dataset):
 
         self.dataset = PcdOnlyDataset(root_dirs=[root_dir], include_fields=True)
         if len(self.dataset) == 0:
-            raise ValueError(f"No .pcd files found in test data directory: {root_dir}")
+            raise ValueError(f"No PCD or PLY files found in test data directory: {root_dir}")
 
         first_cloud, self.fields = self.dataset[0]
         self.fields = tuple(self.fields)
@@ -745,16 +760,20 @@ class SonataPCDDataset(Dataset):
         missing = [name for name in coord_names if name not in field_to_idx]
         if missing:
             raise ValueError(
-                f"PCD fields {self.fields} do not include coordinate fields {coord_fields}; "
+                f"Point-cloud fields {self.fields} do not include coordinate fields {coord_fields}; "
                 "use --coord-fields to specify the XYZ field names"
             )
         self.coord_names = coord_names
-        self.feature_fields = tuple(field for field in self.fields if field.lower() not in coord_names)
+        ignored_names = {name.strip().lower() for name in ignore_fields}
+        self.feature_fields = tuple(
+            field for field in self.fields if field.lower() not in coord_names and field.lower() not in ignored_names
+        )
         self.in_channels = len(self.feature_fields) or 3
         self._warned_schemas: set[tuple[str, ...]] = set()
         if first_cloud.ndim != 2 or first_cloud.shape[1] != len(self.fields):
             raise ValueError(
-                f"PCD field metadata does not match data shape: fields={len(self.fields)}, shape={first_cloud.shape}"
+                f"Point-cloud field metadata does not match data shape: "
+                f"fields={len(self.fields)}, shape={first_cloud.shape}"
             )
 
     def __len__(self):
@@ -769,7 +788,7 @@ class SonataPCDDataset(Dataset):
             missing = sorted(expected_fields - set(schema))
             extra = sorted(set(schema) - expected_fields)
             logger.warning(
-                "PCD %s has a different field schema; missing fields will be zero-filled and extra fields ignored "
+                "Point cloud %s has a different field schema; missing fields will be zero-filled and extra fields ignored "
                 "(missing=%s, extra=%s)",
                 self.paths[idx],
                 missing,
@@ -777,19 +796,19 @@ class SonataPCDDataset(Dataset):
             )
             self._warned_schemas.add(schema)
         if array.ndim != 2 or array.shape[1] != len(fields):
-            raise ValueError(f"PCD data shape {array.shape} does not match its {len(fields)} fields")
+            raise ValueError(f"Point-cloud data shape {array.shape} does not match its {len(fields)} fields")
 
         row_count = array.shape[0]
         coordinates = torch.zeros((row_count, 3), dtype=torch.float32)
         for axis, coord_field in enumerate(self.coord_names):
             source_idx = field_to_idx.get(coord_field)
             if source_idx is None:
-                raise ValueError(f"PCD at {self.paths[idx]} is missing coordinate field {coord_field!r}")
+                raise ValueError(f"Point cloud at {self.paths[idx]} is missing coordinate field {coord_field!r}")
             coordinates[:, axis] = torch.as_tensor(array[:, source_idx], dtype=torch.float32)
         valid = torch.isfinite(coordinates).all(dim=1)
         coordinates = coordinates[valid]
         if coordinates.shape[0] == 0:
-            raise ValueError(f"PCD at {self.paths[idx]} contains no finite XYZ coordinates")
+            raise ValueError(f"Point cloud at {self.paths[idx]} contains no finite XYZ coordinates")
 
         if self.feature_fields:
             features = torch.zeros((row_count, len(self.feature_fields)), dtype=torch.float32)
@@ -833,7 +852,7 @@ class SonataPCDDataset(Dataset):
 
 def _single_item_collate(items: list[dict]) -> dict:
     if len(items) != 1:
-        raise ValueError(f"Expected one PCD per batch, got {len(items)}")
+        raise ValueError(f"Expected one point cloud per batch, got {len(items)}")
     return items[0]
 
 
@@ -842,9 +861,10 @@ def build_train_loader(
     points_per_cloud: int = 4096,
     grid_size: float = 0.02,
     coord_fields: tuple[str, str, str] = ("x", "y", "z"),
+    ignore_fields: tuple[str, ...] = DEFAULT_IGNORED_FIELDS,
 ) -> tuple[SonataPCDDataset, DataLoader]:
-    """Build a shuffled training loader from recursively collected PCD files."""
-    dataset = SonataPCDDataset(data_dir, points_per_cloud, grid_size, coord_fields)
+    """Build a shuffled training loader from recursively collected PCD/PLY files."""
+    dataset = SonataPCDDataset(data_dir, points_per_cloud, grid_size, coord_fields, ignore_fields)
     loader = DataLoader(dataset, batch_size=1, shuffle=True, collate_fn=_single_item_collate)
     return dataset, loader
 
@@ -935,22 +955,28 @@ if __name__ == "__main__":
     parser.add_argument(
         "--test-data-dir",
         type=str,
-        default="/Users/tlou/workspace/mlfield/data/gen",
-        help="folder containing PCD test data (searched recursively)",
+        default="./data/gen",
+        help="folder containing PCD/PLY point clouds (searched recursively)",
     )
     parser.add_argument("--steps", type=int, default=1000, help="number of optimizer steps")
     parser.add_argument(
         "--points-per-cloud",
         type=int,
         default=4096,
-        help="maximum points sampled per PCD view and fixed ONNX input point count",
+        help="maximum points sampled per point-cloud view and fixed ONNX input point count",
     )
     parser.add_argument("--grid-size", type=float, default=0.02, help="voxel size in coordinate units")
     parser.add_argument(
         "--coord-fields",
         type=str,
         default="x,y,z",
-        help="comma-separated names of the PCD coordinate fields",
+        help="comma-separated names of the point-cloud coordinate fields",
+    )
+    parser.add_argument(
+        "--ignore-fields",
+        type=str,
+        default=",".join(DEFAULT_IGNORED_FIELDS),
+        help="comma-separated point-cloud fields excluded from features (default: common labels)",
     )
     parser.add_argument("--checkpoint-dir", type=str, default="checkpoints/sonata")
     parser.add_argument("--resume", type=str, default=None, help="resume from a Sonata trainer checkpoint")
@@ -986,6 +1012,7 @@ if __name__ == "__main__":
         points_per_cloud=points_per_cloud,
         grid_size=args.grid_size,
         coord_fields=coord_fields,
+        ignore_fields=tuple(field.strip() for field in args.ignore_fields.split(",") if field.strip()),
     )
     cfg = replace(cfg, backbone=replace(cfg.backbone, in_channels=dataset.in_channels))
     trainer_cfg = SonataTrainConfig(
@@ -995,7 +1022,7 @@ if __name__ == "__main__":
     )
     trainer = SonataTrainer(Sonata(cfg), train_loader, trainer_cfg, device=device)
     logger.info(
-        "Training on %d PCD files from %s (shuffled); feature fields=%s, input channels=%d",
+        "Training on %d point-cloud files from %s (shuffled); feature fields=%s, input channels=%d",
         len(dataset),
         args.test_data_dir,
         dataset.feature_fields,
