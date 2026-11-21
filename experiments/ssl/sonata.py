@@ -72,6 +72,7 @@ from components.mmperc.encoder.point_transformer_v3 import (
 )
 from components.utils.device import get_device
 from components.utils.logger import configure_logger, logger
+from components.utils.onnx_export import export_onnx
 from torch.utils.data import DataLoader, Dataset
 
 log = logging.getLogger("sonata")
@@ -147,6 +148,32 @@ class SonataBackbone(PointTransformerV3Encoder):
             for blk in self.enc[s]:
                 point = blk(point)
         return point
+
+
+class SonataBackboneExport(nn.Module):
+    """Tensor-only adapter for exporting a Sonata backbone to ONNX."""
+
+    def __init__(self, backbone: SonataBackbone):
+        super().__init__()
+        self.backbone = backbone
+        self.backbone.order = ["z"]
+
+    def forward(
+        self,
+        coord: torch.Tensor,
+        feat: torch.Tensor,
+        grid_coord: torch.Tensor,
+        batch: torch.Tensor,
+    ) -> torch.Tensor:
+        point = self.backbone(
+            {
+                "coord": coord,
+                "feat": feat,
+                "grid_coord": grid_coord,
+                "batch": batch,
+            }
+        )
+        return point.feat
 
 
 class PrototypeHead(nn.Module):
@@ -661,6 +688,23 @@ class SonataTrainer:
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
         torch.save(self.model.teacher.backbone.state_dict(), path)
 
+    def export_backbone_onnx(self, path: str, in_channels: int, num_points: int = 128) -> None:
+        """Export the teacher backbone through a tensor-only ONNX adapter."""
+        grid = torch.cartesian_prod(*(torch.arange(4, device=self.device) for _ in range(3)))[:num_points]
+        coord = grid.to(dtype=torch.float32)
+        feat = torch.zeros((grid.shape[0], in_channels), dtype=torch.float32, device=self.device)
+        grid_coord = grid.to(dtype=torch.long)
+        batch = torch.zeros(grid.shape[0], dtype=torch.long, device=self.device)
+        coord = coord.to(self.device)
+        exported = SonataBackboneExport(self.model.teacher.backbone).to(self.device)
+        export_onnx(
+            exported,
+            (coord, feat, grid_coord, batch),
+            path,
+            input_names=("coord", "features", "grid_coord", "batch"),
+            output_names=("encoded_features",),
+        )
+
 
 class SonataPCDDataset(Dataset):
     """Convert unstructured PCD arrays into two global views and one local view."""
@@ -901,6 +945,12 @@ if __name__ == "__main__":
     parser.add_argument(
         "--out", type=str, default="sonata_teacher_backbone.pt", help="output path for the teacher backbone weights"
     )
+    parser.add_argument(
+        "--onnx-out",
+        type=str,
+        default="sonata_teacher_backbone.onnx",
+        help="output path for the teacher backbone ONNX model (set empty to disable)",
+    )
     args = parser.parse_args()
 
     if args.smoke:
@@ -942,3 +992,6 @@ if __name__ == "__main__":
     trainer.fit()
     trainer.export_backbone(args.out)
     logger.info("Exported teacher backbone to %s", args.out)
+    if args.onnx_out:
+        trainer.export_backbone_onnx(args.onnx_out, in_channels=dataset.in_channels)
+        logger.info("Exported teacher backbone ONNX to %s", args.onnx_out)

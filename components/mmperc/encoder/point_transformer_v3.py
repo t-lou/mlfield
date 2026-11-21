@@ -88,18 +88,16 @@ class Point(dict):
 # Serialization
 # --------------------------------------------------------------------------- #
 def _spread3(x: torch.Tensor) -> torch.Tensor:
-    """Spread the lower 21 bits of x so that there are two zero bits between each."""
-    x = x & 0x1FFFFF
-    x = (x | (x << 32)) & 0x1F00000000FFFF
-    x = (x | (x << 16)) & 0x1F0000FF0000FF
-    x = (x | (x << 8)) & 0x100F00F00F00F00F
-    x = (x | (x << 4)) & 0x10C30C30C30C30C3
-    x = (x | (x << 2)) & 0x1249249249249249
-    return x
+    """Spread 21 coordinate bits into positions separated by two zero positions."""
+    x = x.remainder(1 << 21)
+    out = torch.zeros_like(x)
+    for i in range(21):
+        out = out + ((x // (1 << i)).remainder(2) * (1 << (3 * i)))
+    return out
 
 
 def _interleave(x0, x1, x2):
-    return (_spread3(x0) << 2) | (_spread3(x1) << 1) | _spread3(x2)
+    return (_spread3(x0) * 4) + (_spread3(x1) * 2) + _spread3(x2)
 
 
 def z_order_encode(gc: torch.Tensor, depth: int) -> torch.Tensor:
@@ -154,7 +152,7 @@ def serialize(point: Point, order: Sequence[str], depth: int, shuffle_orders: bo
             c = hilbert_encode(g, depth)
         else:
             raise ValueError(f"unknown order {o}")
-        codes.append((batch << (3 * depth)) | c)  # batch in the high bits keeps clouds contiguous
+        codes.append((batch * (1 << (3 * depth))) + c)  # batch in the high bits keeps clouds contiguous
     codes = torch.stack(codes)
     if shuffle_orders:
         codes = codes[torch.randperm(codes.shape[0], device=codes.device)]
@@ -162,8 +160,7 @@ def serialize(point: Point, order: Sequence[str], depth: int, shuffle_orders: bo
     inverse = torch.empty_like(perm).scatter_(1, perm, torch.arange(perm.shape[1], device=perm.device).expand_as(perm))
     point.serial_order, point.serial_inverse = perm, inverse
     # per-stage patch bookkeeping; clouds appear in ascending batch id in the sorted order
-    sizes = torch.bincount(batch)
-    sizes = sizes[sizes > 0]
+    _, sizes = torch.unique(batch, sorted=True, return_counts=True)
     point.cloud_sizes = sizes
     point.min_cloud = int(sizes.min())
     point.layout_cache = {}
@@ -200,7 +197,15 @@ def build_neighbors(
         query_coord = gc[None, :, :] + offset_chunk[:, None, :]
         valid = ((query_coord >= 0) & (query_coord < S)).all(dim=-1)
         q = _key(b[None, :], query_coord.clamp(0, S - 1))
-        pos = torch.searchsorted(sk, q.reshape(-1)).reshape_as(q).clamp_(max=N - 1)
+        q_flat = q.reshape(-1)
+        lo = torch.zeros_like(q_flat)
+        hi = torch.full_like(q_flat, N)
+        for _ in range(32):
+            mid = (lo + hi) // 2
+            mid_key = sk[mid.clamp(max=N - 1)]
+            lo = torch.where(mid_key < q_flat, mid + 1, lo)
+            hi = torch.where(mid_key < q_flat, hi, mid)
+        pos = lo.reshape_as(q).clamp_(max=N - 1)
         found = (sk[pos] == q) & valid
         out[:, start : start + offset_chunk.shape[0]] = torch.where(found, perm[pos], torch.full_like(pos, N)).T
     return out
@@ -369,8 +374,8 @@ class GridPooling(nn.Module):
         M = uniq.shape[0]
 
         feat = self.proj(point.feat)
-        pooled = torch.zeros(M, feat.shape[1], device=feat.device, dtype=feat.dtype).scatter_reduce(
-            0, inv[:, None].expand_as(feat), feat, reduce="amax", include_self=False
+        pooled = torch.full((M, feat.shape[1]), float("-inf"), device=feat.device, dtype=feat.dtype).scatter_reduce(
+            0, inv[:, None].expand_as(feat), feat, reduce="amax", include_self=True
         )
         coord = torch.zeros(M, 3, device=feat.device, dtype=point.coord.dtype).index_add_(0, inv, point.coord)
         coord = coord / counts[:, None].to(coord.dtype)
