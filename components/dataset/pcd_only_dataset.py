@@ -78,6 +78,8 @@ class _ThreadedBatchMixin:
         return self._pool
 
     def __getitems__(self, indices: list[int]):
+        if len(indices) < 2:
+            return [self._load_one(idx) for idx in indices]
         return list(self._get_pool().map(self._load_one, indices))
 
     def __getstate__(self):

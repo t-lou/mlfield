@@ -32,6 +32,8 @@ class _ThreadedBatchMixin:
         return self._pool
 
     def __getitems__(self, indices: list[int]):
+        if len(indices) < 2:
+            return [self._load_one(idx) for idx in indices]
         pool = self._get_pool()
         return list(pool.map(self._load_one, indices))
 
@@ -55,12 +57,17 @@ class ImageOnlyFolderDataset(_ThreadedBatchMixin, torch.utils.data.Dataset):
         self._prefetch_threads = prefetch_threads
         self._pool: ThreadPoolExecutor | None = None
 
-        glob_patterns = tuple(f"*{ext}" for ext in EXTS)
         self.image_paths = []
         for root_dir in root_dirs:
-            for pattern in glob_patterns:
-                self.image_paths.extend(Path(root_dir).rglob(pattern))
-            logger.info(f"Collected {len(self.image_paths)} images until {root_dir}")
+            paths_by_extension = {ext: [] for ext in EXTS}
+            root_count = 0
+            for path in Path(root_dir).rglob("*"):
+                if path.is_file() and path.suffix in paths_by_extension:
+                    paths_by_extension[path.suffix].append(path)
+                    root_count += 1
+            for ext in EXTS:
+                self.image_paths.extend(paths_by_extension[ext])
+            logger.info(f"Collected {root_count} images from {root_dir}")
 
     def __len__(self):
         return len(self.image_paths)
@@ -99,9 +106,13 @@ class ImageOnlyZipDataset(_ThreadedBatchMixin, torch.utils.data.Dataset):
         self.index: list[tuple[int, str]] = []
         for zi, zp in enumerate(zip_paths):
             with zipfile.ZipFile(zp) as zf:
-                names = [n for n in zf.namelist() if n.lower().endswith(EXTS)]
-                methods = {info.compress_type for info in zf.infolist() if info.filename in names}
-                unsupported = methods - {zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED}
+                names: list[str] = []
+                unsupported: set[int] = set()
+                for info in zf.infolist():
+                    if info.filename.lower().endswith(EXTS):
+                        names.append(info.filename)
+                        if info.compress_type not in {zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED}:
+                            unsupported.add(info.compress_type)
                 if unsupported:
                     raise ValueError(f"{zp} uses unsupported compression: {unsupported}")
                 self.index.extend((zi, n) for n in names)
