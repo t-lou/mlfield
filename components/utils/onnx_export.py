@@ -1,4 +1,4 @@
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 import torch
@@ -11,8 +11,9 @@ def export_onnx(
     path: str | Path,
     input_names: Sequence[str],
     output_names: Sequence[str],
+    dynamic_axes: Mapping[str, Mapping[int, str]] | None = None,
 ) -> Path:
-    """Export a tensor-in/tensor-out inference model with a dynamic batch axis."""
+    """Export tensor inputs/outputs with a dynamic batch axis unless axes are specified."""
     if not sample_inputs or len(sample_inputs) != len(input_names):
         raise ValueError("Provide one input name for every sample input tensor")
     if not output_names:
@@ -26,7 +27,9 @@ def export_onnx(
     output_path = Path(path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     temporary_path = output_path.with_name(f".{output_path.name}.tmp")
-    dynamic_axes = {name: {0: "batch"} for name in (*input_names, *output_names)}
+    export_dynamic_axes = (
+        {name: {0: "batch"} for name in (*input_names, *output_names)} if dynamic_axes is None else dict(dynamic_axes)
+    )
     module_modes = tuple((module, module.training) for module in model.modules())
     mha_fastpath_enabled = torch.backends.mha.get_fastpath_enabled()
     model.eval()
@@ -39,7 +42,7 @@ def export_onnx(
                 str(temporary_path),
                 input_names=list(input_names),
                 output_names=list(output_names),
-                dynamic_axes=dynamic_axes,
+                dynamic_axes=export_dynamic_axes or None,
                 opset_version=17,
                 dynamo=False,
                 external_data=False,

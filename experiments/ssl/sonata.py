@@ -160,14 +160,13 @@ class SonataBackboneExport(nn.Module):
 
     def forward(
         self,
-        coord: torch.Tensor,
         feat: torch.Tensor,
         grid_coord: torch.Tensor,
         batch: torch.Tensor,
     ) -> torch.Tensor:
         point = self.backbone(
             {
-                "coord": coord,
+                "coord": grid_coord.to(dtype=feat.dtype),
                 "feat": feat,
                 "grid_coord": grid_coord,
                 "batch": batch,
@@ -688,21 +687,29 @@ class SonataTrainer:
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
         torch.save(self.model.teacher.backbone.state_dict(), path)
 
-    def export_backbone_onnx(self, path: str, in_channels: int, num_points: int = 128) -> None:
-        """Export the teacher backbone through a tensor-only ONNX adapter."""
-        grid = torch.cartesian_prod(*(torch.arange(4, device=self.device) for _ in range(3)))[:num_points]
-        coord = grid.to(dtype=torch.float32)
+    def export_backbone_onnx(self, path: str, in_channels: int, num_points: int = 4096) -> None:
+        """Export the teacher backbone with a fixed number of input points."""
+        if num_points < 1:
+            raise ValueError("num_points must be positive")
+        side = math.ceil(num_points ** (1 / 3))
+        if side > 1 << self.model.teacher.backbone.serial_depth:
+            raise ValueError("num_points exceeds the backbone's serial grid capacity")
+        point_ids = torch.arange(num_points, device=self.device)
+        grid = torch.stack(
+            (point_ids // (side * side), (point_ids // side) % side, point_ids % side),
+            dim=1,
+        )
         feat = torch.zeros((grid.shape[0], in_channels), dtype=torch.float32, device=self.device)
         grid_coord = grid.to(dtype=torch.long)
         batch = torch.zeros(grid.shape[0], dtype=torch.long, device=self.device)
-        coord = coord.to(self.device)
         exported = SonataBackboneExport(self.model.teacher.backbone).to(self.device)
         export_onnx(
             exported,
-            (coord, feat, grid_coord, batch),
+            (feat, grid_coord, batch),
             path,
-            input_names=("coord", "features", "grid_coord", "batch"),
+            input_names=("features", "grid_coord", "batch"),
             output_names=("encoded_features",),
+            dynamic_axes={},
         )
 
 
@@ -932,7 +939,12 @@ if __name__ == "__main__":
         help="folder containing PCD test data (searched recursively)",
     )
     parser.add_argument("--steps", type=int, default=1000, help="number of optimizer steps")
-    parser.add_argument("--points-per-cloud", type=int, default=4096, help="maximum points sampled per PCD view")
+    parser.add_argument(
+        "--points-per-cloud",
+        type=int,
+        default=4096,
+        help="maximum points sampled per PCD view and fixed ONNX input point count",
+    )
     parser.add_argument("--grid-size", type=float, default=0.02, help="voxel size in coordinate units")
     parser.add_argument(
         "--coord-fields",
@@ -993,5 +1005,9 @@ if __name__ == "__main__":
     trainer.export_backbone(args.out)
     logger.info("Exported teacher backbone to %s", args.out)
     if args.onnx_out:
-        trainer.export_backbone_onnx(args.onnx_out, in_channels=dataset.in_channels)
+        trainer.export_backbone_onnx(
+            args.onnx_out,
+            in_channels=dataset.in_channels,
+            num_points=points_per_cloud,
+        )
         logger.info("Exported teacher backbone ONNX to %s", args.onnx_out)
