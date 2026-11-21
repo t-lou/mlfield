@@ -46,7 +46,7 @@ field name; missing fields are zero-filled and additional fields are ignored.
 Usage
 -----
     model = Sonata(SonataConfig())
-    trainer = SonataTrainer(model, loader, SonataTrainConfig(max_steps=100_000), device="cuda")
+    trainer = SonataTrainer(model, loader, SonataTrainConfig(max_steps=100_000))
     trainer.fit()
     trainer.export_backbone("sonata_teacher_backbone.pt")   # teacher weights for downstream use
 """
@@ -504,7 +504,7 @@ class SonataTrainConfig:
     teacher_temp_start: float = 0.04
     teacher_temp_end: float = 0.07
     teacher_temp_warmup_steps: int = 5_000
-    amp: bool = True  # bf16 autocast (cuda / cpu only)
+    amp: bool = True  # mixed-precision autocast
     log_every: int = 20
     eval_every: int = 0  # 0 = never; calls ``eval_fn(model, step)`` every this many steps
     save_every: int = 2_000
@@ -534,11 +534,13 @@ class SonataTrainer:
         model: Sonata,
         loader: Iterable[dict],
         cfg: SonataTrainConfig,
-        device="cuda",
+        device: str | torch.device | None = None,
         eval_fn: Callable[[Sonata, int], dict | None] | None = None,
     ):
         """``eval_fn(model, step) -> dict | None`` is e.g. a linear probe built on
         ``model.extract_features``; it runs every ``cfg.eval_every`` steps and its result is logged."""
+        if device is None:
+            device = get_device()
         self.model = model.to(device)
         self.eval_fn = eval_fn
         self.loader, self.cfg, self.device = loader, cfg, torch.device(device)
@@ -595,7 +597,8 @@ class SonataTrainer:
     def fit(self) -> None:
         c = self.cfg
         self.model.train()
-        use_amp = c.amp and self.device.type in ("cuda", "cpu")
+        use_amp = c.amp
+        amp_dtype = torch.float16 if self.device.type == "mps" else torch.bfloat16
         it = iter(self.loader)
         student_params = list(self.model.student.parameters())
 
@@ -606,7 +609,7 @@ class SonataTrainer:
             for _ in range(c.grad_accum_steps):
                 batch, it = self._next_batch(it)
                 batch = to_device(batch, self.device)
-                with torch.autocast(self.device.type, dtype=torch.bfloat16, enabled=use_amp):
+                with torch.autocast(self.device.type, dtype=amp_dtype, enabled=use_amp):
                     out = self.model(batch, teacher_temp=tt)
                 (out["loss"] / c.grad_accum_steps).backward()
                 for k, v in out.items():
@@ -796,7 +799,7 @@ def build_train_loader(
 
 
 def _smoke_test() -> None:
-    """Run a tiny CPU-only Sonata training step using synthetic point clouds."""
+    """Run a tiny Sonata training step on the best available device."""
     backbone = PointTransformerV3Config(
         in_channels=3,
         order=("z",),
@@ -822,28 +825,33 @@ def _smoke_test() -> None:
         max_loss_points=16,
     )
 
-    with torch.random.fork_rng(devices=[]):
-        torch.manual_seed(0)
-        grid = torch.cartesian_prod(*(torch.arange(3) for _ in range(3)))
-        coord = grid.float() * 0.1
-        feat = torch.rand(grid.shape[0], backbone.in_channels)
-        view = dict(coord=coord, feat=feat, grid_coord=grid, batch=torch.zeros(grid.shape[0], dtype=torch.long))
-        model = Sonata(cfg)
-        losses = model({"global_views": [view, view], "local_views": [view]}, teacher_temp=0.04)
-        losses["loss"].backward()
+    device = get_device()
+    torch.manual_seed(0)
+    grid = torch.cartesian_prod(*(torch.arange(3) for _ in range(3))).to(device)
+    coord = grid.float() * 0.1
+    feat = torch.rand(grid.shape[0], backbone.in_channels, device=device)
+    view = dict(
+        coord=coord,
+        feat=feat,
+        grid_coord=grid,
+        batch=torch.zeros(grid.shape[0], dtype=torch.long, device=device),
+    )
+    model = Sonata(cfg).to(device)
+    losses = model({"global_views": [view, view], "local_views": [view]}, teacher_temp=0.04)
+    losses["loss"].backward()
 
     assert all(torch.isfinite(value).all() for value in losses.values()), "Sonata smoke test produced non-finite losses"
     assert any(p.grad is not None for p in model.student.parameters()), (
         "Sonata smoke test produced no student gradients"
     )
-    print("Sonata smoke test passed (CPU).")
+    print(f"Sonata smoke test passed ({device}).")
 
 
 if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--smoke", action="store_true", help="run a tiny CPU-only forward/backward smoke test")
+    parser.add_argument("--smoke", action="store_true", help="run a tiny forward/backward smoke test")
     parser.add_argument("--cfg", type=str, default=None, help="path to a SonataConfig JSON file")
     parser.add_argument(
         "--test-data-dir",
