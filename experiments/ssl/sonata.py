@@ -847,11 +847,39 @@ def _smoke_test() -> None:
     print(f"Sonata smoke test passed ({device}).")
 
 
+def _small_gpu_profile(cfg: SonataConfig) -> SonataConfig:
+    """Reduce model and loss memory for short test runs on small GPUs."""
+    backbone = replace(
+        cfg.backbone,
+        order=("z",),
+        stride=(2, 2, 2),
+        enc_depths=(1, 1, 1, 1),
+        enc_channels=(16, 32, 64, 128),
+        enc_num_head=(2, 4, 8, 16),
+        enc_patch_size=(256,) * 4,
+        stem_kernel=3,
+    )
+    return replace(
+        cfg,
+        backbone=backbone,
+        up_cast_level=min(cfg.up_cast_level, 3),
+        num_prototypes=min(cfg.num_prototypes, 256),
+        head_hidden=min(cfg.head_hidden, 256),
+        head_bottleneck=min(cfg.head_bottleneck, 64),
+        max_loss_points=2_048,
+    )
+
+
 if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--smoke", action="store_true", help="run a tiny forward/backward smoke test")
+    parser.add_argument(
+        "--small-gpu",
+        action="store_true",
+        help="use a compact model and at most 1024 points per cloud for small-GPU test runs",
+    )
     parser.add_argument("--cfg", type=str, default=None, help="path to a SonataConfig JSON file")
     parser.add_argument(
         "--test-data-dir",
@@ -882,6 +910,10 @@ if __name__ == "__main__":
         parser.error("--steps must be positive")
 
     cfg = SonataConfig() if args.cfg is None else SonataConfig(**torch.load(args.cfg))
+    points_per_cloud = args.points_per_cloud
+    if args.small_gpu:
+        cfg = _small_gpu_profile(cfg)
+        points_per_cloud = min(points_per_cloud, 1024)
     configure_logger("sonata")
 
     device = get_device()
@@ -889,7 +921,7 @@ if __name__ == "__main__":
     coord_fields = tuple(field.strip() for field in args.coord_fields.split(","))
     dataset, train_loader = build_train_loader(
         args.test_data_dir,
-        points_per_cloud=args.points_per_cloud,
+        points_per_cloud=points_per_cloud,
         grid_size=args.grid_size,
         coord_fields=coord_fields,
     )
