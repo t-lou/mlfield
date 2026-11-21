@@ -58,6 +58,7 @@ from dataclasses import dataclass, field, replace
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from components.dataset.pcd_only_dataset import PcdOnlyDataset
 from components.mmperc.encoder.point_transformer_v3 import (
     Point,
     PointTransformerV3Config,
@@ -67,6 +68,7 @@ from components.mmperc.encoder.point_transformer_v3 import (
 )
 from components.utils.device import get_device
 from components.utils.logger import configure_logger, logger
+from torch.utils.data import DataLoader
 
 log = logging.getLogger("sonata")
 
@@ -652,6 +654,14 @@ class SonataTrainer:
         torch.save(self.model.teacher.backbone.state_dict(), path)
 
 
+def build_test_loader(test_data_dir: str) -> DataLoader:
+    """Load raw PCD arrays in shuffled order, one point cloud per batch."""
+    dataset = PcdOnlyDataset(root_dirs=[test_data_dir])
+    if len(dataset) == 0:
+        raise ValueError(f"No .pcd files found in test data directory: {test_data_dir}")
+    return DataLoader(dataset, batch_size=1, shuffle=True)
+
+
 def _smoke_test() -> None:
     """Run a tiny CPU-only Sonata training step using synthetic point clouds."""
     backbone = PointTransformerV3Config(
@@ -703,6 +713,12 @@ if __name__ == "__main__":
     parser.add_argument("--smoke", action="store_true", help="run a tiny CPU-only forward/backward smoke test")
     parser.add_argument("--cfg", type=str, default=None, help="path to a SonataConfig JSON file")
     parser.add_argument(
+        "--test-data-dir",
+        type=str,
+        default="/Users/tlou/workspace/mlfield/data/gen",
+        help="folder containing PCD test data (searched recursively)",
+    )
+    parser.add_argument(
         "--out", type=str, default="sonata_teacher_backbone.pt", help="output path for the teacher backbone weights"
     )
     args = parser.parse_args()
@@ -717,3 +733,9 @@ if __name__ == "__main__":
     device = get_device()
 
     model = Sonata(cfg).to(device)
+    test_loader = build_test_loader(args.test_data_dir)
+    logger.info(
+        "Test loader ready: %d PCD files from %s (shuffled)",
+        len(test_loader.dataset),
+        args.test_data_dir,
+    )
