@@ -232,6 +232,44 @@ class SonataBackboneExport(nn.Module):
         return point.feat
 
 
+class SonataFullExport(nn.Module):
+    """Tensor-only adapter exporting the full SonataNet teacher backbone and heads."""
+
+    def __init__(self, net: SonataNet, up_cast_level: int):
+        super().__init__()
+        self.net = net
+        self.up_cast_level = up_cast_level
+        self.net.backbone.order = ["z"]
+
+    def forward(
+        self,
+        feat: torch.Tensor,
+        grid_coord: torch.Tensor,
+        batch: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        top = self.net.backbone(
+            {
+                "coord": grid_coord.to(dtype=feat.dtype),
+                "feat": feat,
+                "grid_coord": grid_coord,
+                "batch": batch,
+            }
+        )
+        num_input = feat.shape[0]
+        encoded = upcast(
+            top,
+            self.up_cast_level,
+            grid_coord.to(dtype=feat.dtype),
+            torch.zeros(num_input, dtype=torch.long, device=feat.device),
+            torch.zeros(num_input, dtype=torch.long, device=feat.device),
+            None,
+        )
+        return (
+            self.net.mask_head(encoded.feat),
+            self.net.unmask_head(encoded.feat),
+        )
+
+
 class PrototypeHead(nn.Module):
     """MLP -> L2-norm -> cosine logits against L2-normalised prototypes (DINO-style)."""
 
@@ -745,20 +783,10 @@ class SonataTrainer:
         torch.save(self.model.teacher.backbone.state_dict(), path)
 
     def export_backbone_onnx(self, path: str, in_channels: int, num_points: int = 4096) -> None:
-        """Export the teacher backbone with a fixed number of input points."""
+        """Export only the teacher PTv3 backbone with a fixed number of input points."""
         if num_points < 1:
             raise ValueError("num_points must be positive")
-        side = math.ceil(num_points ** (1 / 3))
-        if side > 1 << self.model.teacher.backbone.serial_depth:
-            raise ValueError("num_points exceeds the backbone's serial grid capacity")
-        point_ids = torch.arange(num_points, device=self.device)
-        grid = torch.stack(
-            (point_ids // (side * side), (point_ids // side) % side, point_ids % side),
-            dim=1,
-        )
-        feat = torch.zeros((grid.shape[0], in_channels), dtype=torch.float32, device=self.device)
-        grid_coord = grid.to(dtype=torch.long)
-        batch = torch.zeros(grid.shape[0], dtype=torch.long, device=self.device)
+        feat, grid_coord, batch = self._onnx_sample(in_channels, num_points)
         exported = SonataBackboneExport(self.model.teacher.backbone).to(self.device)
         export_onnx(
             exported,
@@ -768,6 +796,41 @@ class SonataTrainer:
             output_names=("encoded_features",),
             dynamic_axes={},
         )
+
+    def export_full_onnx(self, path: str, in_channels: int, num_points: int = 4096) -> None:
+        """Export the teacher backbone and both Sonata prototype heads."""
+        if num_points < 1:
+            raise ValueError("num_points must be positive")
+        feat, grid_coord, batch = self._onnx_sample(in_channels, num_points)
+        exported = SonataFullExport(
+            self.model.teacher,
+            up_cast_level=self.model.cfg.up_cast_level,
+        ).to(self.device)
+        export_onnx(
+            exported,
+            (feat, grid_coord, batch),
+            path,
+            input_names=("features", "grid_coord", "batch"),
+            output_names=("mask_logits", "unmask_logits"),
+            dynamic_axes={},
+        )
+
+    def _onnx_sample(self, in_channels: int, num_points: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        side = math.ceil(num_points ** (1 / 3))
+        serial_depth = self.model.teacher.backbone.serial_depth
+        if side >= 1 << serial_depth:
+            raise ValueError(
+                f"num_points={num_points} requires a cubic grid side of {side}, "
+                f"which exceeds serial_depth={serial_depth}"
+            )
+        point_ids = torch.arange(num_points, device=self.device)
+        grid = torch.stack(
+            (point_ids // (side * side), (point_ids // side) % side, point_ids % side),
+            dim=1,
+        )
+        feat = torch.zeros((num_points, in_channels), dtype=torch.float32, device=self.device)
+        batch = torch.zeros(num_points, dtype=torch.long, device=self.device)
+        return feat, grid.to(dtype=torch.long), batch
 
 
 class SonataPCDDataset(Dataset):
@@ -1052,7 +1115,13 @@ if __name__ == "__main__":
         "--onnx-out",
         type=str,
         default="sonata_teacher_backbone.onnx",
-        help="output path for the teacher backbone ONNX model (set empty to disable)",
+        help="output path for PTv3-only teacher ONNX model (set empty to disable)",
+    )
+    parser.add_argument(
+        "--full-onnx-out",
+        type=str,
+        default="sonata_full.onnx",
+        help="output path for full Sonata ONNX model (backbone + prototype heads; set empty to disable)",
     )
     args = parser.parse_args()
 
@@ -1145,4 +1214,11 @@ if __name__ == "__main__":
             in_channels=dataset.in_channels,
             num_points=points_per_cloud,
         )
-        logger.info("Exported teacher backbone ONNX to %s", args.onnx_out)
+        logger.info("Exported PTv3-only teacher ONNX to %s", args.onnx_out)
+    if args.full_onnx_out:
+        trainer.export_full_onnx(
+            args.full_onnx_out,
+            in_channels=dataset.in_channels,
+            num_points=points_per_cloud,
+        )
+        logger.info("Exported full Sonata ONNX to %s", args.full_onnx_out)

@@ -13,6 +13,7 @@ from components.utils.onnx_export import export_onnx
 from experiments.ssl.sonata import (
     SonataBackboneExport,
     SonataConfig,
+    SonataFullExport,
     SonataNet,
     build_train_loader,
 )
@@ -101,6 +102,59 @@ def test_sonata_backbone_onnx_export():
         torch.testing.assert_close(eager, exported, rtol=1e-4, atol=1e-5)
 
 
+def test_sonata_full_onnx_export():
+    backbone = PointTransformerV3Config(
+        in_channels=3,
+        order=("z",),
+        enc_depths=(1, 1),
+        enc_channels=(4, 8),
+        enc_num_head=(1, 2),
+        enc_patch_size=(8, 8),
+        stride=(2,),
+        drop_path=0.0,
+        serial_depth=8,
+        stem_kernel=3,
+        enc_mode=True,
+    )
+    cfg = SonataConfig(
+        backbone=backbone,
+        up_cast_level=1,
+        num_prototypes=4,
+        head_hidden=8,
+        head_bottleneck=4,
+    )
+    net = SonataNet(cfg).eval()
+    model = SonataFullExport(net, up_cast_level=1).eval()
+    point_ids = torch.arange(27)
+    grid = torch.stack((point_ids // 9, (point_ids // 3) % 3, point_ids % 3), dim=1)
+    feat = torch.randn(27, 3)
+    batch = torch.zeros(27, dtype=torch.long)
+
+    with TemporaryDirectory() as temp_dir:
+        path = export_onnx(
+            model,
+            (feat, grid, batch),
+            Path(temp_dir) / "sonata_full.onnx",
+            input_names=("features", "grid_coord", "batch"),
+            output_names=("mask_logits", "unmask_logits"),
+            dynamic_axes={},
+        )
+        ort = __import__("onnxruntime")
+        session = ort.InferenceSession(str(path), providers=["CPUExecutionProvider"])
+        with torch.no_grad():
+            eager_mask, eager_unmask = model(feat, grid, batch)
+        mask, unmask = session.run(
+            ["mask_logits", "unmask_logits"],
+            {
+                "features": feat.numpy(),
+                "grid_coord": grid.numpy(),
+                "batch": batch.numpy(),
+            },
+        )
+        torch.testing.assert_close(eager_mask, torch.as_tensor(mask), rtol=1e-4, atol=1e-5)
+        torch.testing.assert_close(eager_unmask, torch.as_tensor(unmask), rtol=1e-4, atol=1e-5)
+
+
 def test_neighbor_export_matches_eager():
     ort = __import__("onnxruntime")
 
@@ -181,6 +235,7 @@ def test_sonata_rejects_anisotropic_geometry_output():
 if __name__ == "__main__":
     test_ply_semantic_labels_are_not_model_features()
     test_sonata_backbone_onnx_export()
+    test_sonata_full_onnx_export()
     test_neighbor_export_matches_eager()
     test_sonata_geometry_config()
     test_sonata_rejects_anisotropic_geometry_output()

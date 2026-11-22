@@ -103,9 +103,16 @@ checkpoint directory (`image_dino_teacher_backbone.onnx`, `image_jepa_target_enc
 `image_mae_encoder.onnx`). Install `onnx` in the active environment to enable these exports. The files accept
 preprocessed NCHW images at the model's configured resolution and support a dynamic batch size.
 
-Sonata exports its trained teacher backbone to ONNX through `--onnx-out`. The export uses a fixed
-point count and fixed serialization grid; rebuilding/exporting is required if the geometry or
-backbone channels change. PTv3 supports this export with an ONNX-compatible neighborhood fallback.
+Sonata can export two ONNX artifacts:
+
+- `--onnx-out` exports the PTv3 teacher backbone only. It accepts `features`, `grid_coord`, and
+  `batch`, and returns `encoded_features`.
+- `--full-onnx-out` exports the full Sonata teacher, including both prototype heads. It accepts
+  the same three inputs and returns `mask_logits` and `unmask_logits`.
+
+Both exports use a fixed point count and fixed serialization grid; rebuilding/exporting is
+required if geometry, channels, or model configuration change. PTv3 uses an ONNX-compatible
+neighborhood fallback during export.
 
 ---
 
