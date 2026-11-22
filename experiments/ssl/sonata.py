@@ -53,6 +53,10 @@ Usage
 
 Geometry configuration
 ----------------------
+Sonata defaults to the shared ``BevParams`` ROI and voxel size. The training dataset
+filters points to that ROI, aggregates XYZ/features per voxel, and passes explicit
+``grid_coord`` values to PTv3.
+
     grid = PointGridSpec(
         min_xyz=(-50.0, -50.0, -5.0),
         max_xyz=(50.0, 50.0, 5.0),
@@ -82,6 +86,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from components.dataset.pcd_only_dataset import PcdOnlyDataset
+from components.definitions.bev_params import BevParams
 from components.mmperc.encoder.point_transformer_v3 import (
     Point,
     PointGridSpec,
@@ -90,6 +95,7 @@ from components.mmperc.encoder.point_transformer_v3 import (
     adapt_ptv3_config_for_input,
     adapt_ptv3_config_for_output,
     build_neighbors,
+    points_to_voxels,
     serialize,
 )
 from components.utils.device import get_device
@@ -113,6 +119,10 @@ DEFAULT_IGNORED_FIELDS = (
 )
 
 
+def _default_input_grid() -> PointGridSpec:
+    return PointGridSpec.from_bev_params(BevParams())
+
+
 # --------------------------------------------------------------------------- #
 # Config
 # --------------------------------------------------------------------------- #
@@ -132,10 +142,9 @@ def _default_backbone() -> PointTransformerV3Config:
 @dataclass
 class SonataConfig:
     backbone: PointTransformerV3Config = field(default_factory=_default_backbone)
-    # Optional physical geometry. Both geometry fields are applied to a copy of backbone
-    # during construction: input_grid adapts serialization depth, and
-    # output_voxel_size_xyz adapts stage strides for isotropic output scaling.
-    input_grid: PointGridSpec | dict | None = None
+    # Physical geometry defaults to the shared BEV ROI and voxel size. Both geometry
+    # fields are applied to a copy of backbone during construction.
+    input_grid: PointGridSpec | dict | None = field(default_factory=_default_input_grid)
     output_voxel_size_xyz: tuple[float, float, float] | float | None = None
     up_cast_level: int = 2  # loss is computed this many stages below the last one
     num_prototypes: int = 4096
@@ -840,13 +849,14 @@ class SonataPCDDataset(Dataset):
         self,
         root_dir: str,
         points_per_cloud: int = 4096,
-        grid_size: float = 0.02,
+        grid_size: float | None = None,
         coord_fields: tuple[str, str, str] = ("x", "y", "z"),
         ignore_fields: tuple[str, ...] = DEFAULT_IGNORED_FIELDS,
+        input_grid: PointGridSpec | None = None,
     ):
         if points_per_cloud < 1:
             raise ValueError("points_per_cloud must be positive")
-        if not math.isfinite(grid_size) or grid_size <= 0:
+        if grid_size is not None and (not math.isfinite(grid_size) or grid_size <= 0):
             raise ValueError("grid_size must be positive and finite")
         if len(coord_fields) != 3:
             raise ValueError("coord_fields must contain exactly three field names")
@@ -859,7 +869,10 @@ class SonataPCDDataset(Dataset):
         self.fields = tuple(self.fields)
         self.paths = self.dataset.datasets[0].pcd_paths
         self.points_per_cloud = points_per_cloud
-        self.grid_size = grid_size
+        self.input_grid = input_grid or _default_input_grid()
+        if grid_size is not None:
+            self.input_grid = replace(self.input_grid, voxel_size_xyz=grid_size)
+        self.jitter_size = min(self.input_grid.voxel_size) * 0.1
 
         field_to_idx = {field.lower(): idx for idx, field in enumerate(self.fields)}
         coord_names = tuple(name.strip().lower() for name in coord_fields)
@@ -885,8 +898,7 @@ class SonataPCDDataset(Dataset):
     def __len__(self):
         return len(self.dataset)
 
-    def __getitem__(self, idx: int) -> dict:
-        array, fields = self.dataset[idx]
+    def _field_indexes(self, array, fields: tuple[str, ...], idx: int) -> dict[str, int]:
         field_to_idx = {field.lower(): i for i, field in enumerate(fields)}
         schema = tuple(field.lower() for field in fields)
         expected_fields = {field.lower() for field in self.fields}
@@ -903,6 +915,33 @@ class SonataPCDDataset(Dataset):
             self._warned_schemas.add(schema)
         if array.ndim != 2 or array.shape[1] != len(fields):
             raise ValueError(f"Point-cloud data shape {array.shape} does not match its {len(fields)} fields")
+        return field_to_idx
+
+    def _voxelize(
+        self,
+        coordinates: torch.Tensor,
+        features: torch.Tensor,
+        path: os.PathLike[str] | str,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        voxel_input = torch.cat((coordinates, features), dim=1)
+        voxel_data, is_real = points_to_voxels(
+            voxel_input,
+            torch.zeros(len(coordinates), dtype=torch.long),
+            self.input_grid,
+            batch_size=1,
+            feature_dim=voxel_input.shape[1],
+        )
+        if not is_real.any():
+            raise ValueError(f"Point cloud at {path} contains no points inside the configured input grid")
+        return (
+            voxel_data["coord"][is_real],
+            voxel_data["feat"][is_real, 3:],
+            voxel_data["grid_coord"][is_real],
+        )
+
+    def __getitem__(self, idx: int) -> dict:
+        array, fields = self.dataset[idx]
+        field_to_idx = self._field_indexes(array, fields, idx)
 
         row_count = array.shape[0]
         coordinates = torch.zeros((row_count, 3), dtype=torch.float32)
@@ -930,20 +969,21 @@ class SonataPCDDataset(Dataset):
         else:
             features = coordinates
 
+        coordinates, features, grid_coord = self._voxelize(coordinates, features, self.paths[idx])
         origin = coordinates - coordinates.mean(dim=0, keepdim=True)
         count = origin.shape[0]
         if count > self.points_per_cloud:
             indices = torch.randperm(count)[: self.points_per_cloud]
-            origin, features = origin[indices], features[indices]
+            origin, features, grid_coord = origin[indices], features[indices], grid_coord[indices]
 
         def make_view(indices: torch.Tensor) -> dict:
             base_coord = origin[indices]
-            coord = base_coord + torch.randn_like(base_coord) * (self.grid_size * 0.1)
+            coord = base_coord + torch.randn_like(base_coord) * self.jitter_size
             return {
                 "coord": coord,
                 "origin_coord": base_coord,
                 "feat": features[indices],
-                "grid_size": self.grid_size,
+                "grid_coord": grid_coord[indices],
                 "batch": torch.zeros(indices.numel(), dtype=torch.long),
             }
 
@@ -965,12 +1005,20 @@ def _single_item_collate(items: list[dict]) -> dict:
 def build_train_loader(
     data_dir: str,
     points_per_cloud: int = 4096,
-    grid_size: float = 0.02,
+    grid_size: float | None = None,
     coord_fields: tuple[str, str, str] = ("x", "y", "z"),
     ignore_fields: tuple[str, ...] = DEFAULT_IGNORED_FIELDS,
+    input_grid: PointGridSpec | None = None,
 ) -> tuple[SonataPCDDataset, DataLoader]:
     """Build a shuffled training loader from recursively collected PCD/PLY files."""
-    dataset = SonataPCDDataset(data_dir, points_per_cloud, grid_size, coord_fields, ignore_fields)
+    dataset = SonataPCDDataset(
+        data_dir,
+        points_per_cloud,
+        grid_size,
+        coord_fields,
+        ignore_fields,
+        input_grid,
+    )
     loader = DataLoader(dataset, batch_size=1, shuffle=True, collate_fn=_single_item_collate)
     return dataset, loader
 
@@ -1079,7 +1127,12 @@ if __name__ == "__main__":
         default=4096,
         help="maximum points sampled per point-cloud view and fixed ONNX input point count",
     )
-    parser.add_argument("--grid-size", type=float, default=0.02, help="voxel size in coordinate units")
+    parser.add_argument(
+        "--grid-size",
+        type=float,
+        default=None,
+        help="override the shared BEV voxel size with an isotropic voxel size",
+    )
     parser.add_argument(
         "--coord-fields",
         type=str,
@@ -1144,32 +1197,38 @@ if __name__ == "__main__":
         parser.error("--input-grid-min and --input-grid-max must be provided together")
     if args.input_grid_min is not None and args.input_grid_voxel is None:
         parser.error("--input-grid-min, --input-grid-max, and --input-grid-voxel must be provided together")
-    if args.output_grid_voxel is not None and (args.input_grid_min is None or args.input_grid_voxel is None):
-        parser.error("--output-grid-voxel requires --input-grid-min, --input-grid-max, and --input-grid-voxel")
-    if args.input_grid_min is not None:
 
-        def parse_xyz(value: str, name: str) -> tuple[float, float, float]:
-            parts = tuple(float(part.strip()) for part in value.split(","))
-            if len(parts) != 3:
-                parser.error(f"--{name} must contain exactly three comma-separated numbers")
+    def parse_xyz(value: str, name: str) -> tuple[float, float, float]:
+        parts = tuple(float(part.strip()) for part in value.split(","))
+        if len(parts) != 3:
+            parser.error(f"--{name} must contain exactly three comma-separated numbers")
+        return parts
+
+    def parse_voxel(value: str, name: str) -> tuple[float, float, float] | float:
+        parts = tuple(float(part.strip()) for part in value.split(","))
+        if len(parts) == 1:
+            return parts[0]
+        if len(parts) == 3:
             return parts
+        parser.error(f"--{name} must contain one scalar or three comma-separated numbers")
 
-        def parse_voxel(value: str, name: str) -> tuple[float, float, float] | float:
-            parts = tuple(float(part.strip()) for part in value.split(","))
-            if len(parts) == 1:
-                return parts[0]
-            if len(parts) == 3:
-                return parts
-            parser.error(f"--{name} must contain one scalar or three comma-separated numbers")
-
+    input_grid = cfg.input_grid or _default_input_grid()
+    if args.input_grid_min is not None:
         input_grid = PointGridSpec(
             min_xyz=parse_xyz(args.input_grid_min, "input-grid-min"),
             max_xyz=parse_xyz(args.input_grid_max, "input-grid-max"),
             voxel_size_xyz=parse_voxel(args.input_grid_voxel, "input-grid-voxel"),
         )
-        output_voxel = (
-            None if args.output_grid_voxel is None else parse_voxel(args.output_grid_voxel, "output-grid-voxel")
-        )
+    if args.grid_size is not None:
+        if args.input_grid_voxel is not None:
+            parser.error("--grid-size cannot be combined with --input-grid-voxel")
+        if not math.isfinite(args.grid_size) or args.grid_size <= 0:
+            parser.error("--grid-size must be positive and finite")
+        input_grid = replace(input_grid, voxel_size_xyz=args.grid_size)
+    if args.input_grid_min is not None or cfg.input_grid is None or args.grid_size is not None:
+        cfg = replace(cfg, input_grid=input_grid)
+    if args.output_grid_voxel is not None:
+        output_voxel = parse_voxel(args.output_grid_voxel, "output-grid-voxel")
         cfg = replace(
             cfg,
             input_grid=input_grid,
@@ -1187,9 +1246,9 @@ if __name__ == "__main__":
     dataset, train_loader = build_train_loader(
         args.test_data_dir,
         points_per_cloud=points_per_cloud,
-        grid_size=args.grid_size,
         coord_fields=coord_fields,
         ignore_fields=tuple(field.strip() for field in args.ignore_fields.split(",") if field.strip()),
+        input_grid=cfg.input_grid,
     )
     cfg = replace(cfg, backbone=replace(cfg.backbone, in_channels=dataset.in_channels))
     trainer_cfg = SonataTrainConfig(

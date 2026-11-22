@@ -1,18 +1,22 @@
 import math
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import numpy as np
 import torch
 import torch.nn as nn
+from components.definitions.bev_params import BevParams
 from components.mmperc.encoder.point_transformer_v3 import (
+    BEVGridSpec,
     PointGridSpec,
     PointTransformerV3Config,
     build_neighbors,
 )
 from components.utils.onnx_export import export_onnx
 from experiments.ssl.sonata import (
+    SonataBackbone,
     SonataBackboneExport,
     SonataConfig,
     SonataFullExport,
@@ -23,8 +27,24 @@ from experiments.ssl.vis_sonata import (
     _export_lattice,
     _load_cloud,
     _map_to_export_lattice,
+    _run_checkpoint,
+    _voxelize_cloud,
     output_point_map,
 )
+
+
+class _FakePcdDataset:
+    def __init__(self, path: Path, array: np.ndarray, fields: tuple[str, ...]):
+        self.datasets = [SimpleNamespace(pcd_paths=[path])]
+        self.array = array
+        self.fields = fields
+
+    def __len__(self):
+        return 1
+
+    def __getitem__(self, index: int):
+        assert index == 0
+        return self.array, self.fields
 
 
 def test_ply_semantic_labels_are_not_model_features():
@@ -44,12 +64,104 @@ def test_ply_semantic_labels_are_not_model_features():
             "1 0 0 2 5\n"
         )
 
-        dataset, _ = build_train_loader(temp_dir, points_per_cloud=2, ignore_fields=("semantic",))
-        item = dataset[0]
+        fake_dataset = _FakePcdDataset(
+            path,
+            np.array([[0, 0, 0, 1, 4], [1, 0, 0, 2, 5]], dtype=np.float32),
+            ("x", "y", "z", "semantic", "intensity"),
+        )
+        with patch("experiments.ssl.sonata.PcdOnlyDataset", return_value=fake_dataset):
+            dataset, _ = build_train_loader(temp_dir, points_per_cloud=2, ignore_fields=("semantic",))
+            item = dataset[0]
 
         assert dataset.feature_fields == ("intensity",)
         assert dataset.in_channels == 1
         assert item["global_views"][0]["feat"].shape == (2, 1)
+        assert item["global_views"][0]["grid_coord"].shape == (2, 3)
+
+
+def test_sonata_dataset_aggregates_and_filters_with_bev_grid():
+    with TemporaryDirectory() as temp_dir:
+        path = Path(temp_dir) / "sample.ply"
+        path.write_text(
+            "ply\n"
+            "format ascii 1.0\n"
+            "element vertex 3\n"
+            "property float x\n"
+            "property float y\n"
+            "property float z\n"
+            "property uchar intensity\n"
+            "end_header\n"
+            "0.1 0 0 4\n"
+            "0.9 0 0 6\n"
+            "150 0 0 9\n"
+        )
+
+        fake_dataset = _FakePcdDataset(
+            path,
+            np.array([[0.1, 0, 0, 4], [0.9, 0, 0, 6], [150, 0, 0, 9]], dtype=np.float32),
+            ("x", "y", "z", "intensity"),
+        )
+        with patch("experiments.ssl.sonata.PcdOnlyDataset", return_value=fake_dataset):
+            dataset, _ = build_train_loader(temp_dir, points_per_cloud=8)
+            view = dataset[0]["global_views"][0]
+
+        assert view["coord"].shape == (1, 3)
+        assert view["feat"].shape == (1, 1)
+        assert view["grid_coord"].tolist() == [[0, 48, 0]]
+
+
+def test_sonata_and_ptv3_default_to_shared_bev_geometry():
+    params = BevParams()
+    grid = PointGridSpec.from_bev_params(params)
+    bev_grid = BEVGridSpec.from_bev_params(params)
+    config = SonataConfig()
+
+    assert grid.dimensions == (128, 96, 1)
+    assert bev_grid.height == 48
+    assert bev_grid.width == 64
+    assert config.input_grid == grid
+    assert config.backbone.serial_depth == grid.serial_depth
+
+
+def test_visualizer_voxelizes_with_bev_and_runs_pt_with_explicit_grid():
+    config = SonataConfig(
+        backbone=PointTransformerV3Config(
+            in_channels=3,
+            order=("z",),
+            enc_depths=(1, 1),
+            enc_channels=(4, 8),
+            enc_num_head=(1, 2),
+            enc_patch_size=(8, 8),
+            stride=(2,),
+            drop_path=0.0,
+            serial_depth=8,
+            stem_kernel=3,
+            enc_mode=True,
+        ),
+        up_cast_level=1,
+        num_prototypes=4,
+        head_hidden=8,
+        head_bottleneck=4,
+    )
+    xyz = np.array([[0.1, -0.5, 0], [0.9, -0.5, 0], [150, -0.5, 0]], dtype=np.float32)
+    feat = np.array([[1], [3], [9]], dtype=np.float32)
+    voxel_xyz, voxel_feat, grid_coord = _voxelize_cloud(xyz, feat, config.input_grid)
+
+    assert voxel_xyz.shape == (1, 3)
+    assert voxel_feat.shape == (1, 1)
+    assert grid_coord.tolist() == [[0, 47, 0]]
+
+    backbone = SonataBackbone(config.backbone)
+    output = _run_checkpoint(
+        backbone.state_dict(),
+        config,
+        voxel_xyz,
+        np.repeat(voxel_feat, 3, axis=1),
+        grid_coord,
+        "cpu",
+    )
+    assert output.shape == (1, 12)
+    assert np.isfinite(output).all()
 
 
 def test_sonata_backbone_onnx_export():
@@ -251,11 +363,11 @@ def test_onnx_output_point_map_matches_voxel_pool_order():
 
 
 def test_onnx_input_mapping_reproduces_export_lattice():
-    xyz = np.array([[3, 0, 0], [1, 0, 0], [0, 2, 0], [2, 1, 0]], dtype=np.float32)
+    grid_coord = np.array([[3, 0, 0], [1, 0, 0], [0, 2, 0], [2, 1, 0]], dtype=np.int64)
 
-    mapped_grid = _map_to_export_lattice(xyz, grid_size=0.02)
+    mapped_grid = _map_to_export_lattice(grid_coord)
 
-    assert sorted(map(tuple, mapped_grid.tolist())) == sorted(map(tuple, _export_lattice(len(xyz)).tolist()))
+    assert sorted(map(tuple, mapped_grid.tolist())) == sorted(map(tuple, _export_lattice(len(grid_coord)).tolist()))
 
 
 def test_visualizer_loads_ascii_ply_without_open3d():

@@ -72,27 +72,11 @@ class _PointTransformerBEVEncoder(nn.Module):
         }
 
         bev = params.bev_params
-        self.x_min, self.x_max = bev.x_range
-        self.y_min, self.y_max = bev.y_range
-        self.z_min, self.z_max = bev.z_range
-        self.vx, self.vy, self.vz = bev.voxel_size
-        self.bev_h = bev.bev_h
-        self.bev_w = bev.bev_w
-        self.out_h = self.bev_h // 2
-        self.out_w = self.bev_w // 2
-        self.bev_grid_spec = BEVGridSpec(
-            x_range=(self.x_min, self.x_max),
-            y_range=(self.y_min, self.y_max),
-            height=self.out_h,
-            width=self.out_w,
-        )
-
-        lidar_grid = PointGridSpec(
-            min_xyz=(self.x_min, self.y_min, self.z_min),
-            max_xyz=(self.x_max, self.y_max, self.z_max),
-            voxel_size_xyz=(self.vx, self.vy, self.vz),
-        )
-        config = adapt_ptv3_config_for_input(config, lidar_grid)
+        self.bev_grid_spec = BEVGridSpec.from_bev_params(bev)
+        self.out_h = self.bev_grid_spec.height
+        self.out_w = self.bev_grid_spec.width
+        self.lidar_grid = PointGridSpec.from_bev_params(bev)
+        config = adapt_ptv3_config_for_input(config, self.lidar_grid)
 
         if lidar_feature_resolutions is not None:
             resolutions = (
@@ -147,18 +131,13 @@ class _PointTransformerBEVEncoder(nn.Module):
         xyz = points[..., :3].reshape(-1, 3)
         raw_features = points[..., :4].reshape(-1, 4)
         batch = torch.arange(batch_size, device=points.device).repeat_interleave(num_points)
-        lidar_grid = PointGridSpec(
-            min_xyz=(self.x_min, self.y_min, self.z_min),
-            max_xyz=(self.x_max, self.y_max, self.z_max),
-            voxel_size_xyz=(self.vx, self.vy, self.vz),
-        )
-        nx, ny, nz = lidar_grid.dimensions
+        nx, ny, nz = self.lidar_grid.dimensions
         if max(nx, ny, nz) > 1 << self.point_transformer.serial_depth:
             raise ValueError("LiDAR voxel grid exceeds the PTv3 serialization depth.")
         return points_to_voxels(
             torch.cat([xyz, raw_features[:, 3:]], dim=-1),
             batch,
-            lidar_grid,
+            self.lidar_grid,
             batch_size,
             feature_dim=4,
         )

@@ -93,6 +93,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from components.definitions.bev_params import BevParams
+
 
 @dataclass(frozen=True)
 class PointTransformerV3Config:
@@ -168,6 +170,14 @@ class PointGridSpec:
     max_xyz: tuple[float, float, float]
     voxel_size_xyz: tuple[float, float, float] | float
 
+    @classmethod
+    def from_bev_params(cls, params: BevParams) -> "PointGridSpec":
+        return cls(
+            min_xyz=(params.x_range[0], params.y_range[0], params.z_range[0]),
+            max_xyz=(params.x_range[1], params.y_range[1], params.z_range[1]),
+            voxel_size_xyz=params.voxel_size,
+        )
+
     def __post_init__(self) -> None:
         for name, values in (
             ("min_xyz", self.min_xyz),
@@ -212,6 +222,17 @@ class BEVGridSpec:
     y_range: tuple[float, float]
     height: int
     width: int
+
+    @classmethod
+    def from_bev_params(cls, params: BevParams) -> "BEVGridSpec":
+        if params.backbone_stride < 1:
+            raise ValueError("BEV backbone_stride must be positive")
+        return cls(
+            x_range=params.x_range,
+            y_range=params.y_range,
+            height=params.bev_h // params.backbone_stride,
+            width=params.bev_w // params.backbone_stride,
+        )
 
     def __post_init__(self) -> None:
         for name, axis_range in (("x_range", self.x_range), ("y_range", self.y_range)):

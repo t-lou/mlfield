@@ -129,9 +129,13 @@ python -m experiments.ssl.vis_sonata sonata_full.onnx cloud.pcd --output unmask_
 ONNX exports determine their fixed input point count automatically; clouds are deterministically
 sampled or repeated to match it. Because the current ONNX export is traced on a synthetic cubic
 grid, the visualizer maps points to that lattice in spatial Z-order. Use the `.pt` checkpoint
-path when preserving exact input geometry is important. Checkpoint inference uses up to 4096
+path when preserving metric-coordinate geometry is important. Checkpoint inference uses up to 4096
 points by default (`--num-points` changes the cap); nonstandard checkpoints need their training
-config via `--cfg`. Install `pyvista` for visualization and `onnxruntime` to run ONNX models.
+config via `--cfg`. Sonata training and visualization use the shared `BevParams` ROI and
+anisotropic voxel size by default, filtering out-of-ROI points and aggregating each voxel.
+`--grid-size` overrides this with an isotropic voxel size. Checkpoints created before this
+preprocessing change may require their original geometry/configuration for faithful results.
+Install `pyvista` for visualization and `onnxruntime` to run ONNX models.
 
 ---
 

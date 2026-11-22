@@ -9,7 +9,8 @@ Examples:
 Non-standard PT checkpoints need the Sonata config JSON used during training via ``--cfg``.
 ONNX exports use their fixed point count; points are deterministically sampled or repeated
 when the source cloud has a different number of points. Their traced lattice is retained by
-mapping points in spatial Z-order; use a ``.pt`` checkpoint for native input geometry.
+mapping points in spatial Z-order; use a ``.pt`` checkpoint to preserve metric-coordinate geometry.
+Input clouds use the shared ``BevParams`` ROI and voxel aggregation by default.
 """
 
 from __future__ import annotations
@@ -26,7 +27,13 @@ from typing import TextIO
 import numpy as np
 import torch
 from components.dataset.pcd_only_dataset import PcdOnlyFolderDataset
-from components.mmperc.encoder.point_transformer_v3 import PointTransformerV3Config, z_order_encode
+from components.definitions.bev_params import BevParams
+from components.mmperc.encoder.point_transformer_v3 import (
+    PointGridSpec,
+    PointTransformerV3Config,
+    points_to_voxels,
+    z_order_encode,
+)
 from components.utils.device import get_device
 from experiments.ssl.sonata import DEFAULT_IGNORED_FIELDS, SonataBackbone, SonataConfig, upcast
 
@@ -239,9 +246,9 @@ def _export_lattice(point_count: int) -> np.ndarray:
     return np.stack((point_ids // (side * side), (point_ids // side) % side, point_ids % side), axis=1).astype(np.int64)
 
 
-def _map_to_export_lattice(xyz: np.ndarray, grid_size: float) -> np.ndarray:
+def _map_to_export_lattice(grid_coord: np.ndarray) -> np.ndarray:
     """Assign spatially ordered source points to the synthetic lattice used by ONNX export."""
-    source_grid = np.floor((xyz - xyz.min(axis=0, keepdims=True)) / grid_size + 1e-4).astype(np.int64)
+    source_grid = grid_coord - grid_coord.min(axis=0, keepdims=True)
     source_max = source_grid.max(axis=0, keepdims=True)
     source_grid = np.divide(
         source_grid * ((1 << 16) - 1),
@@ -249,12 +256,43 @@ def _map_to_export_lattice(xyz: np.ndarray, grid_size: float) -> np.ndarray:
         out=np.zeros_like(source_grid, dtype=np.float64),
         where=source_max > 0,
     ).astype(np.int64)
-    target_grid = _export_lattice(len(xyz))
+    target_grid = _export_lattice(len(grid_coord))
     source_order = z_order_encode(torch.from_numpy(source_grid), 16).numpy().argsort(kind="stable")
     target_order = z_order_encode(torch.from_numpy(target_grid), 16).numpy().argsort(kind="stable")
     mapped_grid = np.empty_like(target_grid)
     mapped_grid[source_order] = target_grid[target_order]
     return mapped_grid
+
+
+def _voxelize_cloud(
+    xyz: np.ndarray,
+    feat: np.ndarray,
+    grid: PointGridSpec,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    points = torch.cat((torch.from_numpy(xyz), torch.from_numpy(feat)), dim=1)
+    data, is_real = points_to_voxels(
+        points,
+        torch.zeros(len(points), dtype=torch.long),
+        grid,
+        batch_size=1,
+        feature_dim=points.shape[1],
+    )
+    if not is_real.any():
+        raise ValueError("point cloud contains no points inside the configured input grid")
+    return (
+        data["coord"][is_real].numpy(),
+        data["feat"][is_real, 3:].numpy(),
+        data["grid_coord"][is_real].numpy(),
+    )
+
+
+def _effective_config(config: SonataConfig, grid_size: float | None) -> tuple[SonataConfig, PointGridSpec]:
+    grid = config.input_grid or PointGridSpec.from_bev_params(BevParams())
+    if grid_size is not None:
+        grid = replace(grid, voxel_size_xyz=grid_size)
+    if config.input_grid != grid:
+        config = replace(config, input_grid=grid)
+    return config, grid
 
 
 def output_point_map(
@@ -296,7 +334,7 @@ def _run_checkpoint(
     config: SonataConfig,
     xyz: np.ndarray,
     feat: np.ndarray,
-    grid_size: float,
+    grid_coord: np.ndarray,
     device_name: str,
 ) -> np.ndarray:
     if feat.shape[1] != config.backbone.in_channels:
@@ -315,7 +353,7 @@ def _run_checkpoint(
     data = {
         "coord": coordinates,
         "feat": features,
-        "grid_size": grid_size,
+        "grid_coord": torch.as_tensor(grid_coord, dtype=torch.long, device=device),
         "batch": torch.zeros(len(xyz), dtype=torch.long, device=device),
     }
     with torch.inference_mode():
@@ -336,7 +374,7 @@ def _run_onnx(
     path: Path,
     xyz: np.ndarray,
     feat: np.ndarray,
-    grid_size: float,
+    source_grid_coord: np.ndarray,
     requested_points: int | None,
     output_name: str,
     seed: int,
@@ -361,8 +399,8 @@ def _run_onnx(
         if requested_points is not None and requested_points != point_count:
             raise ValueError(f"ONNX model requires {point_count} points, but --num-points={requested_points}")
 
-    xyz_input, feat_input, _ = _select_points(xyz, feat, point_count, seed)
-    grid_coord = _map_to_export_lattice(xyz_input, grid_size)
+    xyz_input, feat_input, selected = _select_points(xyz, feat, point_count, seed)
+    grid_coord = _map_to_export_lattice(source_grid_coord[selected])
     if feat_input.shape[1] != inputs["features"].shape[1]:
         raise ValueError(
             f"ONNX model expects {inputs['features'].shape[1]} feature channels, "
@@ -445,7 +483,11 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--coord-fields", type=_parse_fields, default=("x", "y", "z"), metavar="X,Y,Z")
     parser.add_argument("--feature-fields", help="comma-separated input fields; default excludes XYZ and labels")
-    parser.add_argument("--grid-size", type=_positive_float, default=0.02, help="input voxel size (default: 0.02)")
+    parser.add_argument(
+        "--grid-size",
+        type=_positive_float,
+        help="override the shared BEV voxel size with an isotropic voxel size",
+    )
     parser.add_argument(
         "--num-points",
         type=int,
@@ -480,34 +522,40 @@ def _extract_features(args: argparse.Namespace) -> tuple[np.ndarray, np.ndarray,
         feature_fields = tuple(field.strip() for field in args.feature_fields.split(",") if field.strip())
         if not feature_fields:
             raise ValueError("--feature-fields must contain at least one field name")
-    xyz, feat, names = _load_cloud(args.pointcloud, args.coord_fields, feature_fields)
-
     model_type = args.model.suffix.lower()
     if model_type == ".pt":
         state = _checkpoint_backbone_state(args.model)
         config = _checkpoint_config(state, args.cfg)
+    elif model_type == ".onnx":
+        config = _read_config(args.cfg) if args.cfg is not None else SonataConfig()
+    else:
+        raise ValueError(f"unsupported model extension {model_type!r}; expected .pt or .onnx")
+
+    config, input_grid = _effective_config(config, args.grid_size)
+    xyz, feat, names = _load_cloud(args.pointcloud, args.coord_fields, feature_fields)
+    xyz, feat, grid_coord = _voxelize_cloud(xyz, feat, input_grid)
+
+    if model_type == ".pt":
         point_limit = 4096 if args.num_points is None else args.num_points
         if point_limit < 1:
             raise ValueError("--num-points must be positive")
-        input_xyz, input_feat, _ = _select_points(xyz, feat, min(point_limit, len(xyz)), args.seed)
+        input_xyz, input_feat, selected = _select_points(xyz, feat, min(point_limit, len(xyz)), args.seed)
+        input_grid_coord = grid_coord[selected]
         if len(input_xyz) < len(xyz):
             print(f"PT checkpoint: deterministically sampled {len(input_xyz):,} of {len(xyz):,} input points")
-        features = _run_checkpoint(state, config, input_xyz, input_feat, args.grid_size, args.device)
+        features = _run_checkpoint(state, config, input_xyz, input_feat, input_grid_coord, args.device)
         return input_xyz, features, "encoded_features", names
-    if model_type == ".onnx":
-        config = _read_config(args.cfg) if args.cfg is not None else None
-        display_xyz, features, output_name = _run_onnx(
-            args.model,
-            xyz,
-            feat,
-            args.grid_size,
-            args.num_points,
-            args.output,
-            args.seed,
-            config,
-        )
-        return display_xyz, features, output_name, names
-    raise ValueError(f"unsupported model extension {model_type!r}; expected .pt or .onnx")
+    display_xyz, features, output_name = _run_onnx(
+        args.model,
+        xyz,
+        feat,
+        grid_coord,
+        args.num_points,
+        args.output,
+        args.seed,
+        config,
+    )
+    return display_xyz, features, output_name, names
 
 
 def _show_cloud(args: argparse.Namespace, xyz: np.ndarray, features: np.ndarray, output_name: str) -> str:
