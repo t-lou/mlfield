@@ -4,6 +4,7 @@ from dataclasses import replace
 import torch
 
 from components.mmperc.encoder.point_transformer_v3 import (
+    BEVGridSpec,
     GridPooling,
     Point,
     PointGridSpec,
@@ -16,9 +17,10 @@ from components.mmperc.encoder.point_transformer_v3 import (
     adapt_ptv3_stride_for_output,
     build_neighbors,
     hilbert_encode,
+    points_to_voxels,
+    scatter_ptv3_features_to_bev,
     z_order_encode,
 )
-from components.mmperc.model.transformer_model import point_grid_dimensions
 
 torch.manual_seed(0)
 
@@ -250,20 +252,41 @@ def test_point_output_stride_adaptation():
         raise AssertionError("Anisotropic output scaling must be rejected by scalar-stride helper")
 
 
-def test_lidar_point_grid_dimensions():
-    assert point_grid_dimensions(
-        (0.0, 128.0),
-        (-48.0, 48.0),
-        (-5.0, 3.0),
-        (1.0, 1.0, 8.0),
-    ) == (128, 96, 1)
+def test_ptv3_bev_adaptation_helpers():
+    lidar_grid = PointGridSpec(
+        min_xyz=(0.0, -48.0, -5.0),
+        max_xyz=(128.0, 48.0, 3.0),
+        voxel_size_xyz=(1.0, 1.0, 8.0),
+    )
+    assert lidar_grid.dimensions == (128, 96, 1)
 
-    try:
-        point_grid_dimensions((0.0, 128.0), (-48.0, 48.0), (-5.0, 3.0), (0.0, 1.0, 1.0))
-    except ValueError:
-        pass
-    else:
-        raise AssertionError("Zero voxel size must be rejected")
+    points = torch.tensor(
+        [
+            [64.0, -48.0, -5.0, 1.0],
+            [127.99, 47.99, 2.99, 1.0],
+            [128.0, 48.0, 3.0, 1.0],
+        ]
+    )
+    data, is_real = points_to_voxels(
+        points,
+        torch.tensor([0, 1, 1]),
+        lidar_grid,
+        batch_size=2,
+        feature_dim=4,
+    )
+    assert data["grid_coord"].max(0).values.tolist() == [127, 95, 0]
+    assert is_real.tolist() == [True, True]
+
+    bev = BEVGridSpec((0.0, 128.0), (-48.0, 48.0), 48, 64)
+    features = torch.tensor([[1.0, 2.0], [3.0, 4.0]])
+    scattered = scatter_ptv3_features_to_bev(
+        features,
+        torch.tensor([0, 1]),
+        torch.tensor([[64.0, 0.0, 0.0], [64.0, 0.0, 0.0]]),
+        bev,
+        batch_size=2,
+    )
+    assert scattered.shape == (2 * 48 * 64, 2)
 
 
 if __name__ == "__main__":

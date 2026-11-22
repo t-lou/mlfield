@@ -204,6 +204,158 @@ class PointGridSpec:
         return max(1, math.ceil(math.log2(max(self.dimensions))))
 
 
+@dataclass(frozen=True)
+class BEVGridSpec:
+    """Contract for projecting PTv3 points into a dense XY BEV map."""
+
+    x_range: tuple[float, float]
+    y_range: tuple[float, float]
+    height: int
+    width: int
+
+    def __post_init__(self) -> None:
+        for name, axis_range in (("x_range", self.x_range), ("y_range", self.y_range)):
+            if len(axis_range) != 2 or axis_range[1] <= axis_range[0]:
+                raise ValueError(f"{name} must contain (min, max) with max > min")
+            if not all(math.isfinite(float(value)) for value in axis_range):
+                raise ValueError(f"{name} values must be finite")
+        if self.height < 1 or self.width < 1:
+            raise ValueError("BEV height and width must be positive")
+
+
+def filter_points_to_grid(
+    points: torch.Tensor,
+    grid: PointGridSpec,
+) -> torch.Tensor:
+    """Filter `(N, >=3)` points to a PointGridSpec's half-open XYZ bounds."""
+    if points.ndim != 2 or points.shape[1] < 3:
+        raise ValueError(f"Points must have shape (N, >=3), got {tuple(points.shape)}")
+    xyz = points[:, :3]
+    valid = (
+        (xyz[:, 0] >= grid.min_xyz[0])
+        & (xyz[:, 0] < grid.max_xyz[0])
+        & (xyz[:, 1] >= grid.min_xyz[1])
+        & (xyz[:, 1] < grid.max_xyz[1])
+        & (xyz[:, 2] >= grid.min_xyz[2])
+        & (xyz[:, 2] < grid.max_xyz[2])
+    )
+    return points[valid]
+
+
+def points_to_voxels(
+    points: torch.Tensor,
+    batch: torch.Tensor,
+    grid: PointGridSpec,
+    batch_size: int,
+    feature_dim: int,
+) -> tuple[dict[str, torch.Tensor], torch.Tensor]:
+    """Aggregate per-batch XYZ/feature points into unique grid voxels.
+
+    Returns PTv3's `coord`, `feat`, `grid_coord`, `batch` data contract plus a
+    real-point mask. Empty batch entries receive a dummy voxel marked unreal.
+    """
+    if points.ndim != 2 or points.shape[1] < feature_dim:
+        raise ValueError(f"Points must have shape (N, >={feature_dim}), got {tuple(points.shape)}")
+    if batch.ndim != 1 or batch.shape[0] != points.shape[0]:
+        raise ValueError("batch must contain one scene ID per point")
+    if batch_size < 1:
+        raise ValueError("batch_size must be positive")
+    if torch.any((batch < 0) | (batch >= batch_size)):
+        raise ValueError("batch IDs must be within [0, batch_size)")
+
+    xyz_all = points[:, :3]
+    keep = (
+        (xyz_all[:, 0] >= grid.min_xyz[0])
+        & (xyz_all[:, 0] < grid.max_xyz[0])
+        & (xyz_all[:, 1] >= grid.min_xyz[1])
+        & (xyz_all[:, 1] < grid.max_xyz[1])
+        & (xyz_all[:, 2] >= grid.min_xyz[2])
+        & (xyz_all[:, 2] < grid.max_xyz[2])
+    )
+    points = points[keep]
+    batch = batch[keep]
+    raw_features = points[:, :feature_dim].to(dtype=torch.float32)
+    nx, ny, nz = grid.dimensions
+    dimensions = raw_features.new_tensor(grid.voxel_size)
+    xyz = raw_features[:, :3]
+    grid_coord = torch.stack(
+        (
+            torch.clamp(((xyz[:, 0] - grid.min_xyz[0]) / dimensions[0]).floor().long(), 0, nx - 1),
+            torch.clamp(((xyz[:, 1] - grid.min_xyz[1]) / dimensions[1]).floor().long(), 0, ny - 1),
+            torch.clamp(((xyz[:, 2] - grid.min_xyz[2]) / dimensions[2]).floor().long(), 0, nz - 1),
+        ),
+        dim=-1,
+    )
+
+    if raw_features.shape[0]:
+        keys = (((batch * nx + grid_coord[:, 0]) * ny + grid_coord[:, 1]) * nz) + grid_coord[:, 2]
+        _, inverse, counts = torch.unique(keys, sorted=True, return_inverse=True, return_counts=True)
+        voxel_feat = raw_features.new_zeros(counts.numel(), feature_dim)
+        voxel_feat.index_add_(0, inverse, raw_features)
+        voxel_feat /= counts.unsqueeze(-1).to(voxel_feat.dtype)
+        voxel_coord = voxel_feat[:, :3]
+        voxel_batch = torch.empty(counts.numel(), dtype=torch.long, device=raw_features.device)
+        voxel_batch[inverse] = batch
+        voxel_grid = torch.empty(counts.numel(), 3, dtype=torch.long, device=raw_features.device)
+        voxel_grid[inverse] = grid_coord
+        is_real = torch.ones(counts.numel(), dtype=torch.bool, device=raw_features.device)
+    else:
+        voxel_coord = raw_features.new_empty((0, 3))
+        voxel_feat = raw_features.new_empty((0, feature_dim))
+        voxel_batch = torch.empty(0, dtype=torch.long, device=raw_features.device)
+        voxel_grid = torch.empty(0, 3, dtype=torch.long, device=raw_features.device)
+        is_real = torch.empty(0, dtype=torch.bool, device=raw_features.device)
+
+    present = torch.bincount(voxel_batch, minlength=batch_size)
+    empty_batches = torch.where(present == 0)[0]
+    if empty_batches.numel():
+        dummy_xyz = raw_features.new_tensor(
+            tuple(minimum + voxel_size / 2 for minimum, voxel_size in zip(grid.min_xyz, grid.voxel_size, strict=True))
+        ).expand(empty_batches.numel(), -1)
+        voxel_coord = torch.cat([voxel_coord, dummy_xyz])
+        dummy_feat = dummy_xyz.new_zeros(empty_batches.numel(), feature_dim)
+        dummy_feat[:, :3] = dummy_xyz
+        voxel_feat = torch.cat([voxel_feat, dummy_feat])
+        voxel_batch = torch.cat([voxel_batch, empty_batches])
+        voxel_grid = torch.cat(
+            [voxel_grid, torch.zeros(empty_batches.numel(), 3, dtype=torch.long, device=raw_features.device)]
+        )
+        is_real = torch.cat([is_real, torch.zeros(empty_batches.numel(), dtype=torch.bool, device=raw_features.device)])
+
+    return {
+        "coord": voxel_coord,
+        "feat": voxel_feat,
+        "grid_coord": voxel_grid,
+        "batch": voxel_batch,
+    }, is_real
+
+
+def scatter_ptv3_features_to_bev(
+    features: torch.Tensor,
+    batch: torch.Tensor,
+    xyz: torch.Tensor,
+    bev: BEVGridSpec,
+    batch_size: int,
+) -> torch.Tensor:
+    """Scatter point features to XY BEV using one cell per batch item."""
+    if features.shape[0] != batch.shape[0] or features.shape[0] != xyz.shape[0]:
+        raise ValueError("features, batch, and xyz must have the same leading dimension")
+    if xyz.shape[1] != 3:
+        raise ValueError("xyz must have shape (N, 3)")
+    if batch_size < 1:
+        raise ValueError("batch_size must be positive")
+
+    ix = (((xyz[:, 0] - bev.x_range[0]) / (bev.x_range[1] - bev.x_range[0])) * bev.width).long()
+    iy = (((xyz[:, 1] - bev.y_range[0]) / (bev.y_range[1] - bev.y_range[0])) * bev.height).long()
+    valid = (ix >= 0) & (ix < bev.width) & (iy >= 0) & (iy < bev.height)
+    flat_index = batch[valid] * (bev.height * bev.width) + iy[valid] * bev.width + ix[valid]
+    num_cells = batch_size * bev.height * bev.width
+    bev_flat = features.new_zeros(num_cells, features.shape[-1])
+    bev_flat.index_add_(0, flat_index, features[valid])
+    counts = torch.bincount(flat_index, minlength=num_cells).to(features.dtype).unsqueeze(-1)
+    return bev_flat / counts.clamp_min(1)
+
+
 def adapt_ptv3_config_for_input(
     config: PointTransformerV3Config,
     grid: PointGridSpec,

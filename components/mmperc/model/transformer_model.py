@@ -1,4 +1,3 @@
-import math
 from collections.abc import Sequence
 from dataclasses import replace
 from pathlib import Path
@@ -10,10 +9,13 @@ from torch import Tensor, nn
 from components.definitions.mmperc_params import MmpercParams
 from components.mmperc.encoder.multi_camera_encoder import MultiCameraEncoder
 from components.mmperc.encoder.point_transformer_v3 import (
+    BEVGridSpec,
     PointGridSpec,
     PointTransformerV3Config,
     PointTransformerV3Encoder,
     adapt_ptv3_config_for_input,
+    points_to_voxels,
+    scatter_ptv3_features_to_bev,
 )
 from components.mmperc.encoder.vit_camera_encoder import ViTCameraEncoder
 from components.mmperc.fusion.futr_fusion import FuTrFusionBlock
@@ -21,24 +23,6 @@ from components.mmperc.head.bbox2d_head import BBox3dHead
 from components.mmperc.head.semantics_head import FullResSemHead
 from components.utils.calibration import load_sensor_calibration
 from components.vit.vit_config import ViTConfig, ViTVariant
-
-
-def point_grid_dimensions(
-    x_range: tuple[float, float],
-    y_range: tuple[float, float],
-    z_range: tuple[float, float],
-    voxel_size_xyz: tuple[float, float, float],
-) -> tuple[int, int, int]:
-    """Return the number of exclusive half-open voxels on each XYZ axis."""
-    if not all(math.isfinite(float(voxel)) and voxel > 0 for voxel in voxel_size_xyz):
-        raise ValueError("Point-grid voxel sizes must be positive and finite")
-    grid = PointGridSpec(
-        min_xyz=(x_range[0], y_range[0], z_range[0]),
-        max_xyz=(x_range[1], y_range[1], z_range[1]),
-        voxel_size_xyz=voxel_size_xyz,
-    )
-    return grid.dimensions
-
 
 SMALL_GPU_VIT_CONFIG = ViTConfig(variant=ViTVariant.T)
 SMALL_GPU_PTV3_CONFIG = PointTransformerV3Config(
@@ -96,6 +80,12 @@ class _PointTransformerBEVEncoder(nn.Module):
         self.bev_w = bev.bev_w
         self.out_h = self.bev_h // 2
         self.out_w = self.bev_w // 2
+        self.bev_grid_spec = BEVGridSpec(
+            x_range=(self.x_min, self.x_max),
+            y_range=(self.y_min, self.y_max),
+            height=self.out_h,
+            width=self.out_w,
+        )
 
         lidar_grid = PointGridSpec(
             min_xyz=(self.x_min, self.y_min, self.z_min),
@@ -154,83 +144,24 @@ class _PointTransformerBEVEncoder(nn.Module):
 
     def _voxelize(self, points: Tensor) -> tuple[dict[str, Tensor], Tensor]:
         batch_size, num_points, _ = points.shape
-        device = points.device
         xyz = points[..., :3].reshape(-1, 3)
         raw_features = points[..., :4].reshape(-1, 4)
-        batch = torch.arange(batch_size, device=device).repeat_interleave(num_points)
-
-        valid = (
-            (xyz[:, 0] >= self.x_min)
-            & (xyz[:, 0] < self.x_max)
-            & (xyz[:, 1] >= self.y_min)
-            & (xyz[:, 1] < self.y_max)
-            & (xyz[:, 2] >= self.z_min)
-            & (xyz[:, 2] < self.z_max)
+        batch = torch.arange(batch_size, device=points.device).repeat_interleave(num_points)
+        lidar_grid = PointGridSpec(
+            min_xyz=(self.x_min, self.y_min, self.z_min),
+            max_xyz=(self.x_max, self.y_max, self.z_max),
+            voxel_size_xyz=(self.vx, self.vy, self.vz),
         )
-        xyz = xyz[valid]
-        raw_features = raw_features[valid]
-        batch = batch[valid]
-
-        nx, ny, nz = point_grid_dimensions(
-            (self.x_min, self.x_max),
-            (self.y_min, self.y_max),
-            (self.z_min, self.z_max),
-            (self.vx, self.vy, self.vz),
-        )
+        nx, ny, nz = lidar_grid.dimensions
         if max(nx, ny, nz) > 1 << self.point_transformer.serial_depth:
             raise ValueError("LiDAR voxel grid exceeds the PTv3 serialization depth.")
-
-        if xyz.numel():
-            grid_coord = torch.stack(
-                (
-                    torch.clamp(((xyz[:, 0] - self.x_min) / self.vx).floor().long(), 0, nx - 1),
-                    torch.clamp(((xyz[:, 1] - self.y_min) / self.vy).floor().long(), 0, ny - 1),
-                    torch.clamp(((xyz[:, 2] - self.z_min) / self.vz).floor().long(), 0, nz - 1),
-                ),
-                dim=-1,
-            )
-            keys = (((batch * nx + grid_coord[:, 0]) * ny + grid_coord[:, 1]) * nz) + grid_coord[:, 2]
-            _, inverse, counts = torch.unique(keys, sorted=True, return_inverse=True, return_counts=True)
-            num_voxels = counts.numel()
-
-            voxel_feat = raw_features.new_zeros(num_voxels, 4)
-            voxel_feat.index_add_(0, inverse, raw_features)
-            voxel_feat = voxel_feat / counts.unsqueeze(-1).to(voxel_feat.dtype)
-            voxel_coord = voxel_feat[:, :3]
-
-            voxel_batch = torch.empty(num_voxels, dtype=torch.long, device=device)
-            voxel_batch[inverse] = batch
-            voxel_grid = torch.empty(num_voxels, 3, dtype=torch.long, device=device)
-            voxel_grid[inverse] = grid_coord
-            is_real = torch.ones(num_voxels, dtype=torch.bool, device=device)
-        else:
-            voxel_coord = xyz.new_zeros(0, 3)
-            voxel_feat = raw_features.new_zeros(0, 4)
-            voxel_batch = torch.empty(0, dtype=torch.long, device=device)
-            voxel_grid = torch.empty(0, 3, dtype=torch.long, device=device)
-            is_real = torch.empty(0, dtype=torch.bool, device=device)
-
-        # PTv3 expects at least one voxel in every batch item. Add masked-out
-        # placeholders for empty clouds so the encoder can still serialize them.
-        present = torch.bincount(voxel_batch, minlength=batch_size)
-        empty_batches = torch.where(present == 0)[0]
-        if empty_batches.numel():
-            dummy_xyz = xyz.new_tensor(
-                [self.x_min + self.vx / 2, self.y_min + self.vy / 2, self.z_min + self.vz / 2]
-            ).expand(empty_batches.numel(), -1)
-            voxel_coord = torch.cat([voxel_coord, dummy_xyz])
-            dummy_feat = torch.cat([dummy_xyz, dummy_xyz.new_zeros(empty_batches.numel(), 1)], dim=-1)
-            voxel_feat = torch.cat([voxel_feat, dummy_feat])
-            voxel_batch = torch.cat([voxel_batch, empty_batches])
-            voxel_grid = torch.cat([voxel_grid, torch.zeros(empty_batches.numel(), 3, dtype=torch.long, device=device)])
-            is_real = torch.cat([is_real, torch.zeros(empty_batches.numel(), dtype=torch.bool, device=device)])
-
-        return {
-            "coord": voxel_coord,
-            "feat": voxel_feat,
-            "grid_coord": voxel_grid,
-            "batch": voxel_batch,
-        }, is_real
+        return points_to_voxels(
+            torch.cat([xyz, raw_features[:, 3:]], dim=-1),
+            batch,
+            lidar_grid,
+            batch_size,
+            feature_dim=4,
+        )
 
     def forward(self, points_by_sensor: dict[str, Tensor]) -> Tensor:
         if not points_by_sensor:
@@ -279,15 +210,17 @@ class _PointTransformerBEVEncoder(nn.Module):
         return maps.reshape(points.shape[0], self.out_h, self.out_w, -1).permute(0, 3, 1, 2).contiguous()
 
     def _scatter_bev(self, features: Tensor, batch: Tensor, xyz: Tensor, num_cells: int) -> Tensor:
-        ix = ((xyz[:, 0] - self.x_min) / (self.x_max - self.x_min) * self.out_w).long()
-        iy = ((xyz[:, 1] - self.y_min) / (self.y_max - self.y_min) * self.out_h).long()
-        valid = (ix >= 0) & (ix < self.out_w) & (iy >= 0) & (iy < self.out_h)
-
-        flat_index = batch[valid] * (self.out_h * self.out_w) + iy[valid] * self.out_w + ix[valid]
-        bev_flat = features.new_zeros(num_cells, features.shape[-1])
-        bev_flat.index_add_(0, flat_index, features[valid])
-        counts = torch.bincount(flat_index, minlength=num_cells).to(features.dtype).unsqueeze(-1)
-        return bev_flat / counts.clamp_min(1)
+        batch_size = num_cells // (self.out_h * self.out_w)
+        result = scatter_ptv3_features_to_bev(
+            features,
+            batch,
+            xyz,
+            self.bev_grid_spec,
+            batch_size,
+        )
+        if result.shape[0] != num_cells:
+            raise ValueError("BEV scatter produced an unexpected number of batch cells")
+        return result
 
 
 class _ViTCameraAdapter(nn.Module):
