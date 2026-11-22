@@ -1,3 +1,4 @@
+import math
 from collections.abc import Sequence
 from dataclasses import replace
 from pathlib import Path
@@ -20,6 +21,24 @@ from components.mmperc.head.bbox2d_head import BBox3dHead
 from components.mmperc.head.semantics_head import FullResSemHead
 from components.utils.calibration import load_sensor_calibration
 from components.vit.vit_config import ViTConfig, ViTVariant
+
+
+def point_grid_dimensions(
+    x_range: tuple[float, float],
+    y_range: tuple[float, float],
+    z_range: tuple[float, float],
+    voxel_size_xyz: tuple[float, float, float],
+) -> tuple[int, int, int]:
+    """Return the number of exclusive half-open voxels on each XYZ axis."""
+    if not all(math.isfinite(float(voxel)) and voxel > 0 for voxel in voxel_size_xyz):
+        raise ValueError("Point-grid voxel sizes must be positive and finite")
+    grid = PointGridSpec(
+        min_xyz=(x_range[0], y_range[0], z_range[0]),
+        max_xyz=(x_range[1], y_range[1], z_range[1]),
+        voxel_size_xyz=voxel_size_xyz,
+    )
+    return grid.dimensions
+
 
 SMALL_GPU_VIT_CONFIG = ViTConfig(variant=ViTVariant.T)
 SMALL_GPU_PTV3_CONFIG = PointTransformerV3Config(
@@ -152,18 +171,21 @@ class _PointTransformerBEVEncoder(nn.Module):
         raw_features = raw_features[valid]
         batch = batch[valid]
 
-        nx = int((self.x_max - self.x_min) / self.vx) + 1
-        ny = int((self.y_max - self.y_min) / self.vy) + 1
-        nz = int((self.z_max - self.z_min) / self.vz) + 1
-        if max(nx, ny, nz) >= 1 << self.point_transformer.serial_depth:
+        nx, ny, nz = point_grid_dimensions(
+            (self.x_min, self.x_max),
+            (self.y_min, self.y_max),
+            (self.z_min, self.z_max),
+            (self.vx, self.vy, self.vz),
+        )
+        if max(nx, ny, nz) > 1 << self.point_transformer.serial_depth:
             raise ValueError("LiDAR voxel grid exceeds the PTv3 serialization depth.")
 
         if xyz.numel():
             grid_coord = torch.stack(
                 (
-                    ((xyz[:, 0] - self.x_min) / self.vx).floor().long(),
-                    ((xyz[:, 1] - self.y_min) / self.vy).floor().long(),
-                    ((xyz[:, 2] - self.z_min) / self.vz).floor().long(),
+                    torch.clamp(((xyz[:, 0] - self.x_min) / self.vx).floor().long(), 0, nx - 1),
+                    torch.clamp(((xyz[:, 1] - self.y_min) / self.vy).floor().long(), 0, ny - 1),
+                    torch.clamp(((xyz[:, 2] - self.z_min) / self.vz).floor().long(), 0, nz - 1),
                 ),
                 dim=-1,
             )

@@ -18,6 +18,7 @@ from components.mmperc.encoder.point_transformer_v3 import (
     hilbert_encode,
     z_order_encode,
 )
+from components.mmperc.model.transformer_model import point_grid_dimensions
 
 torch.manual_seed(0)
 
@@ -247,6 +248,22 @@ def test_point_output_stride_adaptation():
         assert "isotropic" in str(err)
     else:
         raise AssertionError("Anisotropic output scaling must be rejected by scalar-stride helper")
+
+
+def test_lidar_point_grid_dimensions():
+    assert point_grid_dimensions(
+        (0.0, 128.0),
+        (-48.0, 48.0),
+        (-5.0, 3.0),
+        (1.0, 1.0, 8.0),
+    ) == (128, 96, 1)
+
+    try:
+        point_grid_dimensions((0.0, 128.0), (-48.0, 48.0), (-5.0, 3.0), (0.0, 1.0, 1.0))
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("Zero voxel size must be rejected")
 
 
 if __name__ == "__main__":
