@@ -1,7 +1,9 @@
 import math
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
+import numpy as np
 import torch
 import torch.nn as nn
 from components.mmperc.encoder.point_transformer_v3 import (
@@ -16,6 +18,12 @@ from experiments.ssl.sonata import (
     SonataFullExport,
     SonataNet,
     build_train_loader,
+)
+from experiments.ssl.vis_sonata import (
+    _export_lattice,
+    _load_cloud,
+    _map_to_export_lattice,
+    output_point_map,
 )
 
 
@@ -232,6 +240,51 @@ def test_sonata_rejects_anisotropic_geometry_output():
         raise AssertionError("Sonata must reject anisotropic scalar-stride output geometry")
 
 
+def test_onnx_output_point_map_matches_voxel_pool_order():
+    grid_coord = np.array([[0, 0, 0], [1, 0, 0], [2, 0, 0], [3, 0, 0], [0, 4, 0]], dtype=np.int64)
+
+    mapping = output_point_map(grid_coord, output_count=3)
+    custom_stride_mapping = output_point_map(grid_coord, output_count=3, stride_factors=(3,))
+
+    assert mapping.tolist() == [0, 0, 2, 2, 1]
+    assert custom_stride_mapping.tolist() == [0, 0, 0, 2, 1]
+
+
+def test_onnx_input_mapping_reproduces_export_lattice():
+    xyz = np.array([[3, 0, 0], [1, 0, 0], [0, 2, 0], [2, 1, 0]], dtype=np.float32)
+
+    mapped_grid = _map_to_export_lattice(xyz, grid_size=0.02)
+
+    assert sorted(map(tuple, mapped_grid.tolist())) == sorted(map(tuple, _export_lattice(len(xyz)).tolist()))
+
+
+def test_visualizer_loads_ascii_ply_without_open3d():
+    with TemporaryDirectory() as temp_dir:
+        path = Path(temp_dir) / "sample.ply"
+        path.write_text(
+            "ply\n"
+            "format ascii 1.0\n"
+            "element vertex 2\n"
+            "property float x\n"
+            "property float y\n"
+            "property float z\n"
+            "property uchar semantic\n"
+            "property uchar intensity\n"
+            "end_header\n"
+            "0 0 0 1 4\n"
+            "1 0 0 2 5\n"
+        )
+
+        with patch(
+            "experiments.ssl.vis_sonata.PcdOnlyFolderDataset.__getitem__", side_effect=ImportError("Open3D unavailable")
+        ):
+            xyz, features, names = _load_cloud(path, ("x", "y", "z"), None)
+
+        assert names == ("intensity",)
+        assert xyz.shape == (2, 3)
+        assert features.shape == (2, 1)
+
+
 if __name__ == "__main__":
     test_ply_semantic_labels_are_not_model_features()
     test_sonata_backbone_onnx_export()
@@ -239,3 +292,6 @@ if __name__ == "__main__":
     test_neighbor_export_matches_eager()
     test_sonata_geometry_config()
     test_sonata_rejects_anisotropic_geometry_output()
+    test_onnx_output_point_map_matches_voxel_pool_order()
+    test_onnx_input_mapping_reproduces_export_lattice()
+    test_visualizer_loads_ascii_ply_without_open3d()

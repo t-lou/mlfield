@@ -114,6 +114,25 @@ Both exports use a fixed point count and fixed serialization grid; rebuilding/ex
 required if geometry, channels, or model configuration change. PTv3 uses an ONNX-compatible
 neighborhood fallback during export.
 
+### Visualizing Sonata Features
+
+Use the visualizer beside the Sonata training script to color a PCD/PLY cloud by its PTv3
+features. It accepts a `.pt` checkpoint or either Sonata ONNX export; by default, feature
+channels are reduced to PCA RGB colors. `--component N` displays one scalar channel instead.
+
+```bash
+python -m experiments.ssl.vis_sonata sonata_teacher_backbone.pt cloud.pcd
+python -m experiments.ssl.vis_sonata sonata_teacher_backbone.onnx cloud.ply --screenshot features.png
+python -m experiments.ssl.vis_sonata sonata_full.onnx cloud.pcd --output unmask_logits
+```
+
+ONNX exports determine their fixed input point count automatically; clouds are deterministically
+sampled or repeated to match it. Because the current ONNX export is traced on a synthetic cubic
+grid, the visualizer maps points to that lattice in spatial Z-order. Use the `.pt` checkpoint
+path when preserving exact input geometry is important. Checkpoint inference uses up to 4096
+points by default (`--num-points` changes the cap); nonstandard checkpoints need their training
+config via `--cfg`. Install `pyvista` for visualization and `onnxruntime` to run ONNX models.
+
 ---
 
 ### 📁 Dataset Configuration
