@@ -50,10 +50,28 @@ Usage
     trainer = SonataTrainer(model, loader, SonataTrainConfig(max_steps=100_000))
     trainer.fit()
     trainer.export_backbone("sonata_teacher_backbone.pt")   # teacher weights for downstream use
+
+Geometry configuration
+----------------------
+    grid = PointGridSpec(
+        min_xyz=(-50.0, -50.0, -5.0),
+        max_xyz=(50.0, 50.0, 5.0),
+        voxel_size_xyz=(0.1, 0.1, 0.1),
+    )
+    model = Sonata(SonataConfig(
+        input_grid=grid,
+        output_voxel_size_xyz=(0.8, 0.8, 0.8),
+    ))
+
+``input_grid`` adapts the PTv3 serialization depth to the physical XYZ bounds.
+``output_voxel_size_xyz`` optionally adapts integer stage strides. PTv3 currently
+supports one scalar stride per stage shared by X, Y, and Z; therefore output scaling
+must be isotropic. An anisotropic output grid requires per-axis GridPooling support.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import math
 import os
@@ -66,8 +84,11 @@ import torch.nn.functional as F
 from components.dataset.pcd_only_dataset import PcdOnlyDataset
 from components.mmperc.encoder.point_transformer_v3 import (
     Point,
+    PointGridSpec,
     PointTransformerV3Config,
     PointTransformerV3Encoder,
+    adapt_ptv3_config_for_input,
+    adapt_ptv3_config_for_output,
     build_neighbors,
     serialize,
 )
@@ -111,6 +132,11 @@ def _default_backbone() -> PointTransformerV3Config:
 @dataclass
 class SonataConfig:
     backbone: PointTransformerV3Config = field(default_factory=_default_backbone)
+    # Optional physical geometry. Both geometry fields are applied to a copy of backbone
+    # during construction: input_grid adapts serialization depth, and
+    # output_voxel_size_xyz adapts stage strides for isotropic output scaling.
+    input_grid: PointGridSpec | dict | None = None
+    output_voxel_size_xyz: tuple[float, float, float] | float | None = None
     up_cast_level: int = 2  # loss is computed this many stages below the last one
     num_prototypes: int = 4096
     head_hidden: int = 2048
@@ -131,6 +157,23 @@ class SonataConfig:
     mask_loss_weight: float = 2.0
     roll_mask_loss_weight: float = 2.0
     unmask_loss_weight: float = 2.0
+
+    def __post_init__(self) -> None:
+        if isinstance(self.input_grid, dict):
+            self.input_grid = PointGridSpec(**self.input_grid)
+        if self.output_voxel_size_xyz is not None and self.input_grid is None:
+            raise ValueError("Sonata output_voxel_size_xyz requires input_grid")
+
+        backbone = self.backbone
+        if self.input_grid is not None:
+            backbone = adapt_ptv3_config_for_input(backbone, self.input_grid)
+        if self.output_voxel_size_xyz is not None:
+            backbone = adapt_ptv3_config_for_output(
+                backbone,
+                self.input_grid,
+                self.output_voxel_size_xyz,
+            )
+        self.backbone = backbone
 
 
 # --------------------------------------------------------------------------- #
@@ -930,6 +973,14 @@ def _small_gpu_profile(cfg: SonataConfig) -> SonataConfig:
         enc_patch_size=(256,) * 4,
         stem_kernel=3,
     )
+    if cfg.input_grid is not None:
+        backbone = adapt_ptv3_config_for_input(backbone, cfg.input_grid)
+    if cfg.output_voxel_size_xyz is not None:
+        backbone = adapt_ptv3_config_for_output(
+            backbone,
+            cfg.input_grid,
+            cfg.output_voxel_size_xyz,
+        )
     return replace(
         cfg,
         backbone=backbone,
@@ -978,6 +1029,20 @@ if __name__ == "__main__":
         default=",".join(DEFAULT_IGNORED_FIELDS),
         help="comma-separated point-cloud fields excluded from features (default: common labels)",
     )
+    parser.add_argument("--input-grid-min", type=str, default=None, help="input grid XYZ minimum: x,y,z")
+    parser.add_argument("--input-grid-max", type=str, default=None, help="input grid XYZ maximum: x,y,z")
+    parser.add_argument(
+        "--input-grid-voxel",
+        type=str,
+        default=None,
+        help="input grid voxel size: scalar or vx,vy,vz",
+    )
+    parser.add_argument(
+        "--output-grid-voxel",
+        type=str,
+        default=None,
+        help="isotropic output voxel size: scalar or vx,vy,vz",
+    )
     parser.add_argument("--checkpoint-dir", type=str, default="checkpoints/sonata")
     parser.add_argument("--resume", type=str, default=None, help="resume from a Sonata trainer checkpoint")
     parser.add_argument(
@@ -997,7 +1062,50 @@ if __name__ == "__main__":
     if args.steps < 1:
         parser.error("--steps must be positive")
 
-    cfg = SonataConfig() if args.cfg is None else SonataConfig(**torch.load(args.cfg))
+    if args.cfg is None:
+        cfg = SonataConfig()
+    else:
+        with open(args.cfg, encoding="utf-8") as config_file:
+            cfg_dict = json.load(config_file)
+        backbone = cfg_dict.get("backbone")
+        if isinstance(backbone, dict):
+            cfg_dict["backbone"] = PointTransformerV3Config(**backbone)
+        cfg = SonataConfig(**cfg_dict)
+    if (args.input_grid_min is None) != (args.input_grid_max is None):
+        parser.error("--input-grid-min and --input-grid-max must be provided together")
+    if args.input_grid_min is not None and args.input_grid_voxel is None:
+        parser.error("--input-grid-min, --input-grid-max, and --input-grid-voxel must be provided together")
+    if args.output_grid_voxel is not None and (args.input_grid_min is None or args.input_grid_voxel is None):
+        parser.error("--output-grid-voxel requires --input-grid-min, --input-grid-max, and --input-grid-voxel")
+    if args.input_grid_min is not None:
+
+        def parse_xyz(value: str, name: str) -> tuple[float, float, float]:
+            parts = tuple(float(part.strip()) for part in value.split(","))
+            if len(parts) != 3:
+                parser.error(f"--{name} must contain exactly three comma-separated numbers")
+            return parts
+
+        def parse_voxel(value: str, name: str) -> tuple[float, float, float] | float:
+            parts = tuple(float(part.strip()) for part in value.split(","))
+            if len(parts) == 1:
+                return parts[0]
+            if len(parts) == 3:
+                return parts
+            parser.error(f"--{name} must contain one scalar or three comma-separated numbers")
+
+        input_grid = PointGridSpec(
+            min_xyz=parse_xyz(args.input_grid_min, "input-grid-min"),
+            max_xyz=parse_xyz(args.input_grid_max, "input-grid-max"),
+            voxel_size_xyz=parse_voxel(args.input_grid_voxel, "input-grid-voxel"),
+        )
+        output_voxel = (
+            None if args.output_grid_voxel is None else parse_voxel(args.output_grid_voxel, "output-grid-voxel")
+        )
+        cfg = replace(
+            cfg,
+            input_grid=input_grid,
+            output_voxel_size_xyz=output_voxel,
+        )
     points_per_cloud = args.points_per_cloud
     if args.small_gpu:
         cfg = _small_gpu_profile(cfg)

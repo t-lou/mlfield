@@ -103,8 +103,9 @@ checkpoint directory (`image_dino_teacher_backbone.onnx`, `image_jepa_target_enc
 `image_mae_encoder.onnx`). Install `onnx` in the active environment to enable these exports. The files accept
 preprocessed NCHW images at the model's configured resolution and support a dynamic batch size.
 
-Sonata is not exported automatically: its point-transformer builds coordinate-dependent sparse neighborhoods and
-pooling graphs at runtime, which need a dedicated ONNX-compatible implementation.
+Sonata exports its trained teacher backbone to ONNX through `--onnx-out`. The export uses a fixed
+point count and fixed serialization grid; rebuilding/exporting is required if the geometry or
+backbone channels change. PTv3 supports this export with an ONNX-compatible neighborhood fallback.
 
 ---
 

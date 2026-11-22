@@ -1,14 +1,21 @@
+import math
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
 import torch
 import torch.nn as nn
 from components.mmperc.encoder.point_transformer_v3 import (
+    PointGridSpec,
     PointTransformerV3Config,
     build_neighbors,
 )
 from components.utils.onnx_export import export_onnx
-from experiments.ssl.sonata import SonataBackboneExport, SonataConfig, SonataNet, build_train_loader
+from experiments.ssl.sonata import (
+    SonataBackboneExport,
+    SonataConfig,
+    SonataNet,
+    build_train_loader,
+)
 
 
 def test_ply_semantic_labels_are_not_model_features():
@@ -102,14 +109,15 @@ def test_neighbor_export_matches_eager():
             return build_neighbors(grid_coord, batch, 3, 16)
 
     torch.manual_seed(123)
+    random_grid = torch.unique(torch.randint(0, 8, (64, 3), dtype=torch.long), dim=0)
     cases = [
         (
             torch.tensor([[0, 0, 0], [1, 0, 0], [1, 1, 0], [2, 2, 2]], dtype=torch.long),
             torch.tensor([0, 0, 0, 1], dtype=torch.long),
         ),
         (
-            torch.randint(0, 8, (64, 3), dtype=torch.long),
-            torch.cat((torch.zeros(32, dtype=torch.long), torch.ones(32, dtype=torch.long))),
+            random_grid,
+            torch.zeros(random_grid.shape[0], dtype=torch.long),
         ),
     ]
 
@@ -142,6 +150,37 @@ def test_neighbor_export_matches_eager():
         assert torch.equal(eager, exported)
 
 
+def test_sonata_geometry_config():
+    grid = PointGridSpec(
+        min_xyz=(0.0, -48.0, -5.0),
+        max_xyz=(128.0, 48.0, 3.0),
+        voxel_size_xyz=(1.0, 1.0, 1.0),
+    )
+    cfg = SonataConfig(input_grid=grid, output_voxel_size_xyz=8.0)
+
+    assert cfg.input_grid == grid
+    assert cfg.backbone.serial_depth == 7
+    assert cfg.backbone.stride is not None
+    assert math.prod(cfg.backbone.stride) == 8
+
+
+def test_sonata_rejects_anisotropic_geometry_output():
+    grid = PointGridSpec(
+        min_xyz=(0.0, -48.0, -5.0),
+        max_xyz=(128.0, 48.0, 3.0),
+        voxel_size_xyz=(1.0, 1.0, 1.0),
+    )
+    try:
+        SonataConfig(input_grid=grid, output_voxel_size_xyz=(2.0, 4.0, 2.0))
+    except ValueError as err:
+        assert "isotropic" in str(err)
+    else:
+        raise AssertionError("Sonata must reject anisotropic scalar-stride output geometry")
+
+
 if __name__ == "__main__":
     test_ply_semantic_labels_are_not_model_features()
     test_sonata_backbone_onnx_export()
+    test_neighbor_export_matches_eager()
+    test_sonata_geometry_config()
+    test_sonata_rejects_anisotropic_geometry_output()

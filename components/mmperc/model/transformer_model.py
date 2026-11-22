@@ -8,7 +8,12 @@ from torch import Tensor, nn
 
 from components.definitions.mmperc_params import MmpercParams
 from components.mmperc.encoder.multi_camera_encoder import MultiCameraEncoder
-from components.mmperc.encoder.point_transformer_v3 import PointTransformerV3Config, PointTransformerV3Encoder
+from components.mmperc.encoder.point_transformer_v3 import (
+    PointGridSpec,
+    PointTransformerV3Config,
+    PointTransformerV3Encoder,
+    adapt_ptv3_config_for_input,
+)
 from components.mmperc.encoder.vit_camera_encoder import ViTCameraEncoder
 from components.mmperc.fusion.futr_fusion import FuTrFusionBlock
 from components.mmperc.head.bbox2d_head import BBox3dHead
@@ -72,6 +77,13 @@ class _PointTransformerBEVEncoder(nn.Module):
         self.bev_w = bev.bev_w
         self.out_h = self.bev_h // 2
         self.out_w = self.bev_w // 2
+
+        lidar_grid = PointGridSpec(
+            min_xyz=(self.x_min, self.y_min, self.z_min),
+            max_xyz=(self.x_max, self.y_max, self.z_max),
+            voxel_size_xyz=(self.vx, self.vy, self.vz),
+        )
+        config = adapt_ptv3_config_for_input(config, lidar_grid)
 
         if lidar_feature_resolutions is not None:
             resolutions = (

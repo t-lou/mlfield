@@ -6,10 +6,14 @@ import torch
 from components.mmperc.encoder.point_transformer_v3 import (
     GridPooling,
     Point,
+    PointGridSpec,
     PointTransformerV3Config,
     PointTransformerV3Encoder,
     SubMConv3d,
     _pad_unpad,
+    adapt_ptv3_config_for_input,
+    adapt_ptv3_config_for_output,
+    adapt_ptv3_stride_for_output,
     build_neighbors,
     hilbert_encode,
     z_order_encode,
@@ -210,6 +214,39 @@ def test_small_cloud_and_grid_size():
         )
         out = m(d)
     assert out.feat.shape[0] == len(data["coord"])
+
+
+def test_point_grid_adaptation():
+    grid = PointGridSpec(
+        min_xyz=(0.0, -48.0, -5.0),
+        max_xyz=(128.0, 48.0, 3.0),
+        voxel_size_xyz=(1.0, 1.0, 8.0),
+    )
+    assert grid.dimensions == (128, 96, 1)
+    assert grid.serial_depth == 7
+
+    adapted = adapt_ptv3_config_for_input(CONFIG, grid)
+    assert adapted.serial_depth == 7
+
+
+def test_point_output_stride_adaptation():
+    grid = PointGridSpec(
+        min_xyz=(0.0, -48.0, -5.0),
+        max_xyz=(128.0, 48.0, 3.0),
+        voxel_size_xyz=(1.0, 1.0, 1.0),
+    )
+    config = replace(CONFIG, enc_depths=(2, 2, 2, 2), stride=None)
+
+    assert adapt_ptv3_stride_for_output(config, grid, 8.0) == (2, 2, 2)
+    adapted = adapt_ptv3_config_for_output(config, grid, 8.0)
+    assert adapted.stride == (2, 2, 2)
+
+    try:
+        adapt_ptv3_stride_for_output(config, grid, (2.0, 4.0, 2.0))
+    except ValueError as err:
+        assert "isotropic" in str(err)
+    else:
+        raise AssertionError("Anisotropic output scaling must be rejected by scalar-stride helper")
 
 
 if __name__ == "__main__":

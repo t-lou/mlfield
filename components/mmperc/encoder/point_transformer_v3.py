@@ -62,8 +62,30 @@ named in brackets):
   nbr           (N, k³)              submanifold neighbour table          (forward)
   pooling_parent, pooling_inverse    link back to the finer level         (GridPooling)
   encoder_stages                     per-stage snapshots                  (forward)
+
+Geometry configuration:
+  PointGridSpec(min_xyz, max_xyz, voxel_size_xyz)
+      Describes physical input bounds and XYZ voxel fineness. ``voxel_size_xyz`` may
+      be a scalar for isotropic grids or ``(vx, vy, vz)`` for anisotropic grids.
+  adapt_ptv3_config_for_input(config, grid)
+      Derives the smallest valid serialization depth for the grid.
+  adapt_ptv3_config_for_output(config, input_grid, output_voxel_size_xyz)
+      Derives stage strides for an isotropic output voxel size. Because the current
+      GridPooling implementation uses one scalar stride per stage for every XYZ axis,
+      anisotropic output scaling must be implemented separately before using this API.
+
+Example::
+
+    lidar_grid = PointGridSpec(
+        min_xyz=(0.0, -48.0, -5.0),
+        max_xyz=(128.0, 48.0, 3.0),
+        voxel_size_xyz=(1.0, 1.0, 8.0),
+    )
+    config = adapt_ptv3_config_for_input(config, lidar_grid)
+    config = adapt_ptv3_config_for_output(config, lidar_grid, 8.0)
 """
 
+import math
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
 
@@ -136,6 +158,152 @@ class PointTransformerV3Config:
     serial_depth: int = 16
     stem_kernel: int = 5
     enc_mode: bool = False
+
+
+@dataclass(frozen=True)
+class PointGridSpec:
+    """Physical fineness of the input voxel grid, in XYZ units."""
+
+    min_xyz: tuple[float, float, float]
+    max_xyz: tuple[float, float, float]
+    voxel_size_xyz: tuple[float, float, float] | float
+
+    def __post_init__(self) -> None:
+        for name, values in (
+            ("min_xyz", self.min_xyz),
+            ("max_xyz", self.max_xyz),
+        ):
+            if len(values) != 3:
+                raise ValueError(f"{name} must contain exactly three values")
+        if not all(math.isfinite(float(v)) for v in (*self.min_xyz, *self.max_xyz)):
+            raise ValueError("Point-grid bounds must be finite")
+        if any(maximum <= minimum for minimum, maximum in zip(self.min_xyz, self.max_xyz, strict=True)):
+            raise ValueError("Every max_xyz value must be greater than its min_xyz value")
+        if not all(math.isfinite(v) and v > 0 for v in self.voxel_size):
+            raise ValueError("voxel size values must be positive and finite")
+
+    @property
+    def voxel_size(self) -> tuple[float, float, float]:
+        if isinstance(self.voxel_size_xyz, (int, float)):
+            size = float(self.voxel_size_xyz)
+            return (size, size, size)
+        if len(self.voxel_size_xyz) != 3:
+            raise ValueError("voxel_size_xyz must be a scalar or contain exactly three values")
+        return tuple(float(v) for v in self.voxel_size_xyz)
+
+    @property
+    def dimensions(self) -> tuple[int, int, int]:
+        return tuple(
+            max(1, math.ceil((maximum - minimum) / size))
+            for minimum, maximum, size in zip(self.min_xyz, self.max_xyz, self.voxel_size, strict=True)
+        )
+
+    @property
+    def serial_depth(self) -> int:
+        """Smallest Morton/Hilbert coordinate depth needed for this grid."""
+        return max(1, math.ceil(math.log2(max(self.dimensions))))
+
+
+def adapt_ptv3_config_for_input(
+    config: PointTransformerV3Config,
+    grid: PointGridSpec,
+) -> PointTransformerV3Config:
+    """Adapt serialization capacity and validate stage settings for a point grid."""
+    depth = grid.serial_depth
+    if depth > 21:
+        raise ValueError(
+            f"Point grid dimensions {grid.dimensions} require serial_depth={depth}, "
+            "but PTv3 supports at most serial_depth=21"
+        )
+    return replace(config, serial_depth=depth)
+
+
+def adapt_ptv3_stride_for_output(
+    config: PointTransformerV3Config,
+    input_grid: PointGridSpec,
+    output_voxel_size_xyz: tuple[float, float, float] | float,
+) -> tuple[int, ...]:
+    """Return stage strides that approximate a physical isotropic output voxel size.
+
+    PTv3 currently divides X, Y, and Z grid coordinates by the same integer stride,
+    so output voxel sizes must scale uniformly. For anisotropic output grids, add
+    per-axis pooling support before using this helper.
+    """
+    if isinstance(output_voxel_size_xyz, (int, float)):
+        output_voxel_size = (
+            float(output_voxel_size_xyz),
+            float(output_voxel_size_xyz),
+            float(output_voxel_size_xyz),
+        )
+    else:
+        if len(output_voxel_size_xyz) != 3:
+            raise ValueError("output_voxel_size_xyz must be a scalar or contain exactly three values")
+        output_voxel_size = tuple(float(v) for v in output_voxel_size_xyz)
+    if not all(math.isfinite(v) and v > 0 for v in output_voxel_size):
+        raise ValueError("Output voxel size values must be positive and finite")
+
+    ratios = [
+        output_size / input_size
+        for output_size, input_size in zip(output_voxel_size, input_grid.voxel_size, strict=True)
+    ]
+    if max(ratios) / min(ratios) > 1.001:
+        raise ValueError(f"PTv3 scalar stride requires isotropic output scaling; got input/output ratios {ratios}")
+
+    total_stride = max(1, round(ratios[0]))
+    if not math.isclose(ratios[0], total_stride, rel_tol=1e-3, abs_tol=1e-3):
+        raise ValueError(
+            f"Output voxel ratio {ratios[0]:.6g} must be an integer because GridPooling uses integer strides"
+        )
+
+    transitions = len(config.enc_depths) - 1
+    if transitions < 1:
+        if total_stride != 1:
+            raise ValueError("A one-stage encoder cannot downsample the output grid")
+        return ()
+
+    target = total_stride ** (1.0 / transitions)
+    best: tuple[int, ...] | None = None
+    best_score = float("inf")
+
+    def allocate(position: int, remaining: int, chosen: tuple[int, ...]) -> None:
+        nonlocal best, best_score
+        slots_left = transitions - position
+        if slots_left == 0:
+            if remaining == 1:
+                score = sum((math.log(stride) - math.log(target)) ** 2 for stride in chosen)
+                if score < best_score:
+                    best_score = score
+                    best = chosen
+            return
+        if slots_left == 1:
+            if remaining >= 1:
+                allocate(position + 1, 1, (*chosen, remaining))
+            return
+        divisors: list[int] = []
+        limit = math.isqrt(remaining)
+        for stride in range(1, limit + 1):
+            if remaining % stride == 0:
+                divisors.append(stride)
+                complement = remaining // stride
+                if complement != stride:
+                    divisors.append(complement)
+        for stride in sorted(set(divisors)):
+            allocate(position + 1, remaining // stride, (*chosen, stride))
+
+    allocate(0, total_stride, ())
+    if best is None:
+        raise ValueError(f"Output stride factor {total_stride} cannot be allocated across {transitions} PTv3 stages")
+    return best
+
+
+def adapt_ptv3_config_for_output(
+    config: PointTransformerV3Config,
+    input_grid: PointGridSpec,
+    output_voxel_size_xyz: tuple[float, float, float] | float,
+) -> PointTransformerV3Config:
+    """Set PTv3 stage strides for the requested physical output voxel size."""
+    stride = adapt_ptv3_stride_for_output(config, input_grid, output_voxel_size_xyz)
+    return replace(config, stride=stride)
 
 
 # --------------------------------------------------------------------------- #
