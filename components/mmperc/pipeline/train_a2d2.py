@@ -24,7 +24,7 @@ from components.utils.archive_checkpoint import (
 def train_model(
     model: torch.nn.Module,
     dataloader_train: DataLoader,
-    dataloader_eval: DataLoader,
+    dataloader_eval: DataLoader | None,
     optimizer: torch.optim.Optimizer,
     scheduler: torch.optim.lr_scheduler.LRScheduler | None = None,
     device: torch.device = None,
@@ -33,6 +33,11 @@ def train_model(
     skip_eval: bool = False,
     debug_plot_every: int = 0,
 ):
+    if skip_eval:
+        dataloader_eval = None
+    elif dataloader_eval is None:
+        raise ValueError("dataloader_eval is required unless skip_eval=True")
+
     debug_ploter.init_plot()
     ensure_dir(ckpt_dir)
     latest_path = os.path.join(ckpt_dir, "simple_model_latest.pt")
@@ -84,7 +89,7 @@ def train_model(
             logging.info(f"[Latest] Updated latest checkpoint → {latest_path}")
 
             # Evaluate the last epoch
-            if not skip_eval:
+            if dataloader_eval is not None:
                 evaluate_one_epoch(
                     model=model,
                     dataloader=dataloader_eval,
