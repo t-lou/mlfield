@@ -7,8 +7,9 @@ Examples:
     python -m experiments.ssl.vis_sonata model.pt cloud.pcd --component 12 --screenshot features.png
 
 Non-standard PT checkpoints need the Sonata config JSON used during training via ``--cfg``.
-ONNX exports use their fixed point count; points are deterministically sampled or repeated
-when the source cloud has a different number of points. Their traced lattice is retained by
+Fixed-count ONNX exports use their fixed point count; dynamic-count exports require
+``--num-points``. Points are deterministically sampled or repeated when the source cloud has
+a different number of points. Their traced lattice is retained by
 mapping points in spatial Z-order; use a ``.pt`` checkpoint to preserve metric-coordinate geometry.
 Input clouds use the shared ``BevParams`` ROI and voxel aggregation by default.
 """
@@ -69,6 +70,8 @@ def _checkpoint_config(state: dict[str, torch.Tensor], config_path: Path | None)
     if config_path is not None:
         return _read_config(config_path)
 
+    if "embed_norm.weight" not in state or "embed_conv.weight" not in state:
+        raise ValueError("Could not infer the PTv3 architecture from this checkpoint; provide its config with --cfg")
     channels = [int(state["embed_norm.weight"].numel())]
     pool_ids = sorted(
         {int(match.group(1)) for key in state if (match := re.match(r"pools\.(\d+)\.norm\.weight$", key))}
@@ -82,7 +85,12 @@ def _checkpoint_config(state: dict[str, torch.Tensor], config_path: Path | None)
     in_channels = int(state["embed_conv.weight"].shape[1])
     kernel_volume = int(state["embed_conv.weight"].shape[0])
     stem_kernel = round(kernel_volume ** (1 / 3))
-    if stem_kernel**3 != kernel_volume or len(channels) != len(depths) or stage_ids != list(range(len(channels))):
+    if (
+        stem_kernel**3 != kernel_volume
+        or pool_ids != list(range(len(channels) - 1))
+        or len(channels) != len(depths)
+        or stage_ids != list(range(len(channels)))
+    ):
         raise ValueError("Could not infer the PTv3 architecture from this checkpoint; provide its config with --cfg")
 
     default_channels = (48, 96, 192, 384, 512)
@@ -90,7 +98,7 @@ def _checkpoint_config(state: dict[str, torch.Tensor], config_path: Path | None)
     small_channels = (16, 32, 64, 128)
     small_depths = (1, 1, 1, 1)
     if tuple(channels) == default_channels and tuple(depths) == default_depths and stem_kernel == 5:
-        backbone = replace(PointTransformerV3Config(), in_channels=in_channels)
+        backbone = replace(SonataConfig().backbone, in_channels=in_channels)
     elif tuple(channels) == small_channels and tuple(depths) == small_depths and stem_kernel == 3:
         backbone = PointTransformerV3Config(
             in_channels=in_channels,
@@ -128,14 +136,23 @@ def _read_ascii_ply_header(file: TextIO, path: Path) -> tuple[int, tuple[str, ..
 
 
 def _parse_ascii_ply_header(header: list[list[str]], path: Path) -> tuple[int, tuple[str, ...]]:
-    format_parts = next((parts for parts in header if parts[0] == "format"), [])
+    format_lines = [parts for parts in header if parts[0] == "format"]
+    element_lines = [parts for parts in header if parts[0] == "element"]
+    if len(format_lines) != 1 or any(len(parts) != 3 for parts in element_lines):
+        raise ValueError(f"{path}: malformed PLY format or element declaration")
+    format_parts = format_lines[0]
     vertex_indexes = [idx for idx, parts in enumerate(header) if parts[0] == "element" and parts[1] == "vertex"]
     if format_parts[1:] != ["ascii", "1.0"] or len(vertex_indexes) != 1:
         raise ValueError(f"{path}: ASCII fallback requires a vertex element and format ascii 1.0")
     vertex_index = vertex_indexes[0]
     if any(parts[0] == "element" for parts in header[:vertex_index]):
         raise ValueError(f"{path}: ASCII fallback requires the vertex element first")
-    vertex_count = int(header[vertex_index][2])
+    try:
+        vertex_count = int(header[vertex_index][2])
+    except ValueError as exc:
+        raise ValueError(f"{path}: invalid PLY vertex count") from exc
+    if vertex_count < 0:
+        raise ValueError(f"{path}: PLY vertex count cannot be negative")
     next_element = next(
         (idx for idx in range(vertex_index + 1, len(header)) if header[idx][0] == "element"),
         len(header),
@@ -170,6 +187,8 @@ def _prepare_cloud_array(
     coord_fields: tuple[str, str, str],
     selected_features: tuple[str, ...] | None,
 ) -> tuple[np.ndarray, np.ndarray, tuple[str, ...]]:
+    if array.ndim != 2 or array.shape[1] != len(fields):
+        raise ValueError(f"{path}: point data shape {array.shape} does not match its {len(fields)} fields")
     field_to_idx = {field.lower(): idx for idx, field in enumerate(fields)}
     coord_names = tuple(name.lower() for name in coord_fields)
     missing = [name for name in coord_names if name not in field_to_idx]
@@ -234,6 +253,12 @@ def _select_points(
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     if count < 1:
         raise ValueError("point count must be positive")
+    if xyz.ndim != 2 or xyz.shape[1] != 3:
+        raise ValueError(f"coordinates must have shape (N, 3), got {xyz.shape}")
+    if feat.ndim != 2 or feat.shape[0] != xyz.shape[0]:
+        raise ValueError("features must have one row per coordinate")
+    if xyz.shape[0] == 0:
+        raise ValueError("cannot select points from an empty cloud")
     rng = np.random.default_rng(seed)
     replace_points = len(xyz) < count
     indices = np.sort(rng.choice(len(xyz), size=count, replace=replace_points))
@@ -241,6 +266,8 @@ def _select_points(
 
 
 def _export_lattice(point_count: int) -> np.ndarray:
+    if point_count < 1:
+        raise ValueError("point count must be positive")
     side = math.ceil(point_count ** (1 / 3))
     point_ids = np.arange(point_count)
     return np.stack((point_ids // (side * side), (point_ids // side) % side, point_ids % side), axis=1).astype(np.int64)
@@ -248,6 +275,8 @@ def _export_lattice(point_count: int) -> np.ndarray:
 
 def _map_to_export_lattice(grid_coord: np.ndarray) -> np.ndarray:
     """Assign spatially ordered source points to the synthetic lattice used by ONNX export."""
+    if grid_coord.ndim != 2 or grid_coord.shape[1] != 3 or len(grid_coord) == 0:
+        raise ValueError(f"grid coordinates must have non-empty shape (N, 3), got {grid_coord.shape}")
     source_grid = grid_coord - grid_coord.min(axis=0, keepdims=True)
     source_max = source_grid.max(axis=0, keepdims=True)
     source_grid = np.divide(
@@ -301,6 +330,10 @@ def output_point_map(
     stride_factors: tuple[int, ...] | None = None,
 ) -> np.ndarray:
     """Map output rows to input points using PTv3's sorted voxel-pooling order."""
+    if grid_coord.ndim != 2 or grid_coord.shape[1] != 3 or len(grid_coord) == 0:
+        raise ValueError(f"grid coordinates must have non-empty shape (N, 3), got {grid_coord.shape}")
+    if output_count < 1:
+        raise ValueError("output feature count must be positive")
     if output_count == len(grid_coord):
         return np.arange(len(grid_coord))
 
@@ -370,6 +403,20 @@ def _run_checkpoint(
     return encoded.feat.float().cpu().numpy()
 
 
+def _resolve_onnx_point_count(point_dim: int | str | None, requested_points: int | None) -> int:
+    if isinstance(point_dim, int):
+        if requested_points is not None and requested_points != point_dim:
+            raise ValueError(f"ONNX model requires {point_dim} points, but --num-points={requested_points}")
+        point_count = point_dim
+    else:
+        if requested_points is None:
+            raise ValueError("This ONNX model has a dynamic point count; provide --num-points")
+        point_count = requested_points
+    if point_count < 1:
+        raise ValueError("ONNX point count must be positive")
+    return point_count
+
+
 def _run_onnx(
     path: Path,
     xyz: np.ndarray,
@@ -389,22 +436,17 @@ def _run_onnx(
     inputs = {item.name: item for item in session.get_inputs()}
     if set(inputs) != {"features", "grid_coord", "batch"}:
         raise ValueError(f"{path}: expected inputs features, grid_coord, and batch; found {tuple(inputs)}")
-    point_dim = inputs["features"].shape[0]
-    if point_dim is None:
-        if requested_points is None:
-            raise ValueError("This ONNX model has a dynamic point count; provide --num-points")
-        point_count = requested_points
-    else:
-        point_count = int(point_dim)
-        if requested_points is not None and requested_points != point_count:
-            raise ValueError(f"ONNX model requires {point_count} points, but --num-points={requested_points}")
+    feature_shape = inputs["features"].shape
+    if len(feature_shape) != 2:
+        raise ValueError(f"{path}: expected a two-dimensional features input, got shape {feature_shape}")
+    point_count = _resolve_onnx_point_count(feature_shape[0], requested_points)
 
     xyz_input, feat_input, selected = _select_points(xyz, feat, point_count, seed)
     grid_coord = _map_to_export_lattice(source_grid_coord[selected])
-    if feat_input.shape[1] != inputs["features"].shape[1]:
+    channel_dim = feature_shape[1]
+    if isinstance(channel_dim, int) and feat_input.shape[1] != channel_dim:
         raise ValueError(
-            f"ONNX model expects {inputs['features'].shape[1]} feature channels, "
-            f"but the cloud provides {feat_input.shape[1]}"
+            f"ONNX model expects {channel_dim} feature channels, but the cloud provides {feat_input.shape[1]}"
         )
     feed = {
         "features": np.ascontiguousarray(feat_input, dtype=np.float32),
@@ -491,7 +533,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--num-points",
         type=int,
-        help="PT point cap (default: 4096); ONNX models require their fixed count",
+        help="PT point cap (default: 4096); required for dynamic ONNX and must match fixed ONNX counts",
     )
     parser.add_argument(
         "--output",
@@ -523,11 +565,13 @@ def _extract_features(args: argparse.Namespace) -> tuple[np.ndarray, np.ndarray,
         if not feature_fields:
             raise ValueError("--feature-fields must contain at least one field name")
     model_type = args.model.suffix.lower()
+    onnx_mapping_config = None
     if model_type == ".pt":
         state = _checkpoint_backbone_state(args.model)
         config = _checkpoint_config(state, args.cfg)
     elif model_type == ".onnx":
-        config = _read_config(args.cfg) if args.cfg is not None else SonataConfig()
+        onnx_mapping_config = _read_config(args.cfg) if args.cfg is not None else None
+        config = onnx_mapping_config or SonataConfig()
     else:
         raise ValueError(f"unsupported model extension {model_type!r}; expected .pt or .onnx")
 
@@ -553,7 +597,7 @@ def _extract_features(args: argparse.Namespace) -> tuple[np.ndarray, np.ndarray,
         args.num_points,
         args.output,
         args.seed,
-        config,
+        onnx_mapping_config,
     )
     return display_xyz, features, output_name, names
 

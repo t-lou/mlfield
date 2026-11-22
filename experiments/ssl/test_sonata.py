@@ -1,7 +1,7 @@
 import math
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 from unittest.mock import patch
 
 import numpy as np
@@ -24,10 +24,13 @@ from experiments.ssl.sonata import (
     build_train_loader,
 )
 from experiments.ssl.vis_sonata import (
+    _checkpoint_config,
     _export_lattice,
+    _load_ascii_ply,
     _load_cloud,
     _map_to_export_lattice,
     _run_checkpoint,
+    _run_onnx,
     _voxelize_cloud,
     output_point_map,
 )
@@ -121,6 +124,67 @@ def test_sonata_and_ptv3_default_to_shared_bev_geometry():
     assert bev_grid.width == 64
     assert config.input_grid == grid
     assert config.backbone.serial_depth == grid.serial_depth
+
+
+def test_visualizer_infers_default_sonata_checkpoint_architecture():
+    channels = (48, 96, 192, 384, 512)
+    depths = (3, 3, 3, 12, 3)
+    state = {
+        "embed_norm.weight": torch.empty(channels[0]),
+        "embed_conv.weight": torch.empty(125, 9),
+    }
+    state.update({f"pools.{idx}.norm.weight": torch.empty(width) for idx, width in enumerate(channels[1:])})
+    state.update(
+        {
+            f"enc.{stage}.{layer}.attn.q.weight": torch.empty(1)
+            for stage, depth in enumerate(depths)
+            for layer in range(depth)
+        }
+    )
+
+    config = _checkpoint_config(state, None)
+
+    assert tuple(config.backbone.enc_channels) == channels
+    assert tuple(config.backbone.enc_depths) == depths
+    assert config.backbone.in_channels == 9
+
+
+def test_visualizer_accepts_symbolic_onnx_point_dimension():
+    class FakeSession:
+        def __init__(self, path, providers):
+            self.inputs = [
+                SimpleNamespace(name="features", shape=("num_points", 2)),
+                SimpleNamespace(name="grid_coord", shape=("num_points", 3)),
+                SimpleNamespace(name="batch", shape=("num_points",)),
+            ]
+
+        def get_inputs(self):
+            return self.inputs
+
+        def get_outputs(self):
+            return [SimpleNamespace(name="encoded_features")]
+
+        def run(self, names, feed):
+            assert feed["features"].shape == (4, 2)
+            return [np.ones((4, 5), dtype=np.float32)]
+
+    fake_runtime = ModuleType("onnxruntime")
+    fake_runtime.InferenceSession = FakeSession
+    with patch.dict("sys.modules", {"onnxruntime": fake_runtime}):
+        xyz, features, output_name = _run_onnx(
+            Path("model.onnx"),
+            np.array([[0, 0, 0], [1, 0, 0], [2, 0, 0]], dtype=np.float32),
+            np.ones((3, 2), dtype=np.float32),
+            np.array([[0, 0, 0], [1, 0, 0], [2, 0, 0]], dtype=np.int64),
+            requested_points=4,
+            output_name="auto",
+            seed=0,
+            config=None,
+        )
+
+    assert xyz.shape == (4, 3)
+    assert features.shape == (4, 5)
+    assert output_name == "encoded_features"
 
 
 def test_visualizer_voxelizes_with_bev_and_runs_pt_with_explicit_grid():
@@ -395,6 +459,19 @@ def test_visualizer_loads_ascii_ply_without_open3d():
         assert names == ("intensity",)
         assert xyz.shape == (2, 3)
         assert features.shape == (2, 1)
+
+
+def test_visualizer_reports_malformed_ascii_ply_header():
+    with TemporaryDirectory() as temp_dir:
+        path = Path(temp_dir) / "malformed.ply"
+        path.write_text("ply\nformat ascii 1.0\nelement vertex\nend_header\n")
+
+        try:
+            _load_ascii_ply(path)
+        except ValueError as error:
+            assert "malformed" in str(error).lower()
+        else:
+            raise AssertionError("malformed PLY element declaration should be rejected")
 
 
 if __name__ == "__main__":

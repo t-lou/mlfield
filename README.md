@@ -126,8 +126,9 @@ python -m experiments.ssl.vis_sonata sonata_teacher_backbone.onnx cloud.ply --sc
 python -m experiments.ssl.vis_sonata sonata_full.onnx cloud.pcd --output unmask_logits
 ```
 
-ONNX exports determine their fixed input point count automatically; clouds are deterministically
-sampled or repeated to match it. Because the current ONNX export is traced on a synthetic cubic
+Fixed-count ONNX exports determine their input point count automatically; dynamic-count models
+require `--num-points`. Clouds are deterministically sampled or repeated to match the count.
+Because the current ONNX export is traced on a synthetic cubic
 grid, the visualizer maps points to that lattice in spatial Z-order. Use the `.pt` checkpoint
 path when preserving metric-coordinate geometry is important. Checkpoint inference uses up to 4096
 points by default (`--num-points` changes the cap); nonstandard checkpoints need their training
