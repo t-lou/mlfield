@@ -102,6 +102,8 @@ Sonata reads its model, optimizer schedule, data, checkpoint, and export setting
 [`experiments/ssl/sonata_config.yml`](experiments/ssl/sonata_config.yml). Pass another YAML
 file with `--path-config` to reload a different configuration on the next run; command-line
 options such as `--steps` and `--batch-size` override the file for that run.
+The `data.num_workers` and `data.prefetch_factor` settings control CPU preprocessing and
+prefetching; use `--num-workers 0` to disable multiprocessing if needed.
 
 ```bash
 python -m experiments.ssl.sonata --path-config experiments/ssl/sonata_config.yml

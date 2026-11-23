@@ -672,6 +672,8 @@ class SonataDataConfig:
     data_dir: str = "./data/gen"
     points_per_cloud: int = 4096
     batch_size: int = 1
+    num_workers: int = 4
+    prefetch_factor: int = 2
     coord_fields: tuple[str, str, str] = ("x", "y", "z")
     ignore_fields: tuple[str, ...] = DEFAULT_IGNORED_FIELDS
 
@@ -1057,7 +1059,7 @@ def _single_item_collate(items: list[dict]) -> dict:
     if len(items) == 1:
         return items[0]
 
-    # Batch multiple items with padding
+    # Batch multiple clouds into one model input.
     batched = {"global_views": [], "local_views": []}
 
     # Process global views
@@ -1117,6 +1119,9 @@ def build_train_loader(
     coord_fields: tuple[str, str, str] = ("x", "y", "z"),
     ignore_fields: tuple[str, ...] = DEFAULT_IGNORED_FIELDS,
     input_grid: PointGridSpec | None = None,
+    num_workers: int = 4,
+    prefetch_factor: int = 2,
+    pin_memory: bool = False,
 ) -> tuple[SonataPCDDataset, DataLoader]:
     """Build a shuffled training loader from recursively collected PCD/PLY files.
 
@@ -1124,11 +1129,21 @@ def build_train_loader(
         data_dir: Directory containing PCD/PLY point clouds
         points_per_cloud: Maximum points sampled per cloud
         batch_size: Number of point clouds per batch (supports variable batch sizes per GPU)
+        num_workers: CPU worker processes used to load and prepare point clouds
+        prefetch_factor: Batches prepared in advance per worker
+        pin_memory: Pin host tensors for asynchronous CUDA transfers
         grid_size: Optional override for voxel size
         coord_fields: Names of coordinate fields (x, y, z)
         ignore_fields: Fields to exclude from features
         input_grid: Optional grid specification
     """
+    if batch_size < 1:
+        raise ValueError("batch_size must be positive")
+    if num_workers < 0:
+        raise ValueError("num_workers must be non-negative")
+    if prefetch_factor < 1:
+        raise ValueError("prefetch_factor must be positive")
+
     dataset = SonataPCDDataset(
         data_dir,
         points_per_cloud,
@@ -1137,7 +1152,18 @@ def build_train_loader(
         ignore_fields,
         input_grid,
     )
-    loader = DataLoader(dataset, batch_size=batch_size, shuffle=True, collate_fn=_single_item_collate)
+    loader_kwargs = {
+        "dataset": dataset,
+        "batch_size": batch_size,
+        "shuffle": True,
+        "collate_fn": _single_item_collate,
+        "num_workers": num_workers,
+        "pin_memory": pin_memory,
+    }
+    if num_workers:
+        loader_kwargs["persistent_workers"] = True
+        loader_kwargs["prefetch_factor"] = prefetch_factor
+    loader = DataLoader(**loader_kwargs)
     return dataset, loader
 
 
@@ -1259,6 +1285,18 @@ if __name__ == "__main__":
         help="override the number of point clouds per batch",
     )
     parser.add_argument(
+        "--num-workers",
+        type=int,
+        default=None,
+        help="override CPU data-loading workers (0 disables worker prefetch)",
+    )
+    parser.add_argument(
+        "--prefetch-factor",
+        type=int,
+        default=None,
+        help="override batches prefetched per data-loading worker",
+    )
+    parser.add_argument(
         "--grid-size",
         type=float,
         default=None,
@@ -1319,6 +1357,10 @@ if __name__ == "__main__":
         cfg.data.points_per_cloud = args.points_per_cloud
     if args.batch_size is not None:
         cfg.data.batch_size = args.batch_size
+    if args.num_workers is not None:
+        cfg.data.num_workers = args.num_workers
+    if args.prefetch_factor is not None:
+        cfg.data.prefetch_factor = args.prefetch_factor
     if args.coord_fields is not None:
         cfg.data.coord_fields = tuple(field.strip() for field in args.coord_fields.split(","))
     if args.ignore_fields is not None:
@@ -1339,6 +1381,10 @@ if __name__ == "__main__":
         parser.error("configured points_per_cloud / --points-per-cloud must be positive")
     if cfg.data.batch_size < 1:
         parser.error("configured batch_size / --batch-size must be positive")
+    if cfg.data.num_workers < 0:
+        parser.error("configured num_workers / --num-workers must be non-negative")
+    if cfg.data.prefetch_factor < 1:
+        parser.error("configured prefetch_factor / --prefetch-factor must be positive")
     if (args.input_grid_min is None) != (args.input_grid_max is None):
         parser.error("--input-grid-min and --input-grid-max must be provided together")
     if args.input_grid_min is not None and args.input_grid_voxel is None:
@@ -1397,6 +1443,9 @@ if __name__ == "__main__":
         coord_fields=cfg.data.coord_fields,
         ignore_fields=cfg.data.ignore_fields,
         input_grid=model_cfg.input_grid,
+        num_workers=cfg.data.num_workers,
+        prefetch_factor=cfg.data.prefetch_factor,
+        pin_memory=device.type == "cuda",
     )
     cfg.model = replace(
         model_cfg,

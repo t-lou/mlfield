@@ -78,11 +78,24 @@ def test_ply_semantic_labels_are_not_model_features():
             ("x", "y", "z", "semantic", "intensity"),
         )
         with patch("experiments.ssl.sonata.PcdOnlyDataset", return_value=fake_dataset):
-            dataset, _ = build_train_loader(temp_dir, points_per_cloud=2, ignore_fields=("semantic",))
+            dataset, loader = build_train_loader(
+                temp_dir,
+                points_per_cloud=2,
+                batch_size=2,
+                ignore_fields=("semantic",),
+                num_workers=2,
+                prefetch_factor=3,
+                pin_memory=True,
+            )
             item = dataset[0]
 
         assert dataset.feature_fields == ("intensity",)
         assert dataset.in_channels == 1
+        assert loader.batch_size == 2
+        assert loader.num_workers == 2
+        assert loader.prefetch_factor == 3
+        assert loader.persistent_workers
+        assert loader.pin_memory
         assert item["global_views"][0]["feat"].shape == (2, 1)
         assert item["global_views"][0]["grid_coord"].shape == (2, 3)
 
