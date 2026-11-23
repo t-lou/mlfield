@@ -654,6 +654,7 @@ class SonataTrainConfig:
     teacher_temp_end: float = 0.07
     teacher_temp_warmup_steps: int = 5_000
     amp: bool = True  # mixed-precision autocast
+    batch_size: int = 1
     log_every: int = 20
     eval_every: int = 0  # 0 = never; calls ``eval_fn(model, step)`` every this many steps
     save_every: int = 2_000
@@ -947,7 +948,7 @@ class SonataPCDDataset(Dataset):
             voxel_input,
             torch.zeros(len(coordinates), dtype=torch.long),
             self.input_grid,
-            batch_size=1,
+            batch_size=8,
             feature_dim=voxel_input.shape[1],
         )
         if not is_real.any():
@@ -1016,20 +1017,158 @@ class SonataPCDDataset(Dataset):
 
 
 def _single_item_collate(items: list[dict]) -> dict:
-    if len(items) != 1:
-        raise ValueError(f"Expected one point cloud per batch, got {len(items)}")
-    return items[0]
+    """Collate multiple point cloud items into a batch with 0-padding for missing points.
+
+    Supports variable batch sizes. Missing fields are zero-filled, and all point clouds
+    are padded to the maximum number of points in the batch.
+    """
+    if len(items) == 0:
+        raise ValueError("Expected at least one point cloud per batch")
+
+    if len(items) == 1:
+        return items[0]
+
+    # Batch multiple items with padding
+    batched = {"global_views": [], "local_views": []}
+
+    # Process global views
+    global_views = [item["global_views"] for item in items]
+    max_num_global = max(len(gv) for gv in global_views)
+    for view_idx in range(max_num_global):
+        view_batch = []
+        max_points = 0
+        for gv in global_views:
+            if view_idx < len(gv):
+                view_batch.append(gv[view_idx])
+                max_points = max(max_points, gv[view_idx]["coord"].shape[0])
+            else:
+                view_batch.append(None)
+        batched["global_views"].append(_collate_views(view_batch, max_points))
+
+    # Process local views
+    local_views = [item["local_views"] for item in items]
+    max_num_local = max(len(lv) for lv in local_views) if local_views else 0
+    for view_idx in range(max_num_local):
+        view_batch = []
+        max_points = 0
+        for lv in local_views:
+            if view_idx < len(lv):
+                view_batch.append(lv[view_idx])
+                max_points = max(max_points, lv[view_idx]["coord"].shape[0])
+            else:
+                view_batch.append(None)
+        batched["local_views"].append(_collate_views(view_batch, max_points))
+
+    return batched
+
+
+def _collate_views(views: list[dict | None], max_points: int) -> dict:
+    """Collate a list of views with padding to max_points.
+
+    Missing views (None) or missing fields are 0-padded.
+    """
+    if max_points == 0:
+        raise ValueError("max_points must be positive")
+
+    result = {}
+    view_indices = []
+
+    for idx, view in enumerate(views):
+        if view is not None:
+            view_indices.append(idx)
+
+    if not view_indices:
+        # All views are None, return dummy padded tensors
+        result["coord"] = torch.zeros((len(views) * max_points, 3), dtype=torch.float32)
+        result["feat"] = torch.zeros((len(views) * max_points, 1), dtype=torch.float32)
+        result["grid_coord"] = torch.zeros((len(views) * max_points, 3), dtype=torch.long)
+        result["batch"] = torch.arange(len(views), dtype=torch.long).repeat_interleave(max_points)
+        return result
+
+    # Get all field keys from non-None views
+    all_keys = set()
+    for view in views:
+        if view is not None:
+            all_keys.update(view.keys())
+
+    # Collate each field
+    for key in all_keys:
+        all_tensors = []
+        for batch_idx, view in enumerate(views):
+            if view is not None and key in view:
+                tensor = view[key]
+            else:
+                # Determine shape and dtype for missing field
+                ref_view = None
+                for v in views:
+                    if v is not None and key in v:
+                        ref_view = v
+                        break
+
+                if ref_view is None:
+                    continue
+
+                ref_tensor = ref_view[key]
+                if key == "batch":
+                    # batch field: single value per point
+                    tensor = torch.full((max_points,), batch_idx, dtype=torch.long)
+                elif key == "grid_coord":
+                    # grid_coord: (N, 3) long
+                    tensor = torch.zeros((max_points, 3), dtype=torch.long)
+                elif key in ["coord", "origin_coord"]:
+                    # Coordinate fields: (N, 3) float
+                    tensor = torch.zeros((max_points, 3), dtype=ref_tensor.dtype)
+                elif key == "feat":
+                    # Feature field: (N, C) float
+                    tensor = torch.zeros((max_points, ref_tensor.shape[1]), dtype=ref_tensor.dtype)
+                else:
+                    # Generic field: pad with zeros
+                    if ref_tensor.ndim == 1:
+                        tensor = torch.zeros(max_points, dtype=ref_tensor.dtype)
+                    else:
+                        tensor = torch.zeros((max_points,) + ref_tensor.shape[1:], dtype=ref_tensor.dtype)
+
+            # Pad tensor to max_points if needed
+            if tensor.shape[0] < max_points:
+                pad_size = max_points - tensor.shape[0]
+                if tensor.ndim == 1:
+                    padding = torch.zeros(pad_size, dtype=tensor.dtype, device=tensor.device)
+                else:
+                    padding = torch.zeros((pad_size,) + tensor.shape[1:], dtype=tensor.dtype, device=tensor.device)
+                tensor = torch.cat([tensor, padding], dim=0)
+
+            # Update batch indices if this is the batch field
+            if key == "batch":
+                tensor[:] = batch_idx
+
+            all_tensors.append(tensor)
+
+        if all_tensors:
+            result[key] = torch.cat(all_tensors, dim=0)
+
+    return result
 
 
 def build_train_loader(
     data_dir: str,
     points_per_cloud: int = 4096,
+    batch_size: int = 1,
     grid_size: float | None = None,
     coord_fields: tuple[str, str, str] = ("x", "y", "z"),
     ignore_fields: tuple[str, ...] = DEFAULT_IGNORED_FIELDS,
     input_grid: PointGridSpec | None = None,
 ) -> tuple[SonataPCDDataset, DataLoader]:
-    """Build a shuffled training loader from recursively collected PCD/PLY files."""
+    """Build a shuffled training loader from recursively collected PCD/PLY files.
+
+    Args:
+        data_dir: Directory containing PCD/PLY point clouds
+        points_per_cloud: Maximum points sampled per cloud
+        batch_size: Number of point clouds per batch (supports variable batch sizes per GPU)
+        grid_size: Optional override for voxel size
+        coord_fields: Names of coordinate fields (x, y, z)
+        ignore_fields: Fields to exclude from features
+        input_grid: Optional grid specification
+    """
     dataset = SonataPCDDataset(
         data_dir,
         points_per_cloud,
@@ -1038,7 +1177,7 @@ def build_train_loader(
         ignore_fields,
         input_grid,
     )
-    loader = DataLoader(dataset, batch_size=1, shuffle=True, collate_fn=_single_item_collate)
+    loader = DataLoader(dataset, batch_size=batch_size, shuffle=True, collate_fn=_single_item_collate)
     return dataset, loader
 
 
@@ -1145,6 +1284,12 @@ if __name__ == "__main__":
         type=int,
         default=4096,
         help="maximum points sampled per point-cloud view and fixed ONNX input point count",
+    )
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=1,
+        help="number of point clouds per batch (supports variable batch sizes per GPU to improve throughput)",
     )
     parser.add_argument(
         "--grid-size",
@@ -1265,6 +1410,7 @@ if __name__ == "__main__":
     dataset, train_loader = build_train_loader(
         args.test_data_dir,
         points_per_cloud=points_per_cloud,
+        batch_size=args.batch_size,
         coord_fields=coord_fields,
         ignore_fields=tuple(field.strip() for field in args.ignore_fields.split(",") if field.strip()),
         input_grid=cfg.input_grid,
@@ -1272,16 +1418,18 @@ if __name__ == "__main__":
     cfg = replace(cfg, backbone=replace(cfg.backbone, in_channels=dataset.in_channels))
     trainer_cfg = SonataTrainConfig(
         max_steps=args.steps,
+        batch_size=args.batch_size,
         out_dir=args.checkpoint_dir,
         resume=args.resume,
     )
     trainer = SonataTrainer(Sonata(cfg), train_loader, trainer_cfg, device=device)
     logger.info(
-        "Training on %d point-cloud files from %s (shuffled); feature fields=%s, input channels=%d",
+        "Training on %d point-cloud files from %s (shuffled); feature fields=%s, input channels=%d, batch_size=%d",
         len(dataset),
         args.test_data_dir,
         dataset.feature_fields,
         dataset.in_channels,
+        args.batch_size,
     )
     trainer.fit()
     trainer.export_backbone(args.out)
