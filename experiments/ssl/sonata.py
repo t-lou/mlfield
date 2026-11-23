@@ -216,13 +216,25 @@ class SonataBackbone(PointTransformerV3Encoder):
         return point
 
 
+def _set_export_order(backbone: SonataBackbone) -> None:
+    backbone.order = ["z"]
+    for stage in backbone.enc:
+        for block in stage:
+            block.attn.order_index = 0
+
+
 class SonataBackboneExport(nn.Module):
-    """Tensor-only adapter for exporting a Sonata backbone to ONNX."""
+    """Tensor-only adapter for exporting a Sonata backbone to ONNX.
+
+    Returns the same tensor as the PyTorch visualization path: the encoder features of all
+    stages up-cast to the input resolution and concatenated, ``(N, sum(enc_channels))`` in
+    input point order.
+    """
 
     def __init__(self, backbone: SonataBackbone):
         super().__init__()
         self.backbone = backbone
-        self.backbone.order = ["z"]
+        _set_export_order(self.backbone)
 
     def forward(
         self,
@@ -230,7 +242,7 @@ class SonataBackboneExport(nn.Module):
         grid_coord: torch.Tensor,
         batch: torch.Tensor,
     ) -> torch.Tensor:
-        point = self.backbone(
+        top = self.backbone(
             {
                 "coord": grid_coord.to(dtype=feat.dtype),
                 "feat": feat,
@@ -238,7 +250,14 @@ class SonataBackboneExport(nn.Module):
                 "batch": batch,
             }
         )
-        return point.feat
+        return _full_resolution_features(top, self.backbone.num_stages - 1, feat, grid_coord).feat
+
+
+def _full_resolution_features(top: Point, up: int, feat: torch.Tensor, grid_coord: torch.Tensor) -> Encoded:
+    """``upcast`` for single-cloud tensor-only exports (``up = num_stages - 1`` -> input resolution)."""
+    num_input = feat.shape[0]
+    zeros = torch.zeros(num_input, dtype=torch.long, device=feat.device)
+    return upcast(top, up, grid_coord.to(dtype=feat.dtype), zeros, zeros, None)
 
 
 class SonataFullExport(nn.Module):
@@ -248,14 +267,20 @@ class SonataFullExport(nn.Module):
         super().__init__()
         self.net = net
         self.up_cast_level = up_cast_level
-        self.net.backbone.order = ["z"]
+        _set_export_order(self.net.backbone)
 
     def forward(
         self,
         feat: torch.Tensor,
         grid_coord: torch.Tensor,
         batch: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Returns ``(mask_logits, unmask_logits, encoded_features)``.
+
+        The logits live at the ``up_cast_level`` resolution; ``encoded_features`` is the
+        full-resolution multi-scale tensor, identical to ``SonataBackboneExport`` and to the
+        PyTorch visualization path.
+        """
         top = self.net.backbone(
             {
                 "coord": grid_coord.to(dtype=feat.dtype),
@@ -264,18 +289,12 @@ class SonataFullExport(nn.Module):
                 "batch": batch,
             }
         )
-        num_input = feat.shape[0]
-        encoded = upcast(
-            top,
-            self.up_cast_level,
-            grid_coord.to(dtype=feat.dtype),
-            torch.zeros(num_input, dtype=torch.long, device=feat.device),
-            torch.zeros(num_input, dtype=torch.long, device=feat.device),
-            None,
-        )
+        encoded = _full_resolution_features(top, self.up_cast_level, feat, grid_coord)
+        full = _full_resolution_features(top, self.net.backbone.num_stages - 1, feat, grid_coord)
         return (
             self.net.mask_head(encoded.feat),
             self.net.unmask_head(encoded.feat),
+            full.feat,
         )
 
 
@@ -820,7 +839,7 @@ class SonataTrainer:
             (feat, grid_coord, batch),
             path,
             input_names=("features", "grid_coord", "batch"),
-            output_names=("mask_logits", "unmask_logits"),
+            output_names=("mask_logits", "unmask_logits", "encoded_features"),
             dynamic_axes={},
         )
 

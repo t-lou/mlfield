@@ -231,8 +231,8 @@ def test_visualizer_voxelizes_with_bev_and_runs_pt_with_explicit_grid():
 def test_sonata_backbone_onnx_export():
     backbone = PointTransformerV3Config(
         in_channels=3,
-        order=("z",),
-        enc_depths=(1, 1),
+        order=("z", "hilbert"),
+        enc_depths=(2, 1),
         enc_channels=(4, 8),
         enc_num_head=(1, 2),
         enc_patch_size=(8, 8),
@@ -289,8 +289,8 @@ def test_sonata_backbone_onnx_export():
 def test_sonata_full_onnx_export():
     backbone = PointTransformerV3Config(
         in_channels=3,
-        order=("z",),
-        enc_depths=(1, 1),
+        order=("z", "hilbert"),
+        enc_depths=(2, 1),
         enc_channels=(4, 8),
         enc_num_head=(1, 2),
         enc_patch_size=(8, 8),
@@ -320,15 +320,15 @@ def test_sonata_full_onnx_export():
             (feat, grid, batch),
             Path(temp_dir) / "sonata_full.onnx",
             input_names=("features", "grid_coord", "batch"),
-            output_names=("mask_logits", "unmask_logits"),
+            output_names=("mask_logits", "unmask_logits", "encoded_features"),
             dynamic_axes={},
         )
         ort = __import__("onnxruntime")
         session = ort.InferenceSession(str(path), providers=["CPUExecutionProvider"])
         with torch.no_grad():
-            eager_mask, eager_unmask = model(feat, grid, batch)
-        mask, unmask = session.run(
-            ["mask_logits", "unmask_logits"],
+            eager_mask, eager_unmask, eager_features = model(feat, grid, batch)
+        mask, unmask, features = session.run(
+            ["mask_logits", "unmask_logits", "encoded_features"],
             {
                 "features": feat.numpy(),
                 "grid_coord": grid.numpy(),
@@ -337,6 +337,7 @@ def test_sonata_full_onnx_export():
         )
         torch.testing.assert_close(eager_mask, torch.as_tensor(mask), rtol=1e-4, atol=1e-5)
         torch.testing.assert_close(eager_unmask, torch.as_tensor(unmask), rtol=1e-4, atol=1e-5)
+        torch.testing.assert_close(eager_features, torch.as_tensor(features), rtol=1e-4, atol=1e-5)
 
 
 def test_neighbor_export_matches_eager():

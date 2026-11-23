@@ -12,6 +12,14 @@ Fixed-count ONNX exports use their fixed point count; dynamic-count exports requ
 a different number of points. Their traced lattice is retained by
 mapping points in spatial Z-order; use a ``.pt`` checkpoint to preserve metric-coordinate geometry.
 Input clouds use the shared ``BevParams`` ROI and voxel aggregation by default.
+
+Both model types show the same tensor, ``encoded_features``: every encoder stage up-cast to the
+input points and concatenated, ``(N, sum(enc_channels))``. To compare a checkpoint with an ONNX
+export, run the checkpoint with ``--lattice --num-points <onnx point count>`` (same point
+selection and the same synthetic lattice); ``--save-features`` dumps the tensors for a numeric
+diff. Without ``--lattice`` the checkpoint runs on the real sparse voxel grid, which the traced
+ONNX graph cannot do. ONNX files exported before this change return a coarse last-stage tensor;
+re-export them.
 """
 
 from __future__ import annotations
@@ -369,14 +377,22 @@ def _run_checkpoint(
     feat: np.ndarray,
     grid_coord: np.ndarray,
     device_name: str,
+    lattice: bool = False,
 ) -> np.ndarray:
+    """Return ``(N, sum(enc_channels))`` features: all stages up-cast to the input points, concatenated.
+
+    This is the same tensor the ONNX exports emit as ``encoded_features``. With ``lattice`` the
+    backbone mirrors the ONNX export (serialization order ``z`` only); ``grid_coord`` is then
+    expected to be the export lattice.
+    """
     if feat.shape[1] != config.backbone.in_channels:
         raise ValueError(
             f"Checkpoint expects {config.backbone.in_channels} feature channels, but the cloud provides "
             f"{feat.shape[1]}; select matching --feature-fields or provide the correct --cfg"
         )
     device = get_device() if device_name == "auto" else torch.device(device_name)
-    backbone = SonataBackbone(config.backbone).to(device)
+    backbone_config = replace(config.backbone, order=("z",)) if lattice else config.backbone
+    backbone = SonataBackbone(backbone_config).to(device)
     backbone.load_state_dict(state, strict=True)
     backbone.eval()
 
@@ -464,6 +480,17 @@ def _run_onnx(
         raise ValueError(f"{path}: output {selected_output!r} is unavailable; outputs are {output_names}")
     print("ONNX export uses a traced cubic grid; mapping cloud points onto that grid in spatial Z-order.")
     output = np.asarray(session.run([selected_output], feed)[0])
+    if output.shape[0] == point_count:
+        # Per-point output (current exports' encoded_features): already in input point order.
+        return xyz_input, output, selected_output
+
+    # Coarse output (logits at up_cast_level, or a legacy top-stage-only encoded_features export):
+    # broadcast each coarse row to the points of its voxel.
+    if selected_output == "encoded_features":
+        print(
+            f"warning: {path.name} returned {output.shape[0]} coarse encoded_features rows (legacy export, last stage "
+            "only); re-export it to get the full-resolution tensor that the .pt path shows."
+        )
     stride_factors = None
     if config is not None:
         backbone = config.backbone
@@ -497,6 +524,10 @@ def _feature_rgb(features: np.ndarray) -> np.ndarray:
     width = min(3, left.shape[1])
     components[:, :width] = left[:, :width] * singular[:width]
     for index in range(width):
+        # SVD signs are arbitrary; fix them so equal features always give equal colors.
+        pivot = np.argmax(np.abs(components[:, index]))
+        if components[pivot, index] < 0:
+            components[:, index] *= -1
         low, high = np.percentile(components[:, index], (1, 99))
         if high > low:
             components[:, index] = (components[:, index] - low) / (high - low)
@@ -539,7 +570,20 @@ def _parse_args() -> argparse.Namespace:
         "--output",
         choices=("auto", "encoded_features", "mask_logits", "unmask_logits"),
         default="auto",
-        help="ONNX output tensor to visualize (default: encoded features, otherwise mask logits)",
+        help="ONNX output tensor to visualize (default: encoded_features, otherwise mask_logits). "
+        "encoded_features is the full-resolution multi-scale tensor shown for .pt checkpoints; "
+        "the logits are coarse (up_cast_level) and broadcast to points",
+    )
+    parser.add_argument(
+        "--lattice",
+        action="store_true",
+        help="run a .pt checkpoint on the same synthetic lattice as the ONNX export (same point selection, "
+        "z-order only) so both views can be compared; set --num-points to the ONNX point count",
+    )
+    parser.add_argument(
+        "--save-features",
+        type=Path,
+        help="write xyz and the visualized features to an .npz file for numeric comparison between runs",
     )
     parser.add_argument("--component", type=int, help="show one feature channel with a colormap instead of PCA RGB")
     parser.add_argument("--point-size", type=_positive_float, default=3.0)
@@ -583,12 +627,26 @@ def _extract_features(args: argparse.Namespace) -> tuple[np.ndarray, np.ndarray,
         point_limit = 4096 if args.num_points is None else args.num_points
         if point_limit < 1:
             raise ValueError("--num-points must be positive")
-        input_xyz, input_feat, selected = _select_points(xyz, feat, min(point_limit, len(xyz)), args.seed)
-        input_grid_coord = grid_coord[selected]
-        if len(input_xyz) < len(xyz):
-            print(f"PT checkpoint: deterministically sampled {len(input_xyz):,} of {len(xyz):,} input points")
-        features = _run_checkpoint(state, config, input_xyz, input_feat, input_grid_coord, args.device)
+        if args.lattice:
+            # Mirror the ONNX input exactly: fixed count (resampled with replacement if needed) on the lattice.
+            input_xyz, input_feat, selected = _select_points(xyz, feat, point_limit, args.seed)
+            input_grid_coord = _map_to_export_lattice(grid_coord[selected])
+            side = int(input_grid_coord.max()) + 1
+            if side >= 1 << config.backbone.serial_depth:
+                raise ValueError(
+                    f"--lattice with {point_limit} points needs side {side}, which exceeds "
+                    f"serial_depth={config.backbone.serial_depth}"
+                )
+            print("PT checkpoint on the ONNX export lattice (z-order only), for comparison with ONNX.")
+        else:
+            input_xyz, input_feat, selected = _select_points(xyz, feat, min(point_limit, len(xyz)), args.seed)
+            input_grid_coord = grid_coord[selected]
+            if len(input_xyz) < len(xyz):
+                print(f"PT checkpoint: deterministically sampled {len(input_xyz):,} of {len(xyz):,} input points")
+        features = _run_checkpoint(state, config, input_xyz, input_feat, input_grid_coord, args.device, args.lattice)
         return input_xyz, features, "encoded_features", names
+    if args.lattice:
+        raise ValueError("--lattice only applies to .pt checkpoints; ONNX models always run on the lattice")
     display_xyz, features, output_name = _run_onnx(
         args.model,
         xyz,
@@ -659,6 +717,10 @@ def main() -> int:
     args = _parse_args()
     try:
         xyz, features, output_name, names = _extract_features(args)
+        if args.save_features is not None:
+            args.save_features.parent.mkdir(parents=True, exist_ok=True)
+            np.savez(args.save_features, xyz=xyz, features=features, output=output_name)
+            print(f"saved features: {args.save_features}")
         color_name = _show_cloud(args, xyz, features, output_name)
         print(
             f"{args.pointcloud}: {len(xyz):,} points, {features.shape[1]} {output_name} channels, "
