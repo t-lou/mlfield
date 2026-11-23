@@ -75,6 +75,7 @@ must be isotropic. An anisotropic output grid requires per-axis GridPooling supp
 
 from __future__ import annotations
 
+import argparse
 import logging
 import math
 import os
@@ -1247,9 +1248,120 @@ def _small_gpu_profile(cfg: SonataConfig) -> SonataConfig:
     )
 
 
-if __name__ == "__main__":
-    import argparse
+def _apply_training_overrides(config: SonataExperimentConfig, args: argparse.Namespace) -> None:
+    if args.steps is not None:
+        config.train.max_steps = args.steps
+    if args.checkpoint_dir is not None:
+        config.train.out_dir = args.checkpoint_dir
+    if args.resume is not None:
+        config.train.resume = args.resume
 
+
+def _apply_data_overrides(config: SonataExperimentConfig, args: argparse.Namespace) -> None:
+    if args.test_data_dir is not None:
+        config.data.data_dir = args.test_data_dir
+    if args.points_per_cloud is not None:
+        config.data.points_per_cloud = args.points_per_cloud
+    if args.batch_size is not None:
+        config.data.batch_size = args.batch_size
+    if args.num_workers is not None:
+        config.data.num_workers = args.num_workers
+    if args.prefetch_factor is not None:
+        config.data.prefetch_factor = args.prefetch_factor
+    if args.coord_fields is not None:
+        config.data.coord_fields = tuple(field.strip() for field in args.coord_fields.split(","))
+    if args.ignore_fields is not None:
+        config.data.ignore_fields = tuple(field.strip() for field in args.ignore_fields.split(",") if field.strip())
+
+
+def _apply_export_overrides(config: SonataExperimentConfig, args: argparse.Namespace) -> None:
+    if args.out is not None:
+        config.export.backbone_path = args.out
+    if args.onnx_out is not None:
+        config.export.backbone_onnx_path = args.onnx_out
+    if args.full_onnx_out is not None:
+        config.export.full_onnx_path = args.full_onnx_out
+
+
+def _validate_run_config(config: SonataExperimentConfig, parser: argparse.ArgumentParser) -> None:
+    if config.train.max_steps < 1:
+        parser.error("configured max_steps / --steps must be positive")
+    if config.data.points_per_cloud < 1:
+        parser.error("configured points_per_cloud / --points-per-cloud must be positive")
+    if config.data.batch_size < 1:
+        parser.error("configured batch_size / --batch-size must be positive")
+    if config.data.num_workers < 0:
+        parser.error("configured num_workers / --num-workers must be non-negative")
+    if config.data.prefetch_factor < 1:
+        parser.error("configured prefetch_factor / --prefetch-factor must be positive")
+
+
+def _parse_xyz(value: str, name: str, parser: argparse.ArgumentParser) -> tuple[float, float, float]:
+    parts = tuple(float(part.strip()) for part in value.split(","))
+    if len(parts) != 3:
+        parser.error(f"--{name} must contain exactly three comma-separated numbers")
+    return parts
+
+
+def _parse_voxel(value: str, name: str, parser: argparse.ArgumentParser) -> tuple[float, float, float] | float:
+    parts = tuple(float(part.strip()) for part in value.split(","))
+    if len(parts) == 1:
+        return parts[0]
+    if len(parts) == 3:
+        return parts
+    parser.error(f"--{name} must contain one scalar or three comma-separated numbers")
+
+
+def _input_grid_from_args(
+    model_config: SonataConfig,
+    args: argparse.Namespace,
+    parser: argparse.ArgumentParser,
+) -> PointGridSpec:
+    grid = model_config.input_grid or _default_input_grid()
+    if (args.input_grid_min is None) != (args.input_grid_max is None):
+        parser.error("--input-grid-min and --input-grid-max must be provided together")
+    if args.input_grid_min is not None:
+        if args.input_grid_voxel is None:
+            parser.error("--input-grid-min, --input-grid-max, and --input-grid-voxel must be provided together")
+        grid = PointGridSpec(
+            min_xyz=_parse_xyz(args.input_grid_min, "input-grid-min", parser),
+            max_xyz=_parse_xyz(args.input_grid_max, "input-grid-max", parser),
+            voxel_size_xyz=_parse_voxel(args.input_grid_voxel, "input-grid-voxel", parser),
+        )
+    if args.grid_size is not None:
+        if args.input_grid_voxel is not None:
+            parser.error("--grid-size cannot be combined with --input-grid-voxel")
+        if not math.isfinite(args.grid_size) or args.grid_size <= 0:
+            parser.error("--grid-size must be positive and finite")
+        grid = replace(grid, voxel_size_xyz=args.grid_size)
+    return grid
+
+
+def _prepare_model_config(
+    config: SonataExperimentConfig,
+    args: argparse.Namespace,
+    parser: argparse.ArgumentParser,
+) -> tuple[SonataConfig, int]:
+    model_config = config.model
+    input_grid = _input_grid_from_args(model_config, args, parser)
+    if args.input_grid_min is not None or model_config.input_grid is None or args.grid_size is not None:
+        model_config = replace(model_config, input_grid=input_grid)
+    if args.output_grid_voxel is not None:
+        model_config = replace(
+            model_config,
+            input_grid=input_grid,
+            output_voxel_size_xyz=_parse_voxel(args.output_grid_voxel, "output-grid-voxel", parser),
+        )
+
+    points_per_cloud = config.data.points_per_cloud
+    if args.small_gpu:
+        model_config = _small_gpu_profile(model_config)
+        points_per_cloud = min(points_per_cloud, 1024)
+    config.model = model_config
+    return model_config, points_per_cloud
+
+
+if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--smoke", action="store_true", help="run a tiny forward/backward smoke test")
     parser.add_argument(
@@ -1349,89 +1461,11 @@ if __name__ == "__main__":
         _smoke_test()
         raise SystemExit(0)
     cfg = load_yaml(Path(args.path_config), SonataExperimentConfig)
-    if args.steps is not None:
-        cfg.train.max_steps = args.steps
-    if args.test_data_dir is not None:
-        cfg.data.data_dir = args.test_data_dir
-    if args.points_per_cloud is not None:
-        cfg.data.points_per_cloud = args.points_per_cloud
-    if args.batch_size is not None:
-        cfg.data.batch_size = args.batch_size
-    if args.num_workers is not None:
-        cfg.data.num_workers = args.num_workers
-    if args.prefetch_factor is not None:
-        cfg.data.prefetch_factor = args.prefetch_factor
-    if args.coord_fields is not None:
-        cfg.data.coord_fields = tuple(field.strip() for field in args.coord_fields.split(","))
-    if args.ignore_fields is not None:
-        cfg.data.ignore_fields = tuple(field.strip() for field in args.ignore_fields.split(",") if field.strip())
-    if args.checkpoint_dir is not None:
-        cfg.train.out_dir = args.checkpoint_dir
-    if args.resume is not None:
-        cfg.train.resume = args.resume
-    if args.out is not None:
-        cfg.export.backbone_path = args.out
-    if args.onnx_out is not None:
-        cfg.export.backbone_onnx_path = args.onnx_out
-    if args.full_onnx_out is not None:
-        cfg.export.full_onnx_path = args.full_onnx_out
-    if cfg.train.max_steps < 1:
-        parser.error("configured max_steps / --steps must be positive")
-    if cfg.data.points_per_cloud < 1:
-        parser.error("configured points_per_cloud / --points-per-cloud must be positive")
-    if cfg.data.batch_size < 1:
-        parser.error("configured batch_size / --batch-size must be positive")
-    if cfg.data.num_workers < 0:
-        parser.error("configured num_workers / --num-workers must be non-negative")
-    if cfg.data.prefetch_factor < 1:
-        parser.error("configured prefetch_factor / --prefetch-factor must be positive")
-    if (args.input_grid_min is None) != (args.input_grid_max is None):
-        parser.error("--input-grid-min and --input-grid-max must be provided together")
-    if args.input_grid_min is not None and args.input_grid_voxel is None:
-        parser.error("--input-grid-min, --input-grid-max, and --input-grid-voxel must be provided together")
-
-    def parse_xyz(value: str, name: str) -> tuple[float, float, float]:
-        parts = tuple(float(part.strip()) for part in value.split(","))
-        if len(parts) != 3:
-            parser.error(f"--{name} must contain exactly three comma-separated numbers")
-        return parts
-
-    def parse_voxel(value: str, name: str) -> tuple[float, float, float] | float:
-        parts = tuple(float(part.strip()) for part in value.split(","))
-        if len(parts) == 1:
-            return parts[0]
-        if len(parts) == 3:
-            return parts
-        parser.error(f"--{name} must contain one scalar or three comma-separated numbers")
-
-    model_cfg = cfg.model
-    input_grid = model_cfg.input_grid or _default_input_grid()
-    if args.input_grid_min is not None:
-        input_grid = PointGridSpec(
-            min_xyz=parse_xyz(args.input_grid_min, "input-grid-min"),
-            max_xyz=parse_xyz(args.input_grid_max, "input-grid-max"),
-            voxel_size_xyz=parse_voxel(args.input_grid_voxel, "input-grid-voxel"),
-        )
-    if args.grid_size is not None:
-        if args.input_grid_voxel is not None:
-            parser.error("--grid-size cannot be combined with --input-grid-voxel")
-        if not math.isfinite(args.grid_size) or args.grid_size <= 0:
-            parser.error("--grid-size must be positive and finite")
-        input_grid = replace(input_grid, voxel_size_xyz=args.grid_size)
-    if args.input_grid_min is not None or model_cfg.input_grid is None or args.grid_size is not None:
-        model_cfg = replace(model_cfg, input_grid=input_grid)
-    if args.output_grid_voxel is not None:
-        output_voxel = parse_voxel(args.output_grid_voxel, "output-grid-voxel")
-        model_cfg = replace(
-            model_cfg,
-            input_grid=input_grid,
-            output_voxel_size_xyz=output_voxel,
-        )
-    points_per_cloud = cfg.data.points_per_cloud
-    if args.small_gpu:
-        model_cfg = _small_gpu_profile(model_cfg)
-        points_per_cloud = min(points_per_cloud, 1024)
-    cfg.model = model_cfg
+    _apply_training_overrides(cfg, args)
+    _apply_data_overrides(cfg, args)
+    _apply_export_overrides(cfg, args)
+    _validate_run_config(cfg, parser)
+    model_cfg, points_per_cloud = _prepare_model_config(cfg, args, parser)
     configure_logger("sonata")
 
     device = get_device()
