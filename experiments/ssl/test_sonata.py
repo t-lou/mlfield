@@ -14,11 +14,13 @@ from components.mmperc.encoder.point_transformer_v3 import (
     PointTransformerV3Config,
     build_neighbors,
 )
+from components.utils.config import load_yaml
 from components.utils.onnx_export import export_onnx
 from experiments.ssl.sonata import (
     SonataBackbone,
     SonataBackboneExport,
     SonataConfig,
+    SonataExperimentConfig,
     SonataFullExport,
     SonataNet,
     build_train_loader,
@@ -29,6 +31,7 @@ from experiments.ssl.vis_sonata import (
     _load_ascii_ply,
     _load_cloud,
     _map_to_export_lattice,
+    _read_config,
     _run_checkpoint,
     _run_onnx,
     _voxelize_cloud,
@@ -124,6 +127,51 @@ def test_sonata_and_ptv3_default_to_shared_bev_geometry():
     assert bev_grid.width == 64
     assert config.input_grid == grid
     assert config.backbone.serial_depth == grid.serial_depth
+
+
+def test_sonata_experiment_config_loads_nested_yaml_sections():
+    with TemporaryDirectory() as temp_dir:
+        path = Path(temp_dir) / "sonata.yaml"
+        path.write_text(
+            "model:\n"
+            "  num_prototypes: 32\n"
+            "train:\n"
+            "  max_steps: 12\n"
+            "  batch_size: 2\n"
+            "data:\n"
+            "  data_dir: /tmp/pointclouds\n"
+            "  points_per_cloud: 128\n"
+            "  coord_fields: [px, py, pz]\n"
+            "export:\n"
+            "  backbone_path: /tmp/teacher.pt\n",
+            encoding="utf-8",
+        )
+
+        config = load_yaml(path, SonataExperimentConfig)
+
+    assert isinstance(config.model, SonataConfig)
+    assert isinstance(config.model.backbone, PointTransformerV3Config)
+    assert config.model.num_prototypes == 32
+    assert config.train.max_steps == 12
+    assert config.train.batch_size == 2
+    assert config.data.data_dir == "/tmp/pointclouds"
+    assert config.data.points_per_cloud == 128
+    assert config.data.coord_fields == ("px", "py", "pz")
+    assert config.export.backbone_path == "/tmp/teacher.pt"
+
+
+def test_visualizer_reads_experiment_and_model_only_configs():
+    with TemporaryDirectory() as temp_dir:
+        experiment_path = Path(temp_dir) / "experiment.yaml"
+        experiment_path.write_text("model:\n  num_prototypes: 32\n", encoding="utf-8")
+        model_path = Path(temp_dir) / "model.json"
+        model_path.write_text('{"num_prototypes": 16}', encoding="utf-8")
+
+        experiment_config = _read_config(experiment_path)
+        model_config = _read_config(model_path)
+
+    assert experiment_config.num_prototypes == 32
+    assert model_config.num_prototypes == 16
 
 
 def test_visualizer_infers_default_sonata_checkpoint_architecture():

@@ -6,7 +6,7 @@ Examples:
     python -m experiments.ssl.vis_sonata sonata_full.onnx cloud.pcd --output unmask_logits
     python -m experiments.ssl.vis_sonata model.pt cloud.pcd --component 12 --screenshot features.png
 
-Non-standard PT checkpoints need the Sonata config JSON used during training via ``--cfg``.
+Non-standard PT checkpoints need the Sonata experiment YAML or model-only config via ``--cfg``.
 Fixed-count ONNX exports use their fixed point count; dynamic-count exports require
 ``--num-points``. Points are deterministically sampled or repeated when the source cloud has
 a different number of points. Their traced lattice is retained by
@@ -25,7 +25,6 @@ re-export them.
 from __future__ import annotations
 
 import argparse
-import json
 import math
 import re
 import sys
@@ -35,6 +34,7 @@ from typing import TextIO
 
 import numpy as np
 import torch
+import yaml
 from components.dataset.pcd_only_dataset import PcdOnlyFolderDataset
 from components.definitions.bev_params import BevParams
 from components.mmperc.encoder.point_transformer_v3 import (
@@ -43,8 +43,15 @@ from components.mmperc.encoder.point_transformer_v3 import (
     points_to_voxels,
     z_order_encode,
 )
+from components.utils.config import load_yaml
 from components.utils.device import get_device
-from experiments.ssl.sonata import DEFAULT_IGNORED_FIELDS, SonataBackbone, SonataConfig, upcast
+from experiments.ssl.sonata import (
+    DEFAULT_IGNORED_FIELDS,
+    SonataBackbone,
+    SonataConfig,
+    SonataExperimentConfig,
+    upcast,
+)
 
 
 def _checkpoint_backbone_state(path: Path) -> dict[str, torch.Tensor]:
@@ -67,11 +74,12 @@ def _checkpoint_backbone_state(path: Path) -> dict[str, torch.Tensor]:
 
 def _read_config(config_path: Path) -> SonataConfig:
     with config_path.open(encoding="utf-8") as file:
-        values = json.load(file)
-    backbone = values.get("backbone")
-    if isinstance(backbone, dict):
-        values["backbone"] = PointTransformerV3Config(**backbone)
-    return SonataConfig(**values)
+        values = yaml.safe_load(file)
+    if not isinstance(values, dict):
+        raise ValueError(f"{config_path}: expected a Sonata configuration mapping")
+    if "model" in values:
+        return load_yaml(config_path, SonataExperimentConfig).model
+    return load_yaml(config_path, SonataConfig)
 
 
 def _checkpoint_config(state: dict[str, torch.Tensor], config_path: Path | None) -> SonataConfig:
@@ -552,7 +560,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--cfg",
         type=Path,
-        help="Sonata training config JSON (needed for nonstandard PT checkpoints or custom ONNX strides)",
+        help="Sonata experiment YAML or model-only JSON/YAML config (for custom PT checkpoints or ONNX strides)",
     )
     parser.add_argument("--coord-fields", type=_parse_fields, default=("x", "y", "z"), metavar="X,Y,Z")
     parser.add_argument("--feature-fields", help="comma-separated input fields; default excludes XYZ and labels")

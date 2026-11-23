@@ -98,6 +98,15 @@ runpy experiments/image_dino/dino.py
 
 ### ONNX Encoder Exports
 
+Sonata reads its model, optimizer schedule, data, checkpoint, and export settings from
+[`experiments/ssl/sonata_config.yml`](experiments/ssl/sonata_config.yml). Pass another YAML
+file with `--path-config` to reload a different configuration on the next run; command-line
+options such as `--steps` and `--batch-size` override the file for that run.
+
+```bash
+python -m experiments.ssl.sonata --path-config experiments/ssl/sonata_config.yml
+```
+
 After training finishes, the image DINO, I-JEPA, and MAE scripts export their inference encoders to the configured
 checkpoint directory (`image_dino_teacher_backbone.onnx`, `image_jepa_target_encoder.onnx`, and
 `image_mae_encoder.onnx`). Install `onnx` in the active environment to enable these exports. The files accept

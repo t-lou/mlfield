@@ -75,12 +75,12 @@ must be isotropic. An anisotropic output grid requires per-axis GridPooling supp
 
 from __future__ import annotations
 
-import json
 import logging
 import math
 import os
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field, replace
+from pathlib import Path
 
 import torch
 import torch.nn as nn
@@ -98,6 +98,7 @@ from components.mmperc.encoder.point_transformer_v3 import (
     points_to_voxels,
     serialize,
 )
+from components.utils.config import load_yaml
 from components.utils.device import get_device
 from components.utils.logger import configure_logger, logger
 from components.utils.onnx_export import export_onnx
@@ -169,7 +170,12 @@ class SonataConfig:
 
     def __post_init__(self) -> None:
         if isinstance(self.input_grid, dict):
-            self.input_grid = PointGridSpec(**self.input_grid)
+            grid = dict(self.input_grid)
+            grid["min_xyz"] = tuple(grid["min_xyz"])
+            grid["max_xyz"] = tuple(grid["max_xyz"])
+            if isinstance(grid["voxel_size_xyz"], list):
+                grid["voxel_size_xyz"] = tuple(grid["voxel_size_xyz"])
+            self.input_grid = PointGridSpec(**grid)
         if self.output_voxel_size_xyz is not None and self.input_grid is None:
             raise ValueError("Sonata output_voxel_size_xyz requires input_grid")
 
@@ -660,6 +666,33 @@ class SonataTrainConfig:
     save_every: int = 2_000
     out_dir: str = "checkpoints/sonata"
     resume: str | None = None
+
+
+@dataclass
+class SonataDataConfig:
+    data_dir: str = "./data/gen"
+    points_per_cloud: int = 4096
+    coord_fields: tuple[str, str, str] = ("x", "y", "z")
+    ignore_fields: tuple[str, ...] = DEFAULT_IGNORED_FIELDS
+
+    def __post_init__(self) -> None:
+        self.coord_fields = tuple(self.coord_fields)
+        self.ignore_fields = tuple(self.ignore_fields)
+
+
+@dataclass
+class SonataExportConfig:
+    backbone_path: str = "sonata_teacher_backbone.pt"
+    backbone_onnx_path: str = "sonata_teacher_backbone.onnx"
+    full_onnx_path: str = "sonata_full.onnx"
+
+
+@dataclass
+class SonataExperimentConfig:
+    model: SonataConfig = field(default_factory=SonataConfig)
+    train: SonataTrainConfig = field(default_factory=SonataTrainConfig)
+    data: SonataDataConfig = field(default_factory=SonataDataConfig)
+    export: SonataExportConfig = field(default_factory=SonataExportConfig)
 
 
 def _cosine(start: float, end: float, t: float) -> float:
@@ -1271,25 +1304,32 @@ if __name__ == "__main__":
         action="store_true",
         help="use a compact model and at most 1024 points per cloud for small-GPU test runs",
     )
-    parser.add_argument("--cfg", type=str, default=None, help="path to a SonataConfig JSON file")
+    parser.add_argument(
+        "--path-config",
+        "--cfg",
+        dest="path_config",
+        type=str,
+        default="./experiments/ssl/sonata_config.yml",
+        help="path to the Sonata experiment YAML config",
+    )
     parser.add_argument(
         "--test-data-dir",
         type=str,
-        default="./data/gen",
-        help="folder containing PCD/PLY point clouds (searched recursively)",
+        default=None,
+        help="override the configured folder containing PCD/PLY point clouds",
     )
-    parser.add_argument("--steps", type=int, default=1000, help="number of optimizer steps")
+    parser.add_argument("--steps", type=int, default=None, help="override the configured number of optimizer steps")
     parser.add_argument(
         "--points-per-cloud",
         type=int,
-        default=4096,
-        help="maximum points sampled per point-cloud view and fixed ONNX input point count",
+        default=None,
+        help="override the maximum points sampled per point-cloud view and fixed ONNX input point count",
     )
     parser.add_argument(
         "--batch-size",
         type=int,
-        default=1,
-        help="number of point clouds per batch (supports variable batch sizes per GPU to improve throughput)",
+        default=None,
+        help="override the number of point clouds per batch",
     )
     parser.add_argument(
         "--grid-size",
@@ -1300,14 +1340,14 @@ if __name__ == "__main__":
     parser.add_argument(
         "--coord-fields",
         type=str,
-        default="x,y,z",
-        help="comma-separated names of the point-cloud coordinate fields",
+        default=None,
+        help="override the comma-separated point-cloud coordinate field names",
     )
     parser.add_argument(
         "--ignore-fields",
         type=str,
-        default=",".join(DEFAULT_IGNORED_FIELDS),
-        help="comma-separated point-cloud fields excluded from features (default: common labels)",
+        default=None,
+        help="override the comma-separated point-cloud fields excluded from features",
     )
     parser.add_argument("--input-grid-min", type=str, default=None, help="input grid XYZ minimum: x,y,z")
     parser.add_argument("--input-grid-max", type=str, default=None, help="input grid XYZ maximum: x,y,z")
@@ -1323,40 +1363,55 @@ if __name__ == "__main__":
         default=None,
         help="isotropic output voxel size: scalar or vx,vy,vz",
     )
-    parser.add_argument("--checkpoint-dir", type=str, default="checkpoints/sonata")
+    parser.add_argument("--checkpoint-dir", type=str, default=None, help="override the configured checkpoint directory")
     parser.add_argument("--resume", type=str, default=None, help="resume from a Sonata trainer checkpoint")
-    parser.add_argument(
-        "--out", type=str, default="sonata_teacher_backbone.pt", help="output path for the teacher backbone weights"
-    )
+    parser.add_argument("--out", type=str, default=None, help="override the teacher backbone weights output path")
     parser.add_argument(
         "--onnx-out",
         type=str,
-        default="sonata_teacher_backbone.onnx",
-        help="output path for PTv3-only teacher ONNX model (set empty to disable)",
+        default=None,
+        help="override PTv3-only teacher ONNX output path (set empty to disable)",
     )
     parser.add_argument(
         "--full-onnx-out",
         type=str,
-        default="sonata_full.onnx",
-        help="output path for full Sonata ONNX model (backbone + prototype heads; set empty to disable)",
+        default=None,
+        help="override full Sonata ONNX output path (set empty to disable)",
     )
     args = parser.parse_args()
 
     if args.smoke:
         _smoke_test()
         raise SystemExit(0)
-    if args.steps < 1:
-        parser.error("--steps must be positive")
-
-    if args.cfg is None:
-        cfg = SonataConfig()
-    else:
-        with open(args.cfg, encoding="utf-8") as config_file:
-            cfg_dict = json.load(config_file)
-        backbone = cfg_dict.get("backbone")
-        if isinstance(backbone, dict):
-            cfg_dict["backbone"] = PointTransformerV3Config(**backbone)
-        cfg = SonataConfig(**cfg_dict)
+    cfg = load_yaml(Path(args.path_config), SonataExperimentConfig)
+    if args.steps is not None:
+        cfg.train.max_steps = args.steps
+    if args.test_data_dir is not None:
+        cfg.data.data_dir = args.test_data_dir
+    if args.points_per_cloud is not None:
+        cfg.data.points_per_cloud = args.points_per_cloud
+    if args.batch_size is not None:
+        cfg.train.batch_size = args.batch_size
+    if args.coord_fields is not None:
+        cfg.data.coord_fields = tuple(field.strip() for field in args.coord_fields.split(","))
+    if args.ignore_fields is not None:
+        cfg.data.ignore_fields = tuple(field.strip() for field in args.ignore_fields.split(",") if field.strip())
+    if args.checkpoint_dir is not None:
+        cfg.train.out_dir = args.checkpoint_dir
+    if args.resume is not None:
+        cfg.train.resume = args.resume
+    if args.out is not None:
+        cfg.export.backbone_path = args.out
+    if args.onnx_out is not None:
+        cfg.export.backbone_onnx_path = args.onnx_out
+    if args.full_onnx_out is not None:
+        cfg.export.full_onnx_path = args.full_onnx_out
+    if cfg.train.max_steps < 1:
+        parser.error("configured max_steps / --steps must be positive")
+    if cfg.data.points_per_cloud < 1:
+        parser.error("configured points_per_cloud / --points-per-cloud must be positive")
+    if cfg.train.batch_size < 1:
+        parser.error("configured batch_size / --batch-size must be positive")
     if (args.input_grid_min is None) != (args.input_grid_max is None):
         parser.error("--input-grid-min and --input-grid-max must be provided together")
     if args.input_grid_min is not None and args.input_grid_voxel is None:
@@ -1376,7 +1431,8 @@ if __name__ == "__main__":
             return parts
         parser.error(f"--{name} must contain one scalar or three comma-separated numbers")
 
-    input_grid = cfg.input_grid or _default_input_grid()
+    model_cfg = cfg.model
+    input_grid = model_cfg.input_grid or _default_input_grid()
     if args.input_grid_min is not None:
         input_grid = PointGridSpec(
             min_xyz=parse_xyz(args.input_grid_min, "input-grid-min"),
@@ -1389,62 +1445,59 @@ if __name__ == "__main__":
         if not math.isfinite(args.grid_size) or args.grid_size <= 0:
             parser.error("--grid-size must be positive and finite")
         input_grid = replace(input_grid, voxel_size_xyz=args.grid_size)
-    if args.input_grid_min is not None or cfg.input_grid is None or args.grid_size is not None:
-        cfg = replace(cfg, input_grid=input_grid)
+    if args.input_grid_min is not None or model_cfg.input_grid is None or args.grid_size is not None:
+        model_cfg = replace(model_cfg, input_grid=input_grid)
     if args.output_grid_voxel is not None:
         output_voxel = parse_voxel(args.output_grid_voxel, "output-grid-voxel")
-        cfg = replace(
-            cfg,
+        model_cfg = replace(
+            model_cfg,
             input_grid=input_grid,
             output_voxel_size_xyz=output_voxel,
         )
-    points_per_cloud = args.points_per_cloud
+    points_per_cloud = cfg.data.points_per_cloud
     if args.small_gpu:
-        cfg = _small_gpu_profile(cfg)
+        model_cfg = _small_gpu_profile(model_cfg)
         points_per_cloud = min(points_per_cloud, 1024)
+    cfg.model = model_cfg
     configure_logger("sonata")
 
     device = get_device()
 
-    coord_fields = tuple(field.strip() for field in args.coord_fields.split(","))
     dataset, train_loader = build_train_loader(
-        args.test_data_dir,
+        cfg.data.data_dir,
         points_per_cloud=points_per_cloud,
-        batch_size=args.batch_size,
-        coord_fields=coord_fields,
-        ignore_fields=tuple(field.strip() for field in args.ignore_fields.split(",") if field.strip()),
-        input_grid=cfg.input_grid,
+        batch_size=cfg.train.batch_size,
+        coord_fields=cfg.data.coord_fields,
+        ignore_fields=cfg.data.ignore_fields,
+        input_grid=model_cfg.input_grid,
     )
-    cfg = replace(cfg, backbone=replace(cfg.backbone, in_channels=dataset.in_channels))
-    trainer_cfg = SonataTrainConfig(
-        max_steps=args.steps,
-        batch_size=args.batch_size,
-        out_dir=args.checkpoint_dir,
-        resume=args.resume,
+    cfg.model = replace(
+        model_cfg,
+        backbone=replace(model_cfg.backbone, in_channels=dataset.in_channels),
     )
-    trainer = SonataTrainer(Sonata(cfg), train_loader, trainer_cfg, device=device)
+    trainer = SonataTrainer(Sonata(cfg.model), train_loader, cfg.train, device=device)
     logger.info(
         "Training on %d point-cloud files from %s (shuffled); feature fields=%s, input channels=%d, batch_size=%d",
         len(dataset),
-        args.test_data_dir,
+        cfg.data.data_dir,
         dataset.feature_fields,
         dataset.in_channels,
-        args.batch_size,
+        cfg.train.batch_size,
     )
     trainer.fit()
-    trainer.export_backbone(args.out)
-    logger.info("Exported teacher backbone to %s", args.out)
-    if args.onnx_out:
+    trainer.export_backbone(cfg.export.backbone_path)
+    logger.info("Exported teacher backbone to %s", cfg.export.backbone_path)
+    if cfg.export.backbone_onnx_path:
         trainer.export_backbone_onnx(
-            args.onnx_out,
+            cfg.export.backbone_onnx_path,
             in_channels=dataset.in_channels,
             num_points=points_per_cloud,
         )
-        logger.info("Exported PTv3-only teacher ONNX to %s", args.onnx_out)
-    if args.full_onnx_out:
+        logger.info("Exported PTv3-only teacher ONNX to %s", cfg.export.backbone_onnx_path)
+    if cfg.export.full_onnx_path:
         trainer.export_full_onnx(
-            args.full_onnx_out,
+            cfg.export.full_onnx_path,
             in_channels=dataset.in_channels,
             num_points=points_per_cloud,
         )
-        logger.info("Exported full Sonata ONNX to %s", args.full_onnx_out)
+        logger.info("Exported full Sonata ONNX to %s", cfg.export.full_onnx_path)
