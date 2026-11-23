@@ -660,7 +660,6 @@ class SonataTrainConfig:
     teacher_temp_end: float = 0.07
     teacher_temp_warmup_steps: int = 5_000
     amp: bool = True  # mixed-precision autocast
-    batch_size: int = 1
     log_every: int = 20
     eval_every: int = 0  # 0 = never; calls ``eval_fn(model, step)`` every this many steps
     save_every: int = 2_000
@@ -672,6 +671,7 @@ class SonataTrainConfig:
 class SonataDataConfig:
     data_dir: str = "./data/gen"
     points_per_cloud: int = 4096
+    batch_size: int = 1
     coord_fields: tuple[str, str, str] = ("x", "y", "z")
     ignore_fields: tuple[str, ...] = DEFAULT_IGNORED_FIELDS
 
@@ -981,7 +981,7 @@ class SonataPCDDataset(Dataset):
             voxel_input,
             torch.zeros(len(coordinates), dtype=torch.long),
             self.input_grid,
-            batch_size=8,
+            batch_size=1,
             feature_dim=voxel_input.shape[1],
         )
         if not is_real.any():
@@ -1050,11 +1050,7 @@ class SonataPCDDataset(Dataset):
 
 
 def _single_item_collate(items: list[dict]) -> dict:
-    """Collate multiple point cloud items into a batch with 0-padding for missing points.
-
-    Supports variable batch sizes. Missing fields are zero-filled, and all point clouds
-    are padded to the maximum number of points in the batch.
-    """
+    """Collate point clouds without padding; per-point batch IDs distinguish scenes."""
     if len(items) == 0:
         raise ValueError("Expected at least one point cloud per batch")
 
@@ -1068,117 +1064,48 @@ def _single_item_collate(items: list[dict]) -> dict:
     global_views = [item["global_views"] for item in items]
     max_num_global = max(len(gv) for gv in global_views)
     for view_idx in range(max_num_global):
-        view_batch = []
-        max_points = 0
-        for gv in global_views:
-            if view_idx < len(gv):
-                view_batch.append(gv[view_idx])
-                max_points = max(max_points, gv[view_idx]["coord"].shape[0])
-            else:
-                view_batch.append(None)
-        batched["global_views"].append(_collate_views(view_batch, max_points))
+        view_batch = [gv[view_idx] if view_idx < len(gv) else None for gv in global_views]
+        batched["global_views"].append(_collate_views(view_batch))
 
     # Process local views
     local_views = [item["local_views"] for item in items]
     max_num_local = max(len(lv) for lv in local_views) if local_views else 0
     for view_idx in range(max_num_local):
-        view_batch = []
-        max_points = 0
-        for lv in local_views:
-            if view_idx < len(lv):
-                view_batch.append(lv[view_idx])
-                max_points = max(max_points, lv[view_idx]["coord"].shape[0])
-            else:
-                view_batch.append(None)
-        batched["local_views"].append(_collate_views(view_batch, max_points))
+        view_batch = [lv[view_idx] if view_idx < len(lv) else None for lv in local_views]
+        batched["local_views"].append(_collate_views(view_batch))
 
     return batched
 
 
-def _collate_views(views: list[dict | None], max_points: int) -> dict:
-    """Collate a list of views with padding to max_points.
-
-    Missing views (None) or missing fields are 0-padded.
-    """
-    if max_points == 0:
-        raise ValueError("max_points must be positive")
+def _collate_views(views: list[dict | None]) -> dict:
+    """Concatenate present scene views and identify each scene by its item index."""
+    present_views = [(batch_idx, view) for batch_idx, view in enumerate(views) if view is not None]
+    if not present_views:
+        raise ValueError("Expected at least one point cloud view")
 
     result = {}
-    view_indices = []
-
-    for idx, view in enumerate(views):
-        if view is not None:
-            view_indices.append(idx)
-
-    if not view_indices:
-        # All views are None, return dummy padded tensors
-        result["coord"] = torch.zeros((len(views) * max_points, 3), dtype=torch.float32)
-        result["feat"] = torch.zeros((len(views) * max_points, 1), dtype=torch.float32)
-        result["grid_coord"] = torch.zeros((len(views) * max_points, 3), dtype=torch.long)
-        result["batch"] = torch.arange(len(views), dtype=torch.long).repeat_interleave(max_points)
-        return result
-
-    # Get all field keys from non-None views
-    all_keys = set()
-    for view in views:
-        if view is not None:
-            all_keys.update(view.keys())
-
-    # Collate each field
+    all_keys = set().union(*(view.keys() for _, view in present_views))
     for key in all_keys:
-        all_tensors = []
-        for batch_idx, view in enumerate(views):
-            if view is not None and key in view:
+        reference = next(view[key] for _, view in present_views if key in view)
+        tensors = []
+        for batch_idx, view in present_views:
+            point_count = view["coord"].shape[0]
+            if key in view:
                 tensor = view[key]
+            elif key == "origin_coord":
+                tensor = view["coord"]
             else:
-                # Determine shape and dtype for missing field
-                ref_view = None
-                for v in views:
-                    if v is not None and key in v:
-                        ref_view = v
-                        break
+                tensor = reference.new_zeros((point_count,) + reference.shape[1:])
 
-                if ref_view is None:
-                    continue
-
-                ref_tensor = ref_view[key]
-                if key == "batch":
-                    # batch field: single value per point
-                    tensor = torch.full((max_points,), batch_idx, dtype=torch.long)
-                elif key == "grid_coord":
-                    # grid_coord: (N, 3) long
-                    tensor = torch.zeros((max_points, 3), dtype=torch.long)
-                elif key in ["coord", "origin_coord"]:
-                    # Coordinate fields: (N, 3) float
-                    tensor = torch.zeros((max_points, 3), dtype=ref_tensor.dtype)
-                elif key == "feat":
-                    # Feature field: (N, C) float
-                    tensor = torch.zeros((max_points, ref_tensor.shape[1]), dtype=ref_tensor.dtype)
-                else:
-                    # Generic field: pad with zeros
-                    if ref_tensor.ndim == 1:
-                        tensor = torch.zeros(max_points, dtype=ref_tensor.dtype)
-                    else:
-                        tensor = torch.zeros((max_points,) + ref_tensor.shape[1:], dtype=ref_tensor.dtype)
-
-            # Pad tensor to max_points if needed
-            if tensor.shape[0] < max_points:
-                pad_size = max_points - tensor.shape[0]
-                if tensor.ndim == 1:
-                    padding = torch.zeros(pad_size, dtype=tensor.dtype, device=tensor.device)
-                else:
-                    padding = torch.zeros((pad_size,) + tensor.shape[1:], dtype=tensor.dtype, device=tensor.device)
-                tensor = torch.cat([tensor, padding], dim=0)
-
-            # Update batch indices if this is the batch field
             if key == "batch":
-                tensor[:] = batch_idx
+                tensor = torch.full((point_count,), batch_idx, dtype=torch.long, device=tensor.device)
+            else:
+                if tensor.shape[0] != point_count:
+                    raise ValueError(f"View field {key!r} must contain one entry per coordinate")
 
-            all_tensors.append(tensor)
+            tensors.append(tensor)
 
-        if all_tensors:
-            result[key] = torch.cat(all_tensors, dim=0)
-
+        result[key] = torch.cat(tensors, dim=0)
     return result
 
 
@@ -1391,7 +1318,7 @@ if __name__ == "__main__":
     if args.points_per_cloud is not None:
         cfg.data.points_per_cloud = args.points_per_cloud
     if args.batch_size is not None:
-        cfg.train.batch_size = args.batch_size
+        cfg.data.batch_size = args.batch_size
     if args.coord_fields is not None:
         cfg.data.coord_fields = tuple(field.strip() for field in args.coord_fields.split(","))
     if args.ignore_fields is not None:
@@ -1410,7 +1337,7 @@ if __name__ == "__main__":
         parser.error("configured max_steps / --steps must be positive")
     if cfg.data.points_per_cloud < 1:
         parser.error("configured points_per_cloud / --points-per-cloud must be positive")
-    if cfg.train.batch_size < 1:
+    if cfg.data.batch_size < 1:
         parser.error("configured batch_size / --batch-size must be positive")
     if (args.input_grid_min is None) != (args.input_grid_max is None):
         parser.error("--input-grid-min and --input-grid-max must be provided together")
@@ -1466,7 +1393,7 @@ if __name__ == "__main__":
     dataset, train_loader = build_train_loader(
         cfg.data.data_dir,
         points_per_cloud=points_per_cloud,
-        batch_size=cfg.train.batch_size,
+        batch_size=cfg.data.batch_size,
         coord_fields=cfg.data.coord_fields,
         ignore_fields=cfg.data.ignore_fields,
         input_grid=model_cfg.input_grid,
@@ -1482,7 +1409,7 @@ if __name__ == "__main__":
         cfg.data.data_dir,
         dataset.feature_fields,
         dataset.in_channels,
-        cfg.train.batch_size,
+        cfg.data.batch_size,
     )
     trainer.fit()
     trainer.export_backbone(cfg.export.backbone_path)

@@ -23,7 +23,9 @@ from experiments.ssl.sonata import (
     SonataExperimentConfig,
     SonataFullExport,
     SonataNet,
+    _single_item_collate,
     build_train_loader,
+    concat_views,
 )
 from experiments.ssl.vis_sonata import (
     _checkpoint_config,
@@ -137,10 +139,10 @@ def test_sonata_experiment_config_loads_nested_yaml_sections():
             "  num_prototypes: 32\n"
             "train:\n"
             "  max_steps: 12\n"
-            "  batch_size: 2\n"
             "data:\n"
             "  data_dir: /tmp/pointclouds\n"
             "  points_per_cloud: 128\n"
+            "  batch_size: 2\n"
             "  coord_fields: [px, py, pz]\n"
             "export:\n"
             "  backbone_path: /tmp/teacher.pt\n",
@@ -153,11 +155,34 @@ def test_sonata_experiment_config_loads_nested_yaml_sections():
     assert isinstance(config.model.backbone, PointTransformerV3Config)
     assert config.model.num_prototypes == 32
     assert config.train.max_steps == 12
-    assert config.train.batch_size == 2
     assert config.data.data_dir == "/tmp/pointclouds"
     assert config.data.points_per_cloud == 128
+    assert config.data.batch_size == 2
     assert config.data.coord_fields == ("px", "py", "pz")
     assert config.export.backbone_path == "/tmp/teacher.pt"
+
+
+def test_sonata_batch_collation_does_not_pad_model_points():
+    def make_item(point_count: int) -> dict:
+        coord = torch.arange(point_count, dtype=torch.float32).unsqueeze(1).expand(-1, 3)
+        view = {
+            "coord": coord,
+            "origin_coord": coord,
+            "feat": coord[:, :1],
+            "grid_coord": torch.arange(point_count).unsqueeze(1).expand(-1, 3),
+            "batch": torch.zeros(point_count, dtype=torch.long),
+        }
+        return {"global_views": [view, view], "local_views": [view]}
+
+    batch = _single_item_collate([make_item(2), make_item(3)])
+    data, _, view_id, scene = concat_views(batch["global_views"])
+
+    assert batch["global_views"][0]["coord"].shape == (5, 3)
+    assert batch["local_views"][0]["coord"].shape == (5, 3)
+    assert batch["global_views"][0]["batch"].tolist() == [0, 0, 1, 1, 1]
+    assert data["batch"].tolist() == [0, 0, 1, 1, 1, 2, 2, 3, 3, 3]
+    assert view_id.tolist() == [0, 0, 0, 0, 0, 1, 1, 1, 1, 1]
+    assert scene.tolist() == [0, 0, 1, 1, 1, 0, 0, 1, 1, 1]
 
 
 def test_visualizer_reads_experiment_and_model_only_configs():
