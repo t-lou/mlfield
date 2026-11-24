@@ -144,30 +144,25 @@ def _default_backbone() -> PointTransformerV3Config:
 @dataclass
 class SonataConfig:
     backbone: PointTransformerV3Config = field(default_factory=_default_backbone)
-    # Physical geometry defaults to the shared BEV ROI and voxel size. Both geometry
-    # fields are applied to a copy of backbone during construction.
-    input_grid: PointGridSpec | dict | None = field(default_factory=_default_input_grid)
-    output_voxel_size_xyz: tuple[float, float, float] | float | None = None
-    up_cast_level: int = 2  # loss is computed this many stages below the last one
-    num_prototypes: int = 4096
-    head_hidden: int = 2048
-    head_bottleneck: int = 256
-    # masking (in world units of ``coord``)
-    mask_ratio: float = 0.4
-    mask_size: float = 0.1
-    mask_jitter: float = 0.01
-    # distillation
-    student_temp: float = 0.1
-    sinkhorn_iters: int = 3
-    # cross-view correspondences (on origin_coord of up-cast points)
-    match_k: int = 8
-    match_radius: float = 0.32
-    # memory cap: at most this many up-cast points per loss term go through the heads / losses
-    max_loss_points: int = 20_000
-    # loss weights
-    mask_loss_weight: float = 2.0
-    roll_mask_loss_weight: float = 2.0
-    unmask_loss_weight: float = 2.0
+    input_grid: PointGridSpec | dict | None = field(
+        default_factory=_default_input_grid,
+    )  # Physical BEV bounds and voxel size; applied to a copy of backbone.
+    output_voxel_size_xyz: tuple[float, float, float] | float | None = None  # Optional output-grid voxel size.
+    up_cast_level: int = 2  # Loss level: stages below the last encoder stage.
+    num_prototypes: int = 4096  # Number of prototype vectors in each prediction head.
+    head_hidden: int = 2048  # Hidden width of the per-point prototype heads.
+    head_bottleneck: int = 256  # Bottleneck width before prototype prediction.
+    mask_ratio: float = 0.4  # Fraction of mask units selected for masking.
+    mask_size: float = 0.1  # Mask-unit edge size in world units of ``coord``.
+    mask_jitter: float = 0.01  # Random mask-unit position jitter in world units.
+    student_temp: float = 0.1  # Student softmax temperature for distillation.
+    sinkhorn_iters: int = 3  # Sinkhorn-Knopp iterations used to center teacher logits.
+    match_k: int = 8  # Nearest correspondences considered per cross-view point.
+    match_radius: float = 0.32  # Maximum correspondence radius on ``origin_coord``.
+    max_loss_points: int = 20_000  # Memory cap for up-cast points per loss term.
+    mask_loss_weight: float = 2.0  # Weight of the masked-view distillation loss.
+    roll_mask_loss_weight: float = 2.0  # Weight of the shifted masked-view loss.
+    unmask_loss_weight: float = 2.0  # Weight of the local-to-global distillation loss.
 
     def __post_init__(self) -> None:
         if isinstance(self.input_grid, dict):
@@ -645,38 +640,38 @@ class Sonata(nn.Module):
 # --------------------------------------------------------------------------- #
 @dataclass
 class SonataTrainConfig:
-    max_steps: int = 100_000
-    lr: float = 2e-3
-    block_lr_scale: float = 0.1  # transformer blocks (backbone.enc.*) train with lr * this
-    min_lr: float = 1e-6
-    warmup_steps: int = 2_000
-    betas: tuple[float, float] = (0.9, 0.999)
-    weight_decay_start: float = 0.04
-    weight_decay_end: float = 0.2
-    grad_clip: float = 3.0
-    grad_accum_steps: int = 1
-    momentum_start: float = 0.994  # teacher EMA, cosine to momentum_end
-    momentum_end: float = 1.0
-    teacher_temp_start: float = 0.04
-    teacher_temp_end: float = 0.07
-    teacher_temp_warmup_steps: int = 5_000
-    amp: bool = True  # mixed-precision autocast
-    log_every: int = 20
-    eval_every: int = 0  # 0 = never; calls ``eval_fn(model, step)`` every this many steps
-    save_every: int = 2_000
-    out_dir: str = "checkpoints/sonata"
-    resume: str | None = None
+    max_steps: int = 100_000  # Total optimizer steps.
+    lr: float = 2e-3  # Base learning rate.
+    block_lr_scale: float = 0.1  # Transformer-block learning-rate multiplier.
+    min_lr: float = 1e-6  # Minimum cosine-schedule learning rate.
+    warmup_steps: int = 2_000  # Linear learning-rate warmup steps.
+    betas: tuple[float, float] = (0.9, 0.999)  # Adam optimizer beta values.
+    weight_decay_start: float = 0.04  # Initial weight decay.
+    weight_decay_end: float = 0.2  # Final cosine-scheduled weight decay.
+    grad_clip: float = 3.0  # Maximum gradient norm.
+    grad_accum_steps: int = 1  # Optimizer steps accumulated across backward passes.
+    momentum_start: float = 0.994  # Initial teacher EMA momentum.
+    momentum_end: float = 1.0  # Final teacher EMA momentum.
+    teacher_temp_start: float = 0.04  # Initial teacher softmax temperature.
+    teacher_temp_end: float = 0.07  # Final teacher softmax temperature.
+    teacher_temp_warmup_steps: int = 5_000  # Steps used to warm teacher temperature.
+    amp: bool = True  # Enable mixed-precision autocast.
+    log_every: int = 20  # Training log interval in optimizer steps.
+    eval_every: int = 0  # Evaluation interval; zero disables evaluation.
+    save_every: int = 2_000  # Checkpoint save interval in optimizer steps.
+    out_dir: str = "checkpoints/sonata"  # Checkpoint output directory.
+    resume: str | None = None  # Optional trainer checkpoint to resume.
 
 
 @dataclass
 class SonataDataConfig:
-    data_dir: str = "./data/gen"
-    points_per_cloud: int = 4096
-    batch_size: int = 1
-    num_workers: int = 4
-    prefetch_factor: int = 2
-    coord_fields: tuple[str, str, str] = ("x", "y", "z")
-    ignore_fields: tuple[str, ...] = DEFAULT_IGNORED_FIELDS
+    data_dir: str = "./data/gen"  # Folder containing PCD/PLY point clouds.
+    points_per_cloud: int = 4096  # Maximum points sampled per view; also sets ONNX input count.
+    batch_size: int = 1  # Point clouds per training batch.
+    num_workers: int = 4  # CPU data-loading worker processes; zero disables prefetched workers.
+    prefetch_factor: int = 2  # Batches prefetched per data-loading worker.
+    coord_fields: tuple[str, str, str] = ("x", "y", "z")  # Point-cloud XYZ field names.
+    ignore_fields: tuple[str, ...] = DEFAULT_IGNORED_FIELDS  # Fields excluded from feature channels.
 
     def __post_init__(self) -> None:
         self.coord_fields = tuple(self.coord_fields)
@@ -685,9 +680,9 @@ class SonataDataConfig:
 
 @dataclass
 class SonataExportConfig:
-    backbone_path: str = "sonata_teacher_backbone.pt"
-    backbone_onnx_path: str = "sonata_teacher_backbone.onnx"
-    full_onnx_path: str = "sonata_full.onnx"
+    backbone_path: str = "sonata_teacher_backbone.pt"  # Teacher backbone PyTorch weights output.
+    backbone_onnx_path: str = "sonata_teacher_backbone.onnx"  # PTv3-only teacher ONNX output.
+    full_onnx_path: str = "sonata_full.onnx"  # Full Sonata ONNX output.
 
 
 @dataclass
@@ -1248,111 +1243,24 @@ def _small_gpu_profile(cfg: SonataConfig) -> SonataConfig:
     )
 
 
-def _apply_training_overrides(config: SonataExperimentConfig, args: argparse.Namespace) -> None:
-    if args.steps is not None:
-        config.train.max_steps = args.steps
-    if args.checkpoint_dir is not None:
-        config.train.out_dir = args.checkpoint_dir
-    if args.resume is not None:
-        config.train.resume = args.resume
-
-
-def _apply_data_overrides(config: SonataExperimentConfig, args: argparse.Namespace) -> None:
-    if args.test_data_dir is not None:
-        config.data.data_dir = args.test_data_dir
-    if args.points_per_cloud is not None:
-        config.data.points_per_cloud = args.points_per_cloud
-    if args.batch_size is not None:
-        config.data.batch_size = args.batch_size
-    if args.num_workers is not None:
-        config.data.num_workers = args.num_workers
-    if args.prefetch_factor is not None:
-        config.data.prefetch_factor = args.prefetch_factor
-    if args.coord_fields is not None:
-        config.data.coord_fields = tuple(field.strip() for field in args.coord_fields.split(","))
-    if args.ignore_fields is not None:
-        config.data.ignore_fields = tuple(field.strip() for field in args.ignore_fields.split(",") if field.strip())
-
-
-def _apply_export_overrides(config: SonataExperimentConfig, args: argparse.Namespace) -> None:
-    if args.out is not None:
-        config.export.backbone_path = args.out
-    if args.onnx_out is not None:
-        config.export.backbone_onnx_path = args.onnx_out
-    if args.full_onnx_out is not None:
-        config.export.full_onnx_path = args.full_onnx_out
-
-
-def _validate_run_config(config: SonataExperimentConfig, parser: argparse.ArgumentParser) -> None:
+def _validate_run_config(config: SonataExperimentConfig) -> None:
     if config.train.max_steps < 1:
-        parser.error("configured max_steps / --steps must be positive")
+        raise ValueError("configured train.max_steps must be positive")
     if config.data.points_per_cloud < 1:
-        parser.error("configured points_per_cloud / --points-per-cloud must be positive")
+        raise ValueError("configured data.points_per_cloud must be positive")
     if config.data.batch_size < 1:
-        parser.error("configured batch_size / --batch-size must be positive")
+        raise ValueError("configured data.batch_size must be positive")
     if config.data.num_workers < 0:
-        parser.error("configured num_workers / --num-workers must be non-negative")
+        raise ValueError("configured data.num_workers must be non-negative")
     if config.data.prefetch_factor < 1:
-        parser.error("configured prefetch_factor / --prefetch-factor must be positive")
-
-
-def _parse_xyz(value: str, name: str, parser: argparse.ArgumentParser) -> tuple[float, float, float]:
-    parts = tuple(float(part.strip()) for part in value.split(","))
-    if len(parts) != 3:
-        parser.error(f"--{name} must contain exactly three comma-separated numbers")
-    return parts
-
-
-def _parse_voxel(value: str, name: str, parser: argparse.ArgumentParser) -> tuple[float, float, float] | float:
-    parts = tuple(float(part.strip()) for part in value.split(","))
-    if len(parts) == 1:
-        return parts[0]
-    if len(parts) == 3:
-        return parts
-    parser.error(f"--{name} must contain one scalar or three comma-separated numbers")
-
-
-def _input_grid_from_args(
-    model_config: SonataConfig,
-    args: argparse.Namespace,
-    parser: argparse.ArgumentParser,
-) -> PointGridSpec:
-    grid = model_config.input_grid or _default_input_grid()
-    if (args.input_grid_min is None) != (args.input_grid_max is None):
-        parser.error("--input-grid-min and --input-grid-max must be provided together")
-    if args.input_grid_min is not None:
-        if args.input_grid_voxel is None:
-            parser.error("--input-grid-min, --input-grid-max, and --input-grid-voxel must be provided together")
-        grid = PointGridSpec(
-            min_xyz=_parse_xyz(args.input_grid_min, "input-grid-min", parser),
-            max_xyz=_parse_xyz(args.input_grid_max, "input-grid-max", parser),
-            voxel_size_xyz=_parse_voxel(args.input_grid_voxel, "input-grid-voxel", parser),
-        )
-    if args.grid_size is not None:
-        if args.input_grid_voxel is not None:
-            parser.error("--grid-size cannot be combined with --input-grid-voxel")
-        if not math.isfinite(args.grid_size) or args.grid_size <= 0:
-            parser.error("--grid-size must be positive and finite")
-        grid = replace(grid, voxel_size_xyz=args.grid_size)
-    return grid
+        raise ValueError("configured data.prefetch_factor must be positive")
 
 
 def _prepare_model_config(
     config: SonataExperimentConfig,
     args: argparse.Namespace,
-    parser: argparse.ArgumentParser,
 ) -> tuple[SonataConfig, int]:
     model_config = config.model
-    input_grid = _input_grid_from_args(model_config, args, parser)
-    if args.input_grid_min is not None or model_config.input_grid is None or args.grid_size is not None:
-        model_config = replace(model_config, input_grid=input_grid)
-    if args.output_grid_voxel is not None:
-        model_config = replace(
-            model_config,
-            input_grid=input_grid,
-            output_voxel_size_xyz=_parse_voxel(args.output_grid_voxel, "output-grid-voxel", parser),
-        )
-
     points_per_cloud = config.data.points_per_cloud
     if args.small_gpu:
         model_config = _small_gpu_profile(model_config)
@@ -1363,109 +1271,22 @@ def _prepare_model_config(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--smoke", action="store_true", help="run a tiny forward/backward smoke test")
     parser.add_argument(
         "--small-gpu",
         action="store_true",
-        help="use a compact model and at most 1024 points per cloud for small-GPU test runs",
+        help="Use a compact model and at most 1024 points per cloud for small-GPU test runs.",
     )
     parser.add_argument(
         "--path-config",
-        "--cfg",
         dest="path_config",
         type=str,
         default="./experiments/ssl/sonata_config.yml",
-        help="path to the Sonata experiment YAML config",
-    )
-    parser.add_argument(
-        "--test-data-dir",
-        type=str,
-        default=None,
-        help="override the configured folder containing PCD/PLY point clouds",
-    )
-    parser.add_argument("--steps", type=int, default=None, help="override the configured number of optimizer steps")
-    parser.add_argument(
-        "--points-per-cloud",
-        type=int,
-        default=None,
-        help="override the maximum points sampled per point-cloud view and fixed ONNX input point count",
-    )
-    parser.add_argument(
-        "--batch-size",
-        type=int,
-        default=None,
-        help="override the number of point clouds per batch",
-    )
-    parser.add_argument(
-        "--num-workers",
-        type=int,
-        default=None,
-        help="override CPU data-loading workers (0 disables worker prefetch)",
-    )
-    parser.add_argument(
-        "--prefetch-factor",
-        type=int,
-        default=None,
-        help="override batches prefetched per data-loading worker",
-    )
-    parser.add_argument(
-        "--grid-size",
-        type=float,
-        default=None,
-        help="override the shared BEV voxel size with an isotropic voxel size",
-    )
-    parser.add_argument(
-        "--coord-fields",
-        type=str,
-        default=None,
-        help="override the comma-separated point-cloud coordinate field names",
-    )
-    parser.add_argument(
-        "--ignore-fields",
-        type=str,
-        default=None,
-        help="override the comma-separated point-cloud fields excluded from features",
-    )
-    parser.add_argument("--input-grid-min", type=str, default=None, help="input grid XYZ minimum: x,y,z")
-    parser.add_argument("--input-grid-max", type=str, default=None, help="input grid XYZ maximum: x,y,z")
-    parser.add_argument(
-        "--input-grid-voxel",
-        type=str,
-        default=None,
-        help="input grid voxel size: scalar or vx,vy,vz",
-    )
-    parser.add_argument(
-        "--output-grid-voxel",
-        type=str,
-        default=None,
-        help="isotropic output voxel size: scalar or vx,vy,vz",
-    )
-    parser.add_argument("--checkpoint-dir", type=str, default=None, help="override the configured checkpoint directory")
-    parser.add_argument("--resume", type=str, default=None, help="resume from a Sonata trainer checkpoint")
-    parser.add_argument("--out", type=str, default=None, help="override the teacher backbone weights output path")
-    parser.add_argument(
-        "--onnx-out",
-        type=str,
-        default=None,
-        help="override PTv3-only teacher ONNX output path (set empty to disable)",
-    )
-    parser.add_argument(
-        "--full-onnx-out",
-        type=str,
-        default=None,
-        help="override full Sonata ONNX output path (set empty to disable)",
+        help="Path to the Sonata experiment YAML config.",
     )
     args = parser.parse_args()
-
-    if args.smoke:
-        _smoke_test()
-        raise SystemExit(0)
     cfg = load_yaml(Path(args.path_config), SonataExperimentConfig)
-    _apply_training_overrides(cfg, args)
-    _apply_data_overrides(cfg, args)
-    _apply_export_overrides(cfg, args)
-    _validate_run_config(cfg, parser)
-    model_cfg, points_per_cloud = _prepare_model_config(cfg, args, parser)
+    _validate_run_config(cfg)
+    model_cfg, points_per_cloud = _prepare_model_config(cfg, args)
     configure_logger("sonata")
 
     device = get_device()
