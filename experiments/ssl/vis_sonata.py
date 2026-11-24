@@ -25,9 +25,9 @@ Use sonata_full.onnx (NOT sonata_teacher_backbone.onnx): only the full export ha
 mask_logits + unmask_logits.
 
 Examples:
-    python -m experiments.ssl.vis_sonata_prototypes sonata_full.onnx cloud.pcd
-    python -m experiments.ssl.vis_sonata_prototypes sonata_full.onnx cloud.pcd --mode pca
-    python -m experiments.ssl.vis_sonata_prototypes sonata_full.onnx cloud.pcd \\
+    python -m experiments.ssl.vis_sonata sonata_full.onnx cloud.pcd
+    python -m experiments.ssl.vis_sonata sonata_full.onnx cloud.pcd --mode pca
+    python -m experiments.ssl.vis_sonata sonata_full.onnx cloud.pcd \\
         --screenshot overview.png --diagnostics plots.png --json step_50k.json
 """
 
@@ -36,22 +36,264 @@ from __future__ import annotations
 import argparse
 import colorsys
 import json
+import math
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
+from typing import TextIO
 
 import numpy as np
-from experiments.ssl.vis_sonata import (
-    SonataConfig,
-    _effective_config,
-    _load_cloud,
-    _map_to_export_lattice,
-    _read_config,
-    _resolve_onnx_point_count,
-    _select_points,
-    _voxelize_cloud,
-    output_point_map,
-)
+import torch
+import yaml
+from components.dataset.pcd_only_dataset import PcdOnlyFolderDataset
+from components.definitions.bev_params import BevParams
+from components.mmperc.encoder.point_transformer_v3 import PointGridSpec, points_to_voxels, z_order_encode
+from components.utils.config import load_yaml
+from experiments.ssl.sonata import DEFAULT_IGNORED_FIELDS, SonataConfig, SonataExperimentConfig
+
+
+def _read_config(config_path: Path) -> SonataConfig:
+    with config_path.open(encoding="utf-8") as file:
+        values = yaml.safe_load(file)
+    if not isinstance(values, dict):
+        raise ValueError(f"{config_path}: expected a Sonata configuration mapping")
+    if "model" in values:
+        return load_yaml(config_path, SonataExperimentConfig).model
+    return load_yaml(config_path, SonataConfig)
+
+
+def _read_ascii_ply_header(file: TextIO, path: Path) -> tuple[int, tuple[str, ...]]:
+    if file.readline().strip() != "ply":
+        raise ValueError(f"{path}: invalid PLY header")
+    header: list[list[str]] = []
+    for line in file:
+        parts = line.split()
+        if parts and parts[0] == "end_header":
+            break
+        if parts and parts[0] not in {"comment", "obj_info"}:
+            header.append(parts)
+    else:
+        raise ValueError(f"{path}: incomplete PLY header")
+
+    format_lines = [parts for parts in header if parts[0] == "format"]
+    vertex_indexes = [
+        i for i, parts in enumerate(header) if parts[0] == "element" and len(parts) > 1 and parts[1] == "vertex"
+    ]
+    if (
+        len(format_lines) != 1
+        or format_lines[0][1:] != ["ascii", "1.0"]
+        or len(vertex_indexes) != 1
+        or any(parts[0] == "element" for parts in header[: vertex_indexes[0]])
+    ):
+        raise ValueError(f"{path}: ASCII fallback requires a vertex element and format ascii 1.0")
+    vertex_idx = vertex_indexes[0]
+    try:
+        vertex_count = int(header[vertex_idx][2])
+    except (IndexError, ValueError) as exc:
+        raise ValueError(f"{path}: invalid PLY vertex count") from exc
+    if vertex_count < 0:
+        raise ValueError(f"{path}: PLY vertex count cannot be negative")
+    next_element = next(
+        (i for i in range(vertex_idx + 1, len(header)) if header[i][0] == "element"),
+        len(header),
+    )
+    properties = [parts for parts in header[vertex_idx + 1 : next_element] if parts[0] == "property"]
+    if any(len(parts) != 3 for parts in properties):
+        raise ValueError(f"{path}: ASCII fallback does not support list-valued vertex properties")
+    fields = tuple(parts[2] for parts in properties)
+    if not fields:
+        raise ValueError(f"{path}: PLY vertex element has no scalar properties")
+    return vertex_count, fields
+
+
+def _load_ascii_ply(path: Path) -> tuple[np.ndarray, tuple[str, ...]]:
+    with path.open(encoding="ascii") as file:
+        count, fields = _read_ascii_ply_header(file, path)
+        if count == 0:
+            return np.empty((0, len(fields)), dtype=np.float32), fields
+        try:
+            data = np.loadtxt(file, dtype=np.float32, max_rows=count, usecols=range(len(fields)), ndmin=2)
+        except ValueError as exc:
+            raise ValueError(f"{path}: could not decode ASCII PLY vertex properties: {exc}") from exc
+        if len(data) != count:
+            raise ValueError(f"{path}: truncated PLY vertex data")
+        return data, fields
+
+
+def _load_cloud(
+    path: Path,
+    coord_fields: tuple[str, str, str],
+    selected_features: tuple[str, ...] | None,
+) -> tuple[np.ndarray, np.ndarray, tuple[str, ...]]:
+    if not path.is_file() or path.suffix.lower() not in {".pcd", ".ply"}:
+        raise ValueError(f"{path}: expected an existing .pcd or .ply file")
+    dataset = PcdOnlyFolderDataset(str(path.parent), include_fields=True)
+    matches = [i for i, cloud_path in enumerate(dataset.pcd_paths) if cloud_path.resolve() == path.resolve()]
+    if not matches:
+        raise FileNotFoundError(f"{path}: point cloud was not found by the PCD/PLY loader")
+    try:
+        values, fields = dataset[matches[0]]
+    except ImportError:
+        if path.suffix.lower() != ".ply":
+            raise
+        values, fields = _load_ascii_ply(path)
+
+    return _prepare_cloud_array(path, np.asarray(values), tuple(fields), coord_fields, selected_features)
+
+
+def _prepare_cloud_array(
+    path: Path,
+    values: np.ndarray,
+    fields: tuple[str, ...],
+    coord_fields: tuple[str, str, str],
+    selected_features: tuple[str, ...] | None,
+) -> tuple[np.ndarray, np.ndarray, tuple[str, ...]]:
+    field_to_idx = {field.lower(): i for i, field in enumerate(fields)}
+    coord_names = tuple(name.lower() for name in coord_fields)
+    if values.ndim != 2 or values.shape[1] != len(fields):
+        raise ValueError(f"{path}: point data shape {values.shape} does not match its {len(fields)} fields")
+    missing = [name for name in coord_names if name not in field_to_idx]
+    if missing:
+        raise ValueError(f"{path}: missing coordinate fields {missing}; available fields: {fields}")
+    tensor = torch.as_tensor(values, dtype=torch.float32)
+    xyz = tensor[:, [field_to_idx[name] for name in coord_names]]
+    valid = torch.isfinite(xyz).all(dim=1)
+    xyz = xyz[valid]
+    if not len(xyz):
+        raise ValueError(f"{path}: contains no finite XYZ coordinates")
+
+    ignored_fields = {name.lower() for name in DEFAULT_IGNORED_FIELDS}
+    if selected_features is None:
+        feature_names = tuple(
+            name for name in fields if name.lower() not in coord_names and name.lower() not in ignored_fields
+        )
+    else:
+        feature_names = selected_features
+        missing = [name for name in feature_names if name.lower() not in field_to_idx]
+        if missing:
+            raise ValueError(f"{path}: requested feature fields {missing} are absent; available fields: {fields}")
+        if any(name.lower() in coord_names for name in feature_names):
+            raise ValueError("Coordinate fields cannot also be listed as feature fields")
+    if feature_names:
+        feat = torch.stack([tensor[:, field_to_idx[name.lower()]] for name in feature_names], dim=1)[valid]
+        feat = torch.nan_to_num(feat)
+        feat = (feat - feat.mean(dim=0, keepdim=True)) / feat.std(dim=0, keepdim=True, unbiased=False).clamp_min(1e-6)
+        feat = feat.clamp(-10, 10)
+    else:
+        feat = xyz.clone()
+    return xyz.numpy(), feat.numpy(), feature_names
+
+
+def _select_points(
+    xyz: np.ndarray, feat: np.ndarray, count: int, seed: int
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    if count < 1:
+        raise ValueError("point count must be positive")
+    if xyz.ndim != 2 or xyz.shape[1] != 3 or feat.ndim != 2 or feat.shape[0] != len(xyz):
+        raise ValueError("coordinates and features must be aligned with shapes (N, 3) and (N, C)")
+    if len(xyz) == 0:
+        raise ValueError("cannot select points from an empty cloud")
+    rng = np.random.default_rng(seed)
+    indices = np.sort(rng.choice(len(xyz), size=count, replace=len(xyz) < count))
+    return xyz[indices], feat[indices], indices
+
+
+def _export_lattice(point_count: int) -> np.ndarray:
+    if point_count < 1:
+        raise ValueError("point count must be positive")
+    side = math.ceil(point_count ** (1 / 3))
+    point_ids = np.arange(point_count)
+    return np.stack((point_ids // (side * side), (point_ids // side) % side, point_ids % side), axis=1).astype(np.int64)
+
+
+def _map_to_export_lattice(grid_coord: np.ndarray) -> np.ndarray:
+    if grid_coord.ndim != 2 or grid_coord.shape[1] != 3 or len(grid_coord) == 0:
+        raise ValueError(f"grid coordinates must have non-empty shape (N, 3), got {grid_coord.shape}")
+    source_grid = grid_coord - grid_coord.min(axis=0, keepdims=True)
+    source_max = source_grid.max(axis=0, keepdims=True)
+    source_grid = np.divide(
+        source_grid * ((1 << 16) - 1),
+        source_max,
+        out=np.zeros_like(source_grid, dtype=np.float64),
+        where=source_max > 0,
+    ).astype(np.int64)
+    target_grid = _export_lattice(len(grid_coord))
+    source_order = z_order_encode(torch.from_numpy(source_grid), 16).numpy().argsort(kind="stable")
+    target_order = z_order_encode(torch.from_numpy(target_grid), 16).numpy().argsort(kind="stable")
+    mapped_grid = np.empty_like(target_grid)
+    mapped_grid[source_order] = target_grid[target_order]
+    return mapped_grid
+
+
+def _voxelize_cloud(
+    xyz: np.ndarray, feat: np.ndarray, grid: PointGridSpec
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    points = torch.cat((torch.from_numpy(xyz), torch.from_numpy(feat)), dim=1)
+    data, is_real = points_to_voxels(
+        points,
+        torch.zeros(len(points), dtype=torch.long),
+        grid,
+        batch_size=1,
+        feature_dim=points.shape[1],
+    )
+    if not is_real.any():
+        raise ValueError("point cloud contains no points inside the configured input grid")
+    return data["coord"][is_real].numpy(), data["feat"][is_real, 3:].numpy(), data["grid_coord"][is_real].numpy()
+
+
+def _effective_config(config: SonataConfig, grid_size: float | None) -> tuple[SonataConfig, PointGridSpec]:
+    grid = config.input_grid or PointGridSpec.from_bev_params(BevParams())
+    if grid_size is not None:
+        grid = replace(grid, voxel_size_xyz=grid_size)
+    if config.input_grid != grid:
+        config = replace(config, input_grid=grid)
+    return config, grid
+
+
+def output_point_map(
+    grid_coord: np.ndarray, output_count: int, stride_factors: tuple[int, ...] | None = None
+) -> np.ndarray:
+    if grid_coord.ndim != 2 or grid_coord.shape[1] != 3 or len(grid_coord) == 0:
+        raise ValueError(f"grid coordinates must have non-empty shape (N, 3), got {grid_coord.shape}")
+    if output_count < 1:
+        raise ValueError("output feature count must be positive")
+    if output_count == len(grid_coord):
+        return np.arange(len(grid_coord))
+    if stride_factors is None:
+        factors = []
+        factor = 1
+        while factor <= int(grid_coord.max()) + 1:
+            factors.append(factor)
+            factor *= 2
+    else:
+        factors = list(dict.fromkeys(stride_factors))
+    candidates = []
+    for factor in factors:
+        voxels, inverse = np.unique(grid_coord // factor, axis=0, return_inverse=True)
+        if len(voxels) == output_count:
+            candidates.append(inverse)
+    if not candidates:
+        raise ValueError(
+            f"Model returned {output_count} features for {len(grid_coord)} points; no pooling stage matches"
+        )
+    if any(not np.array_equal(candidates[0], candidate) for candidate in candidates[1:]):
+        raise ValueError("Model output resolution is ambiguous; use grid coordinates matching the exported model")
+    return candidates[0]
+
+
+def _resolve_onnx_point_count(point_dim: int | str | None, requested_points: int | None) -> int:
+    if isinstance(point_dim, int):
+        if requested_points is not None and requested_points != point_dim:
+            raise ValueError(f"ONNX model requires {point_dim} points, but --num-points={requested_points}")
+        count = point_dim
+    else:
+        if requested_points is None:
+            raise ValueError("This ONNX model has a dynamic point count; provide --num-points")
+        count = requested_points
+    if count < 1:
+        raise ValueError("ONNX point count must be positive")
+    return count
+
 
 MODES = ("all", "pca", "prototype", "agreement", "confidence")
 
