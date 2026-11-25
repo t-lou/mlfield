@@ -49,7 +49,7 @@ from components.dataset.pcd_only_dataset import PcdOnlyFolderDataset
 from components.definitions.bev_params import BevParams
 from components.mmperc.encoder.point_transformer_v3 import PointGridSpec, points_to_voxels, z_order_encode
 from components.utils.config import load_yaml
-from experiments.ssl.sonata import DEFAULT_IGNORED_FIELDS, SonataConfig, SonataExperimentConfig
+from experiments.ssl.sonata import DEFAULT_FEATURE_FIELDS, SonataConfig, SonataExperimentConfig
 
 
 def _read_config(config_path: Path) -> SonataConfig:
@@ -162,11 +162,8 @@ def _prepare_cloud_array(
     if not len(xyz):
         raise ValueError(f"{path}: contains no finite XYZ coordinates")
 
-    ignored_fields = {name.lower() for name in DEFAULT_IGNORED_FIELDS}
     if selected_features is None:
-        feature_names = tuple(
-            name for name in fields if name.lower() not in coord_names and name.lower() not in ignored_fields
-        )
+        feature_names = DEFAULT_FEATURE_FIELDS
     else:
         feature_names = selected_features
         missing = [name for name in feature_names if name.lower() not in field_to_idx]

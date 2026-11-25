@@ -82,7 +82,7 @@ def test_ply_semantic_labels_are_not_model_features():
                 temp_dir,
                 points_per_cloud=2,
                 batch_size=2,
-                ignore_fields=("semantic",),
+                feature_fields=("intensity",),
                 num_workers=2,
                 prefetch_factor=3,
                 pin_memory=True,

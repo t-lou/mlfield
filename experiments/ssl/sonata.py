@@ -107,18 +107,7 @@ from torch.utils.data import DataLoader, Dataset
 
 log = logging.getLogger("sonata")
 
-DEFAULT_IGNORED_FIELDS = (
-    "label",
-    "labels",
-    "semantic",
-    "semantics",
-    "semantic_label",
-    "semantic_id",
-    "class",
-    "class_id",
-    "instance",
-    "instance_id",
-)
+DEFAULT_FEATURE_FIELDS = ("intensity",)
 
 
 def _default_input_grid() -> PointGridSpec:
@@ -131,11 +120,11 @@ def _default_input_grid() -> PointGridSpec:
 def _default_backbone() -> PointTransformerV3Config:
     # Sonata-sized PTv3 encoder (xyz + colour + normal = 9 input channels).
     return PointTransformerV3Config(
-        in_channels=9,
+        in_channels=1,
         enc_depths=(3, 3, 3, 12, 3),
         enc_channels=(48, 96, 192, 384, 512),
         enc_num_head=(3, 6, 12, 24, 32),
-        enc_patch_size=(1024,) * 5,
+        enc_patch_size=(256, 256, 256, 128, 64),
         drop_path=0.3,
         enc_mode=True,
     )
@@ -671,11 +660,11 @@ class SonataDataConfig:
     num_workers: int = 4  # CPU data-loading worker processes; zero disables prefetched workers.
     prefetch_factor: int = 2  # Batches prefetched per data-loading worker.
     coord_fields: tuple[str, str, str] = ("x", "y", "z")  # Point-cloud XYZ field names.
-    ignore_fields: tuple[str, ...] = DEFAULT_IGNORED_FIELDS  # Fields excluded from feature channels.
+    feature_fields: tuple[str, ...] = DEFAULT_FEATURE_FIELDS  # Whitelist of feature channels to load.
 
     def __post_init__(self) -> None:
         self.coord_fields = tuple(self.coord_fields)
-        self.ignore_fields = tuple(self.ignore_fields)
+        self.feature_fields = tuple(self.feature_fields)
 
 
 @dataclass
@@ -902,7 +891,7 @@ class SonataPCDDataset(Dataset):
         points_per_cloud: int = 4096,
         grid_size: float | None = None,
         coord_fields: tuple[str, str, str] = ("x", "y", "z"),
-        ignore_fields: tuple[str, ...] = DEFAULT_IGNORED_FIELDS,
+        feature_fields: tuple[str, ...] = DEFAULT_FEATURE_FIELDS,
         input_grid: PointGridSpec | None = None,
     ):
         if points_per_cloud < 1:
@@ -934,10 +923,18 @@ class SonataPCDDataset(Dataset):
                 "use --coord-fields to specify the XYZ field names"
             )
         self.coord_names = coord_names
-        ignored_names = {name.strip().lower() for name in ignore_fields}
-        self.feature_fields = tuple(
-            field for field in self.fields if field.lower() not in coord_names and field.lower() not in ignored_names
-        )
+
+        # Validate that all requested feature fields are available in the point cloud
+        feature_names = tuple(name.strip().lower() for name in feature_fields)
+        available_fields = set(field.lower() for field in self.fields)
+        missing_features = [name for name in feature_names if name not in available_fields]
+        if missing_features:
+            raise ValueError(
+                f"Point-cloud fields {self.fields} do not include requested feature fields {missing_features}; "
+                f"available fields are {sorted(available_fields)}"
+            )
+
+        self.feature_fields = tuple(field for field in self.fields if field.lower() in feature_names)
         self.in_channels = len(self.feature_fields) or 3
         self._warned_schemas: set[tuple[str, ...]] = set()
         if first_cloud.ndim != 2 or first_cloud.shape[1] != len(self.fields):
@@ -1113,7 +1110,7 @@ def build_train_loader(
     batch_size: int = 1,
     grid_size: float | None = None,
     coord_fields: tuple[str, str, str] = ("x", "y", "z"),
-    ignore_fields: tuple[str, ...] = DEFAULT_IGNORED_FIELDS,
+    feature_fields: tuple[str, ...] = DEFAULT_FEATURE_FIELDS,
     input_grid: PointGridSpec | None = None,
     num_workers: int = 4,
     prefetch_factor: int = 2,
@@ -1130,7 +1127,7 @@ def build_train_loader(
         pin_memory: Pin host tensors for asynchronous CUDA transfers
         grid_size: Optional override for voxel size
         coord_fields: Names of coordinate fields (x, y, z)
-        ignore_fields: Fields to exclude from features
+        feature_fields: Whitelist of feature field names to load
         input_grid: Optional grid specification
     """
     if batch_size < 1:
@@ -1145,7 +1142,7 @@ def build_train_loader(
         points_per_cloud,
         grid_size,
         coord_fields,
-        ignore_fields,
+        feature_fields,
         input_grid,
     )
     loader_kwargs = {
@@ -1296,7 +1293,7 @@ if __name__ == "__main__":
         points_per_cloud=points_per_cloud,
         batch_size=cfg.data.batch_size,
         coord_fields=cfg.data.coord_fields,
-        ignore_fields=cfg.data.ignore_fields,
+        feature_fields=cfg.data.feature_fields,
         input_grid=model_cfg.input_grid,
         num_workers=cfg.data.num_workers,
         prefetch_factor=cfg.data.prefetch_factor,
