@@ -28,9 +28,6 @@ class PatchEmbed(nn.Module):
             patch_size: Size of each patch
             in_chans: Number of input channels (3 for RGB)
             embed_dim: Output embedding dimension
-
-        Raises:
-            ValueError: If img_size is not divisible by patch_size
         """
         super().__init__()
 
@@ -45,6 +42,9 @@ class PatchEmbed(nn.Module):
 
         Returns:
             Patch embeddings of shape (batch, num_patches, embed_dim)
+
+        Note:
+            Image sizes that are not divisible by patch_size are cropped (the remainder is ignored).
         """
         # Use convolution to extract patches and project to embedding dimension
         x = self.proj(x)  # (batch, embed_dim, grid_size, grid_size)
