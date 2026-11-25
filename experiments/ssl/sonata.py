@@ -80,7 +80,7 @@ import logging
 import math
 import os
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass, field, replace
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 
 import torch
@@ -671,6 +671,7 @@ class SonataDataConfig:
 class SonataExportConfig:
     backbone_path: str = "sonata_teacher_backbone.pt"  # Teacher backbone PyTorch weights output.
     backbone_onnx_path: str = "sonata_teacher_backbone.onnx"  # PTv3-only teacher ONNX output.
+    full_path: str = "sonata_full.pt"  # Full teacher SonataNet PyTorch weights output.
     full_onnx_path: str = "sonata_full.onnx"  # Full Sonata ONNX output.
 
 
@@ -694,6 +695,89 @@ def to_device(obj, device):
     if isinstance(obj, (list, tuple)):
         return type(obj)(to_device(v, device) for v in obj)
     return obj
+
+
+def export_sonata_encoder_pt(model: Sonata, path: str | os.PathLike[str]) -> None:
+    """Save the EMA teacher encoder state dict for downstream use."""
+    output_path = Path(path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    torch.save(model.teacher.backbone.state_dict(), output_path)
+
+
+def export_sonata_full_pt(model: Sonata, path: str | os.PathLike[str]) -> None:
+    """Save the EMA teacher encoder and both prototype heads."""
+    output_path = Path(path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    torch.save(model.teacher.state_dict(), output_path)
+
+
+def _onnx_sample(
+    model: Sonata,
+    device: torch.device,
+    in_channels: int,
+    num_points: int,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    if in_channels < 1:
+        raise ValueError("in_channels must be positive")
+    if num_points < 1:
+        raise ValueError("num_points must be positive")
+    side = math.ceil(num_points ** (1 / 3))
+    serial_depth = model.teacher.backbone.serial_depth
+    if side >= 1 << serial_depth:
+        raise ValueError(
+            f"num_points={num_points} requires a cubic grid side of {side}, which exceeds serial_depth={serial_depth}"
+        )
+    point_ids = torch.arange(num_points, device=device)
+    grid = torch.stack(
+        (point_ids // (side * side), (point_ids // side) % side, point_ids % side),
+        dim=1,
+    )
+    feat = torch.zeros((num_points, in_channels), dtype=torch.float32, device=device)
+    batch = torch.zeros(num_points, dtype=torch.long, device=device)
+    return feat, grid.to(dtype=torch.long), batch
+
+
+def export_sonata_encoder_onnx(
+    model: Sonata,
+    path: str | os.PathLike[str],
+    in_channels: int,
+    num_points: int = 4096,
+) -> None:
+    """Export the EMA teacher encoder with a fixed number of input points."""
+    device = next(model.parameters()).device
+    feat, grid_coord, batch = _onnx_sample(model, device, in_channels, num_points)
+    exported = SonataBackboneExport(model.teacher.backbone).to(device)
+    export_onnx(
+        exported,
+        (feat, grid_coord, batch),
+        path,
+        input_names=("features", "grid_coord", "batch"),
+        output_names=("encoded_features",),
+        dynamic_axes={},
+    )
+
+
+def export_sonata_full_onnx(
+    model: Sonata,
+    path: str | os.PathLike[str],
+    in_channels: int,
+    num_points: int = 4096,
+) -> None:
+    """Export the EMA teacher encoder and both prototype heads."""
+    device = next(model.parameters()).device
+    feat, grid_coord, batch = _onnx_sample(model, device, in_channels, num_points)
+    exported = SonataFullExport(
+        model.teacher,
+        up_cast_level=model.cfg.up_cast_level,
+    ).to(device)
+    export_onnx(
+        exported,
+        (feat, grid_coord, batch),
+        path,
+        input_names=("features", "grid_coord", "batch"),
+        output_names=("mask_logits", "unmask_logits", "encoded_features"),
+        dynamic_axes={},
+    )
 
 
 class SonataTrainer:
@@ -816,7 +900,14 @@ class SonataTrainer:
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
         tmp = path + ".tmp"
         torch.save(
-            dict(model=self.model.state_dict(), optimizer=self.opt.state_dict(), step=self.step, epoch=self.epoch), tmp
+            dict(
+                model=self.model.state_dict(),
+                model_config=asdict(self.model.cfg),
+                optimizer=self.opt.state_dict(),
+                step=self.step,
+                epoch=self.epoch,
+            ),
+            tmp,
         )
         os.replace(tmp, path)
 
@@ -828,58 +919,22 @@ class SonataTrainer:
 
     def export_backbone(self, path: str) -> None:
         """Teacher backbone weights (what Sonata releases for downstream fine-tuning / probing)."""
-        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-        torch.save(self.model.teacher.backbone.state_dict(), path)
+        export_sonata_encoder_pt(self.model, path)
+
+    def export_full(self, path: str) -> None:
+        """Teacher backbone and prototype-head weights."""
+        export_sonata_full_pt(self.model, path)
 
     def export_backbone_onnx(self, path: str, in_channels: int, num_points: int = 4096) -> None:
         """Export only the teacher PTv3 backbone with a fixed number of input points."""
-        if num_points < 1:
-            raise ValueError("num_points must be positive")
-        feat, grid_coord, batch = self._onnx_sample(in_channels, num_points)
-        exported = SonataBackboneExport(self.model.teacher.backbone).to(self.device)
-        export_onnx(
-            exported,
-            (feat, grid_coord, batch),
-            path,
-            input_names=("features", "grid_coord", "batch"),
-            output_names=("encoded_features",),
-            dynamic_axes={},
-        )
+        export_sonata_encoder_onnx(self.model, path, in_channels, num_points)
 
     def export_full_onnx(self, path: str, in_channels: int, num_points: int = 4096) -> None:
         """Export the teacher backbone and both Sonata prototype heads."""
-        if num_points < 1:
-            raise ValueError("num_points must be positive")
-        feat, grid_coord, batch = self._onnx_sample(in_channels, num_points)
-        exported = SonataFullExport(
-            self.model.teacher,
-            up_cast_level=self.model.cfg.up_cast_level,
-        ).to(self.device)
-        export_onnx(
-            exported,
-            (feat, grid_coord, batch),
-            path,
-            input_names=("features", "grid_coord", "batch"),
-            output_names=("mask_logits", "unmask_logits", "encoded_features"),
-            dynamic_axes={},
-        )
+        export_sonata_full_onnx(self.model, path, in_channels, num_points)
 
     def _onnx_sample(self, in_channels: int, num_points: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        side = math.ceil(num_points ** (1 / 3))
-        serial_depth = self.model.teacher.backbone.serial_depth
-        if side >= 1 << serial_depth:
-            raise ValueError(
-                f"num_points={num_points} requires a cubic grid side of {side}, "
-                f"which exceeds serial_depth={serial_depth}"
-            )
-        point_ids = torch.arange(num_points, device=self.device)
-        grid = torch.stack(
-            (point_ids // (side * side), (point_ids // side) % side, point_ids % side),
-            dim=1,
-        )
-        feat = torch.zeros((num_points, in_channels), dtype=torch.float32, device=self.device)
-        batch = torch.zeros(num_points, dtype=torch.long, device=self.device)
-        return feat, grid.to(dtype=torch.long), batch
+        return _onnx_sample(self.model, self.device, in_channels, num_points)
 
 
 class SonataPCDDataset(Dataset):
@@ -1315,6 +1370,9 @@ if __name__ == "__main__":
     trainer.fit()
     trainer.export_backbone(cfg.export.backbone_path)
     logger.info("Exported teacher backbone to %s", cfg.export.backbone_path)
+    if cfg.export.full_path:
+        trainer.export_full(cfg.export.full_path)
+        logger.info("Exported full teacher weights to %s", cfg.export.full_path)
     if cfg.export.backbone_onnx_path:
         trainer.export_backbone_onnx(
             cfg.export.backbone_onnx_path,

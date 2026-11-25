@@ -113,16 +113,25 @@ checkpoint directory (`image_dino_teacher_backbone.onnx`, `image_jepa_target_enc
 `image_mae_encoder.onnx`). Install `onnx` in the active environment to enable these exports. The files accept
 preprocessed NCHW images at the model's configured resolution and support a dynamic batch size.
 
-Sonata can export two ONNX artifacts:
+Training saves the teacher encoder state dict, full teacher state dict, and both ONNX exports
+using the configured paths. To export all four artifacts from an intermediate training
+checkpoint, run the standalone exporter from the project root:
 
-- `--onnx-out` exports the PTv3 teacher backbone only. It accepts `features`, `grid_coord`, and
-  `batch`, and returns `encoded_features`.
-- `--full-onnx-out` exports the full Sonata teacher, including both prototype heads. It accepts
-  the same three inputs and returns `mask_logits` and `unmask_logits`.
+```bash
+python -m experiments.ssl.export_sonata checkpoints/sonata/step_0000100.pt
+```
 
-Both exports use a fixed point count and fixed serialization grid; rebuilding/exporting is
-required if geometry, channels, or model configuration change. PTv3 uses an ONNX-compatible
-neighborhood fallback during export.
+By default, the outputs go into `checkpoints/sonata/exports`. The exporter produces
+`sonata_teacher_backbone.pt` / `.onnx` (encoder only) and `sonata_full.pt` / `.onnx` (encoder
+plus both prototype heads). New training checkpoints include the exact model configuration.
+For older checkpoints, pass the matching YAML config with `--config`; add `--small-gpu` if that
+checkpoint was trained with the compact profile. Use `--output-dir` and `--num-points` to
+override the output location and fixed ONNX input point count.
+
+Both ONNX exports accept `features`, `grid_coord`, and `batch`; the encoder returns
+`encoded_features`, while the full export also returns `mask_logits` and `unmask_logits`.
+Exports use a fixed point count and serialization grid; re-export if geometry, channels, or
+model configuration change. PTv3 uses an ONNX-compatible neighborhood fallback during export.
 
 ### Visualizing Sonata Features
 
