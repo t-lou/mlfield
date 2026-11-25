@@ -315,10 +315,26 @@ def points_to_voxels(
         voxel_feat.index_add_(0, inverse, raw_features)
         voxel_feat /= counts.unsqueeze(-1).to(voxel_feat.dtype)
         voxel_coord = voxel_feat[:, :3]
-        voxel_batch = torch.empty(counts.numel(), dtype=torch.long, device=raw_features.device)
-        voxel_batch[inverse] = batch
-        voxel_grid = torch.empty(counts.numel(), 3, dtype=torch.long, device=raw_features.device)
-        voxel_grid[inverse] = grid_coord
+        unique_keys, inverse, counts = torch.unique(
+            keys,
+            sorted=True,
+            return_inverse=True,
+            return_counts=True,
+        )
+
+        voxel_grid_z = unique_keys % nz
+        tmp = unique_keys // nz
+
+        voxel_grid_y = tmp % ny
+        tmp = tmp // ny
+
+        voxel_grid_x = tmp % nx
+        voxel_batch = tmp // nx
+
+        voxel_grid = torch.stack(
+            [voxel_grid_x, voxel_grid_y, voxel_grid_z],
+            dim=-1,
+        )
         is_real = torch.ones(counts.numel(), dtype=torch.bool, device=raw_features.device)
     else:
         voxel_coord = raw_features.new_empty((0, 3))
