@@ -824,6 +824,20 @@ class DropPath(nn.Module):
         return x * mask
 
 
+class SafeBatchNorm1d(nn.BatchNorm1d):
+    """BatchNorm1d that also accepts a single row in training mode.
+
+    A sparse batch can shrink to one voxel after grid pooling, for which batch statistics
+    are undefined. The running statistics are used (and left unchanged) in that case.
+    Parameter and buffer names equal ``nn.BatchNorm1d``, so checkpoints stay compatible.
+    """
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if self.training and x.shape[0] == 1:
+            return F.batch_norm(x, self.running_mean, self.running_var, self.weight, self.bias, False, 0.0, self.eps)
+        return super().forward(x)
+
+
 class MLP(nn.Module):
     """Two-layer feed-forward network ``Linear -> GELU -> Linear`` with dropout.
 
@@ -1035,7 +1049,7 @@ class GridPooling(nn.Module):
         assert stride >= 1
         self.stride = stride
         self.proj = nn.Linear(in_dim, out_dim)
-        self.norm = nn.BatchNorm1d(out_dim)
+        self.norm = SafeBatchNorm1d(out_dim)
 
     def forward(self, point: Point) -> Point:
         gc = point.grid_coord.long() // self.stride
@@ -1092,8 +1106,8 @@ class GridUnpooling(nn.Module):
 
     def __init__(self, in_dim, skip_dim, out_dim):
         super().__init__()
-        self.proj = nn.Sequential(nn.Linear(in_dim, out_dim), nn.BatchNorm1d(out_dim), nn.GELU())
-        self.proj_skip = nn.Sequential(nn.Linear(skip_dim, out_dim), nn.BatchNorm1d(out_dim), nn.GELU())
+        self.proj = nn.Sequential(nn.Linear(in_dim, out_dim), SafeBatchNorm1d(out_dim), nn.GELU())
+        self.proj_skip = nn.Sequential(nn.Linear(skip_dim, out_dim), SafeBatchNorm1d(out_dim), nn.GELU())
 
     def forward(self, point: Point) -> Point:
         parent, inverse = point.pooling_parent, point.pooling_inverse
@@ -1162,7 +1176,7 @@ class PointTransformerV3Encoder(nn.Module):
 
         # stem: sparse 5x5x5 conv + BN + GELU
         self.embed_conv = SubMConv3d(in_channels, enc_channels[0], stem_kernel, bias=False)
-        self.embed_norm = nn.BatchNorm1d(enc_channels[0])
+        self.embed_norm = SafeBatchNorm1d(enc_channels[0])
 
         # encoder: stage s = [GridPooling from s-1 (if s > 0)] + enc_depths[s] blocks.
         # Stochastic-depth rates rise linearly over all encoder blocks; block i of a stage

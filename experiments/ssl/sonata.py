@@ -1043,6 +1043,18 @@ class SonataPCDDataset(Dataset):
         )
 
     def __getitem__(self, idx: int) -> dict:
+        """Return the sample at ``idx``; unusable files are logged and replaced by the next usable one."""
+        error: Exception | None = None
+        for offset in range(len(self)):
+            current = (idx + offset) % len(self)
+            try:
+                return self._load_sample(current)
+            except (OSError, ValueError) as exc:
+                error = exc
+                logger.warning("Skipping point cloud %s: %s", self.paths[current], exc)
+        raise RuntimeError("No usable point cloud in the dataset") from error
+
+    def _load_sample(self, idx: int) -> dict:
         array, fields = self.dataset[idx]
         field_to_idx = self._field_indexes(array, fields, idx)
 
@@ -1064,7 +1076,7 @@ class SonataPCDDataset(Dataset):
                 source_idx = field_to_idx.get(field.lower())
                 if source_idx is not None:
                     features[:, column] = torch.as_tensor(array[:, source_idx], dtype=torch.float32)
-            features = torch.nan_to_num(features[valid])
+            features = torch.nan_to_num(features[valid], nan=0.0, posinf=0.0, neginf=0.0)
             features = (features - features.mean(dim=0, keepdim=True)) / features.std(
                 dim=0, keepdim=True, unbiased=False
             ).clamp_min(1e-6)

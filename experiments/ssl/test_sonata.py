@@ -17,7 +17,6 @@ from components.mmperc.encoder.point_transformer_v3 import (
 from components.utils.config import load_yaml
 from components.utils.onnx_export import export_onnx
 from experiments.ssl.sonata import (
-    SonataBackbone,
     SonataBackboneExport,
     SonataConfig,
     SonataExperimentConfig,
@@ -28,14 +27,13 @@ from experiments.ssl.sonata import (
     concat_views,
 )
 from experiments.ssl.vis_sonata import (
-    _checkpoint_config,
+    _effective_config,
     _export_lattice,
     _load_ascii_ply,
     _load_cloud,
     _map_to_export_lattice,
     _read_config,
-    _run_checkpoint,
-    _run_onnx,
+    _run_onnx_with_logits,
     _voxelize_cloud,
     output_point_map,
 )
@@ -198,12 +196,12 @@ def test_sonata_batch_collation_does_not_pad_model_points():
     assert scene.tolist() == [0, 0, 1, 1, 1, 0, 0, 1, 1, 1]
 
 
-def test_visualizer_reads_experiment_and_model_only_configs():
+def test_visualizer_reads_experiment_and_model_only_yaml_configs():
     with TemporaryDirectory() as temp_dir:
         experiment_path = Path(temp_dir) / "experiment.yaml"
         experiment_path.write_text("model:\n  num_prototypes: 32\n", encoding="utf-8")
-        model_path = Path(temp_dir) / "model.json"
-        model_path.write_text('{"num_prototypes": 16}', encoding="utf-8")
+        model_path = Path(temp_dir) / "model.yaml"
+        model_path.write_text("num_prototypes: 16\n", encoding="utf-8")
 
         experiment_config = _read_config(experiment_path)
         model_config = _read_config(model_path)
@@ -212,27 +210,37 @@ def test_visualizer_reads_experiment_and_model_only_configs():
     assert model_config.num_prototypes == 16
 
 
-def test_visualizer_infers_default_sonata_checkpoint_architecture():
-    channels = (48, 96, 192, 384, 512)
-    depths = (3, 3, 3, 12, 3)
-    state = {
-        "embed_norm.weight": torch.empty(channels[0]),
-        "embed_conv.weight": torch.empty(125, 9),
-    }
-    state.update({f"pools.{idx}.norm.weight": torch.empty(width) for idx, width in enumerate(channels[1:])})
-    state.update(
-        {
-            f"enc.{stage}.{layer}.attn.q.weight": torch.empty(1)
-            for stage, depth in enumerate(depths)
-            for layer in range(depth)
-        }
-    )
+def test_visualizer_uses_yaml_model_config_for_inference_geometry():
+    with TemporaryDirectory() as temp_dir:
+        config_path = Path(temp_dir) / "sonata.yaml"
+        config_path.write_text(
+            "model:\n"
+            "  backbone:\n"
+            "    in_channels: 2\n"
+            "    enc_depths: [1, 1]\n"
+            "    enc_channels: [4, 8]\n"
+            "    enc_num_head: [1, 2]\n"
+            "    enc_patch_size: [8, 8]\n"
+            "    stride: [2]\n"
+            "    order: [z]\n"
+            "    serial_depth: 8\n"
+            "    stem_kernel: 3\n"
+            "    drop_path: 0.0\n"
+            "  input_grid: null\n"
+            "  up_cast_level: 1\n"
+            "  num_prototypes: 4\n"
+            "  head_hidden: 8\n"
+            "  head_bottleneck: 4\n",
+            encoding="utf-8",
+        )
 
-    config = _checkpoint_config(state, None)
+        config = _read_config(config_path)
+        config, input_grid = _effective_config(config, None)
 
-    assert tuple(config.backbone.enc_channels) == channels
-    assert tuple(config.backbone.enc_depths) == depths
-    assert config.backbone.in_channels == 9
+    assert config.backbone.in_channels == 2
+    assert tuple(config.backbone.enc_depths) == (1, 1)
+    assert config.up_cast_level == 1
+    assert input_grid == config.input_grid
 
 
 def test_visualizer_accepts_symbolic_onnx_point_dimension():
@@ -248,32 +256,41 @@ def test_visualizer_accepts_symbolic_onnx_point_dimension():
             return self.inputs
 
         def get_outputs(self):
-            return [SimpleNamespace(name="encoded_features")]
+            return [
+                SimpleNamespace(name="mask_logits"),
+                SimpleNamespace(name="unmask_logits"),
+                SimpleNamespace(name="encoded_features"),
+            ]
 
         def run(self, names, feed):
             assert feed["features"].shape == (4, 2)
-            return [np.ones((4, 5), dtype=np.float32)]
+            assert feed["grid_coord"].shape == (4, 3)
+            return [
+                np.ones((4, 3), dtype=np.float32),
+                np.ones((4, 3), dtype=np.float32),
+                np.ones((4, 5), dtype=np.float32),
+            ]
 
     fake_runtime = ModuleType("onnxruntime")
     fake_runtime.InferenceSession = FakeSession
     with patch.dict("sys.modules", {"onnxruntime": fake_runtime}):
-        xyz, features, output_name = _run_onnx(
+        xyz, mask_logits, unmask_logits, features = _run_onnx_with_logits(
             Path("model.onnx"),
             np.array([[0, 0, 0], [1, 0, 0], [2, 0, 0]], dtype=np.float32),
             np.ones((3, 2), dtype=np.float32),
             np.array([[0, 0, 0], [1, 0, 0], [2, 0, 0]], dtype=np.int64),
             requested_points=4,
-            output_name="auto",
             seed=0,
             config=None,
         )
 
     assert xyz.shape == (4, 3)
+    assert mask_logits.shape == (4, 3)
+    assert unmask_logits.shape == (4, 3)
     assert features.shape == (4, 5)
-    assert output_name == "encoded_features"
 
 
-def test_visualizer_voxelizes_with_bev_and_runs_pt_with_explicit_grid():
+def test_visualizer_voxelizes_with_yaml_configured_grid():
     config = SonataConfig(
         backbone=PointTransformerV3Config(
             in_channels=3,
@@ -301,17 +318,9 @@ def test_visualizer_voxelizes_with_bev_and_runs_pt_with_explicit_grid():
     assert voxel_feat.shape == (1, 1)
     assert grid_coord.tolist() == [[0, 47, 0]]
 
-    backbone = SonataBackbone(config.backbone)
-    output = _run_checkpoint(
-        backbone.state_dict(),
-        config,
-        voxel_xyz,
-        np.repeat(voxel_feat, 3, axis=1),
-        grid_coord,
-        "cpu",
-    )
-    assert output.shape == (1, 12)
-    assert np.isfinite(output).all()
+    assert config.input_grid is not None
+    assert np.isfinite(voxel_xyz).all()
+    assert np.isfinite(voxel_feat).all()
 
 
 def test_sonata_backbone_onnx_export():
