@@ -23,7 +23,8 @@ def _enum_to_value(d):
 
 def dump_yaml[T](obj: T, path: Path) -> None:
     """Dump a dataclass object to a YAML file, preserving field order and converting Enums to their values."""
-    raw_dict = asdict(obj)
+    # Dataclasses may provide yaml_dict() to control what is written (e.g. keep derived fields as null).
+    raw_dict = obj.yaml_dict() if hasattr(obj, "yaml_dict") else asdict(obj)
 
     raw_dict = _enum_to_value(raw_dict)
 

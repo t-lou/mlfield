@@ -28,6 +28,17 @@ class _TargetEncoderExport(nn.Module):
         return self.encoder.forward_full(images)
 
 
+class _MaskCollate:
+    """Picklable collate function that samples masks in the DataLoader workers."""
+
+    def __init__(self, config: IJEPAConfig) -> None:
+        self.config = config
+
+    def __call__(self, batch):
+        # cuda doesn't seem to be a good idea in dataloader
+        return collate_fn_with_masks(batch, self.config, device=torch.device("cpu"))
+
+
 def _build_transform(image_size: int):
     # Reuse ImageNet-style normalization as in other vision trainers.
     return transforms.Compose(
@@ -56,66 +67,40 @@ def _compute_i_jepa_loss(outputs: dict[str, object]) -> torch.Tensor:
     if len(pred_list) == 0:
         raise ValueError("No target blocks produced by model")
 
-    device = pred_list[0].device
-    total_loss = torch.tensor(0.0, device=device)
-    total_valid_count = torch.tensor(0.0, device=device)
+    # Blocks may have different lengths: concatenate along the token dimension.
+    # Shapes: pred / tgt (B, sum_T, D), valid (B, sum_T)
+    pred = torch.cat(pred_list, dim=1)
+    tgt = torch.cat(tgt_list, dim=1)
+    valid = torch.cat(valid_list, dim=1).to(pred.dtype)
 
-    for pred, tgt, valid in zip(pred_list, tgt_list, valid_list):
-        # Compute MSE loss on full tensors without reshaping
-        # Shape: pred (B, T, D), tgt (B, T, D), valid (B, T)
-        loss_per_token = F.mse_loss(pred, tgt, reduction="none").mean(dim=-1)  # (B, T)
-
-        # Apply mask via element-wise multiplication (fully parallelized)
-        # No advanced indexing - pure CUDA operations
-        loss_masked = loss_per_token * valid.float()  # (B, T)
-
-        # Accumulate loss and count (all GPU tensors, no conversion to Python)
-        total_loss = total_loss + loss_masked.sum()
-        total_valid_count = total_valid_count + valid.sum().float()
-
-    # Safe division on GPU (no Python scalars involved)
-    return total_loss / torch.clamp(total_valid_count, min=1.0)
+    loss_per_token = F.mse_loss(pred, tgt, reduction="none").mean(dim=-1)  # (B, sum_T)
+    return (loss_per_token * valid).sum() / valid.sum().clamp(min=1.0)
 
 
-def _save_checkpoint(path: Path, model: I_JEPA, optimizer: torch.optim.Optimizer) -> None:
-    state = {
-        "model": model.state_dict(),
-        "optimizer": optimizer.state_dict(),
-    }
-    torch.save(state, path)
+def _build_optimizer(model: I_JEPA, lr: float = 1e-4, weight_decay: float = 0.04) -> torch.optim.Optimizer:
+    """AdamW over the trainable parameters; no weight decay for biases, norms and tokens."""
+    decay, no_decay = [], []
+    for name, p in model.named_parameters():
+        if not p.requires_grad:  # frozen EMA target encoder
+            continue
+        (no_decay if p.ndim < 2 or "token" in name else decay).append(p)
+    groups = [
+        {"params": decay, "weight_decay": weight_decay},
+        {"params": no_decay, "weight_decay": 0.0},
+    ]
+    return torch.optim.AdamW(groups, lr=lr)
 
 
-def _load_checkpoint(path: Path, model: I_JEPA, optimizer: torch.optim.Optimizer, device: torch.device) -> None:
-    state = torch.load(path, map_location=device)
+def _build_amp(device: torch.device, use_amp: bool, amp_dtype: str):
+    """Return (autocast context, GradScaler or None). The scaler is only needed for float16."""
+    if device.type != "cuda" or not use_amp:
+        return nullcontext(), None
+    if amp_dtype == "bfloat16":
+        return torch.autocast(device_type="cuda", dtype=torch.bfloat16), None
+    return torch.autocast(device_type="cuda", dtype=torch.float16), torch.amp.GradScaler("cuda", enabled=True)
 
-    if "model" not in state or "optimizer" not in state:
-        raise KeyError(f"Checkpoint {path} must contain 'model' and 'optimizer' entries")
 
-    model.load_state_dict(state["model"])
-    optimizer.load_state_dict(state["optimizer"])
-
-
-def train(
-    config: IJEPAConfig,
-    start_epoch: int = -1,
-    use_amp: bool = True,
-    ema_momentum: float = 0.996,
-    use_mask_prefetch: bool = False,
-) -> None:
-    """Train I-JEPA with a DINO-like orchestration loop.
-
-    Args:
-        use_mask_prefetch: If True, generate masks in DataLoader prefetch (experimental).
-                          Can improve GPU utilization if mask sampling is bottleneck.
-    """
-
-    # SHARED FROM dino.py: checkpoint folder handling.
-    dir_ckpt = Path(config.train_config.dir_ckpts)
-    dir_ckpt.mkdir(parents=True, exist_ok=True)
-
-    # SHARED FROM dino.py: device selection and worker resolution.
-    device = config.train_config.get_device()
-
+def _build_loader(config: IJEPAConfig, device: torch.device, use_mask_prefetch: bool) -> DataLoader:
     # REPLACED FROM dino.py: no multi-crop collate, just one transformed image per sample.
     dataset = ImageOnlyDataset(
         root_dirs=list(config.data_dirs),
@@ -133,22 +118,140 @@ def train(
 
     # Use custom collate function if mask prefetching is enabled
     if use_mask_prefetch:
-        loader_kwargs["collate_fn"] = lambda batch: collate_fn_with_masks(
-            batch, config, device=torch.device("cpu")
-        )  # cuda doesn't seem to be a good idea in dataloader
+        loader_kwargs["collate_fn"] = _MaskCollate(config)
 
     if config.train_config.num_workers > 0:
         loader_kwargs["prefetch_factor"] = config.train_config.prefetch_factor
         loader_kwargs["persistent_workers"] = config.train_config.persistent_workers
-    loader = DataLoader(**loader_kwargs)
+    return DataLoader(**loader_kwargs)
+
+
+def _save_checkpoint(
+    path: Path,
+    model: I_JEPA,
+    optimizer: torch.optim.Optimizer,
+    scaler: torch.amp.GradScaler | None = None,
+) -> None:
+    state = {
+        "model": model.state_dict(),
+        "optimizer": optimizer.state_dict(),
+    }
+    if scaler is not None:
+        state["scaler"] = scaler.state_dict()
+    torch.save(state, path)
+
+
+def _load_checkpoint(
+    path: Path,
+    model: I_JEPA,
+    optimizer: torch.optim.Optimizer,
+    device: torch.device,
+    scaler: torch.amp.GradScaler | None = None,
+) -> None:
+    state = torch.load(path, map_location=device)
+
+    if "model" not in state or "optimizer" not in state:
+        raise KeyError(f"Checkpoint {path} must contain 'model' and 'optimizer' entries")
+
+    model.load_state_dict(state["model"])
+    try:
+        optimizer.load_state_dict(state["optimizer"])
+    except ValueError:
+        # e.g. checkpoints written before the optimizer used separate weight-decay groups
+        logger.warning(f"Optimizer state in {path} does not match the current optimizer; starting it from scratch")
+    if scaler is not None and "scaler" in state:
+        scaler.load_state_dict(state["scaler"])
+
+
+def _train_one_epoch(
+    model: I_JEPA,
+    loader: DataLoader,
+    optimizer: torch.optim.Optimizer,
+    device: torch.device,
+    amp_context,
+    scaler: torch.amp.GradScaler | None,
+    ema_momentum: float,
+    use_mask_prefetch: bool,
+    fps_logger: FpsLogger,
+) -> float:
+    """Run one epoch and return the mean loss (a single host sync at the end)."""
+    model.train()
+    loss_sum = torch.zeros((), device=device)
+    num_steps = 0
+
+    for batch_data in loader:
+        # Handle both prefetched masks and on-the-fly sampling
+        if use_mask_prefetch:
+            imgs, context_mask_cpu, target_masks_cpu = batch_data
+            context_mask = context_mask_cpu.to(device, non_blocking=True)
+            target_masks = [m.to(device, non_blocking=True) for m in target_masks_cpu]
+        else:
+            imgs = batch_data
+            context_mask = None
+            target_masks = None
+
+        imgs = imgs.to(device, non_blocking=True)
+
+        with amp_context:
+            outputs = model(imgs, context_mask=context_mask, target_masks=target_masks)
+            loss = _compute_i_jepa_loss(outputs)
+
+        optimizer.zero_grad(set_to_none=True)
+        if scaler is not None:
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            loss.backward()
+            optimizer.step()
+
+        # SHARED FROM dino.py: update target network via EMA after optimizer step.
+        model.momentum_update_target_encoder(momentum=ema_momentum)
+        fps_logger.tick()
+
+        loss_sum += loss.detach().float()
+        num_steps += 1
+
+    if num_steps == 0:
+        raise RuntimeError("The data loader produced no batches (dataset smaller than batch_size?)")
+    return (loss_sum / num_steps).item()
+
+
+def train(
+    config: IJEPAConfig,
+    start_epoch: int = -1,
+    use_amp: bool = True,
+    ema_momentum: float = 0.996,
+    use_mask_prefetch: bool = False,
+    amp_dtype: str = "float16",
+) -> None:
+    """Train I-JEPA with a DINO-like orchestration loop.
+
+    Args:
+        use_mask_prefetch: If True, generate masks in DataLoader prefetch (experimental).
+                          Can improve GPU utilization if mask sampling is bottleneck.
+        amp_dtype: "float16" (with GradScaler) or "bfloat16" (no scaler needed) for CUDA autocast.
+    """
+
+    # SHARED FROM dino.py: checkpoint folder handling.
+    dir_ckpt = Path(config.train_config.dir_ckpts)
+    dir_ckpt.mkdir(parents=True, exist_ok=True)
+
+    # SHARED FROM dino.py: device selection and worker resolution.
+    device = config.train_config.get_device()
+
+    loader = _build_loader(config, device, use_mask_prefetch)
 
     model = I_JEPA(config).to(device)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=0.04)
+    optimizer = _build_optimizer(model)
+
+    # SHARED FROM dino.py: AMP setup.
+    amp_context, scaler = _build_amp(device, use_amp, amp_dtype)
 
     if start_epoch >= 0:
         ckpt_path = dir_ckpt / f"epoch_{start_epoch:03d}.pth"
         if ckpt_path.exists():
-            _load_checkpoint(ckpt_path, model, optimizer, device)
+            _load_checkpoint(ckpt_path, model, optimizer, device, scaler)
             next_epoch = start_epoch + 1
             logger.info(f"Resuming training from epoch {start_epoch}; next epoch is {next_epoch}")
         else:
@@ -158,55 +261,19 @@ def train(
         logger.info("Starting training from scratch at epoch 0")
         next_epoch = 0
 
-    # SHARED FROM dino.py: AMP setup.
-    if device.type == "cuda" and use_amp:
-        amp_context = torch.autocast(device_type="cuda", dtype=torch.float16)
-        scaler = torch.amp.GradScaler("cuda", enabled=True)
-    else:
-        amp_context = nullcontext()
-        scaler = None
-
     stop_epoch = next_epoch + config.train_config.num_epoch
     fps_logger = FpsLogger(batch_size=config.train_config.batch_size)
 
-    logger.info(f"Mask prefetching: {'ENABLED' if use_mask_prefetch else 'DISABLED'}")
+    logger.info(f"Backbone: ViT-{config.variant}/{config.patch_size}, mask prefetching: {use_mask_prefetch}")
 
     for epoch in range(next_epoch, stop_epoch):
-        model.train()
-        for batch_data in loader:
-            # Handle both prefetched masks and on-the-fly sampling
-            if use_mask_prefetch:
-                imgs, context_mask_cpu, target_masks_cpu = batch_data
-                # Move masks to GPU
-                context_mask = context_mask_cpu.to(device)
-                target_masks = [m.to(device) for m in target_masks_cpu]
-            else:
-                imgs = batch_data
-                context_mask = None
-                target_masks = None
-
-            imgs = imgs.to(device, non_blocking=True)
-
-            with amp_context:
-                outputs = model(imgs, context_mask=context_mask, target_masks=target_masks)
-                loss = _compute_i_jepa_loss(outputs)
-
-            optimizer.zero_grad(set_to_none=True)
-            if scaler is not None:
-                scaler.scale(loss).backward()
-                scaler.step(optimizer)
-                scaler.update()
-            else:
-                loss.backward()
-                optimizer.step()
-
-            # SHARED FROM dino.py: update target network via EMA after optimizer step.
-            model.momentum_update_target_encoder(momentum=ema_momentum)
-            fps_logger.tick()
+        mean_loss = _train_one_epoch(
+            model, loader, optimizer, device, amp_context, scaler, ema_momentum, use_mask_prefetch, fps_logger
+        )
 
         # SHARED FROM dino.py: epoch-level checkpointing and logging.
-        _save_checkpoint(dir_ckpt / f"epoch_{epoch:03d}.pth", model, optimizer)
-        logger.info(f"Epoch {epoch:03d}, Loss: {loss.item():.4f}")
+        _save_checkpoint(dir_ckpt / f"epoch_{epoch:03d}.pth", model, optimizer, scaler)
+        logger.info(f"Epoch {epoch:03d}, Loss: {mean_loss:.4f}")
 
     model.target_encoder.eval()
     onnx_path = export_onnx(
@@ -231,6 +298,12 @@ if __name__ == "__main__":
     )
     parser.add_argument("--start-epoch", type=int, default=-1, help="Starting epoch for training")
     parser.add_argument("--disable-amp", action="store_true", help="Disable mixed precision training")
+    parser.add_argument(
+        "--amp-dtype",
+        choices=("float16", "bfloat16"),
+        default="float16",
+        help="Autocast dtype on CUDA (bfloat16 needs no loss scaling and is more robust for large ViTs)",
+    )
     parser.add_argument("--ema-momentum", type=float, default=0.996, help="EMA momentum for target encoder")
     parser.add_argument(
         "--use-mask-prefetch",
@@ -246,4 +319,5 @@ if __name__ == "__main__":
         use_amp=not args.disable_amp,
         ema_momentum=args.ema_momentum,
         use_mask_prefetch=args.use_mask_prefetch,
+        amp_dtype=args.amp_dtype,
     )
