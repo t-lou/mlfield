@@ -172,7 +172,7 @@ class VitEncoder(nn.Module):
         N = self.pos_embed.shape[1] - (1 if self.add_cls_token else 0)
         old_size = math.isqrt(N)
 
-        if H == old_size and W == old_size:
+        if old_size == H and old_size == W:
             return self.pos_embed
 
         if self.add_cls_token:
