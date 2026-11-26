@@ -152,11 +152,7 @@ class VitBlock(nn.Module):
         qkv = self.qkv(x_norm).reshape(B, N, 3, self.num_heads, self.head_dim).permute(2, 0, 3, 1, 4)
         q, k, v = qkv.unbind(0)
 
-        if padding_mask is not None:
-            # SDPA attends where the mask is True, so invert the padding mask.
-            attn_mask = ~padding_mask.to(torch.bool)[:, None, None, :]
-        else:
-            attn_mask = None
+        attn_mask = ~padding_mask.to(torch.bool)[:, None, None, :] if padding_mask is not None else None
 
         out = F.scaled_dot_product_attention(
             q,
@@ -186,6 +182,21 @@ class VitBlock(nn.Module):
             x = x.masked_fill(padding_mask.unsqueeze(-1), 0.0)
 
         return x
+
+    @torch.no_grad()
+    def get_attention(self, x, padding_mask: torch.Tensor | None = None):
+        """Attention probabilities (B, heads, N, N) of this block, for visualization.
+
+        Computed explicitly (``forward`` uses fused SDPA, which never materializes the matrix).
+        Call in eval mode.
+        """
+        B, N, _ = x.shape
+        qkv = self.qkv(self.norm1(x)).reshape(B, N, 3, self.num_heads, self.head_dim).permute(2, 0, 3, 1, 4)
+        q, k, _ = qkv.unbind(0)
+        attn = (q.float() @ k.float().transpose(-2, -1)) * self.head_dim**-0.5
+        if padding_mask is not None:
+            attn = attn.masked_fill(padding_mask.to(torch.bool)[:, None, None, :], float("-inf"))
+        return attn.softmax(dim=-1)
 
 
 def _smoke_test():
@@ -217,6 +228,11 @@ def _smoke_test():
     short = block(x[1:2, :10])
     assert torch.allclose(masked[1, :10], short[0], atol=1e-5), "Padding leaked into valid tokens"
     assert masked[1, 10:].abs().max() == 0, "Padded tokens must be zero"
+
+    # Explicit attention matrix is consistent with the fused SDPA path
+    attn = block.get_attention(x)
+    assert attn.shape == (batch_size, num_heads, num_patches, num_patches)
+    assert torch.allclose(attn.sum(-1), torch.ones(1), atol=1e-5)
 
 
 if __name__ == "__main__":

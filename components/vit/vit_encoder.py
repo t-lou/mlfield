@@ -172,7 +172,7 @@ class VitEncoder(nn.Module):
         N = self.pos_embed.shape[1] - (1 if self.add_cls_token else 0)
         old_size = math.isqrt(N)
 
-        if old_size == H and old_size == W:
+        if H == old_size and W == old_size:
             return self.pos_embed
 
         if self.add_cls_token:
@@ -336,6 +336,23 @@ class VitEncoder(nn.Module):
         W_patch = imgs.shape[3] // self._patch_size
         x = x.reshape(B, H_patch, W_patch, C).permute(0, 3, 1, 2)  # (B, C, H, W)
         return x
+
+    @torch.no_grad()
+    def get_last_selfattention(self, imgs):
+        """Attention probabilities of the last block, as used for DINO-style attention maps.
+
+        Call in eval mode.
+
+        Args:
+            imgs: Input images (B, 3, H, W)
+
+        Returns:
+            Attention probabilities (B, num_heads, N, N); with a CLS token, row 0 is CLS-to-all.
+        """
+        x = self._tokenize(imgs)
+        for blk in self.blocks[:-1]:
+            x = blk(x)
+        return self.blocks[-1].get_attention(x)
 
     @classmethod
     def from_variant(cls, variant: ViTVariant, add_cls_token: bool = True, **kwargs) -> "VitEncoder":

@@ -40,15 +40,14 @@ def load_from_checkpoint(config: DINOConfig, ckpt_path: Path, device: torch.devi
 
 
 def preprocess_image(path: Path, image_size: int) -> tuple[torch.Tensor, np.ndarray]:
-    """Load and resize image to the DINO encoder input size."""
-    image = Image.open(path).convert("RGB")
-    tfm = transforms.Compose(
-        [
-            transforms.Resize(image_size),
-            transforms.CenterCrop(image_size),
-            transforms.ToTensor(),
-        ]
-    )
-    tensor = tfm(image)
-    rgb = np.array(image.resize((image_size, image_size)))
+    """Load and resize image to the DINO encoder input size.
+
+    Returns the model input tensor and the RGB array of the same center crop, so overlays line up
+    with the maps computed from the tensor.
+    """
+    with Image.open(path) as img:
+        image = img.convert("RGB")
+    crop = transforms.CenterCrop(image_size)(transforms.Resize(image_size)(image))
+    tensor = transforms.ToTensor()(crop)
+    rgb = np.array(crop)
     return tensor, rgb

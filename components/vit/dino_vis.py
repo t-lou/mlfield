@@ -75,7 +75,11 @@ def extract_maps_from_activations(  # noqa: C901
 
 
 class ActivationCatcher:
-    """Capture one representative attention tensor and one token tensor per forward pass."""
+    """Capture one representative attention tensor and one token tensor per forward pass.
+
+    Legacy forward-hook helper, no longer used by ``get_features`` (the fused-SDPA ViT never calls an
+    attention module, so hooks cannot see the attention matrix); kept for backward compatibility.
+    """
 
     def __init__(self):
         self.last_attn: torch.Tensor | None = None
@@ -98,6 +102,13 @@ class ActivationCatcher:
         return _hook
 
 
+def _find_vit(encoder: torch.nn.Module) -> torch.nn.Module:
+    """Return the VitEncoder of a DINOModel, a ViTBackbone or a bare VitEncoder."""
+    if hasattr(encoder, "backbone"):
+        encoder = encoder.backbone
+    return encoder.vit if hasattr(encoder, "vit") else encoder
+
+
 @torch.no_grad()
 def get_features(
     encoder: torch.nn.Module,
@@ -105,12 +116,12 @@ def get_features(
     image_size: int,
     device: torch.device,
 ) -> tuple[list[np.ndarray], list[np.ndarray | None], list[np.ndarray | None]]:
-    """Create and save two grids: attention maps and patch-token feature maps."""
+    """Create attention maps and patch-token feature maps for the given images.
 
-    catcher = ActivationCatcher()
-    hooks = []
-    for name, module in encoder.backbone.vit.named_modules():
-        hooks.append(module.register_forward_hook(catcher.make_hook(name)))
+    Attention maps are the CLS-to-patch attention of the last block (averaged over heads); token maps
+    are the norms of the final patch tokens.
+    """
+    vit = _find_vit(encoder).eval()
 
     rgbs = []
     attn_maps = []
@@ -120,13 +131,9 @@ def get_features(
         x, rgb = preprocess_image(p, image_size)
         x = x.unsqueeze(0).to(device)
 
-        catcher.last_attn = None
-        catcher.last_tokens = None
-        _ = encoder(x)
-
         attn_map, token_map = extract_maps_from_activations(
-            catcher.last_attn,
-            catcher.last_tokens,
+            vit.get_last_selfattention(x),  # [1, heads, N, N]
+            vit.forward_full(x),  # [1, N, C]
             out_h=image_size,
             out_w=image_size,
         )
@@ -134,8 +141,5 @@ def get_features(
         rgbs.append(rgb)
         attn_maps.append(attn_map)
         token_maps.append(token_map)
-
-    for h in hooks:
-        h.remove()
 
     return rgbs, attn_maps, token_maps
