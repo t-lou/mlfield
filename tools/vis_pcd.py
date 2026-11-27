@@ -5,8 +5,8 @@ Requires only x, y, z in the file. If an `intensity` field exists it is used
 for coloring, otherwise points are colored by height (z).
 
 Usage:
-    python vis_pcd.py cloud.pcd
-    python vis_pcd.py a.pcd b.pcd --point-size 3 --cmap viridis
+    python vis_pcd.py cloud.pcd --point-size 3 --cmap viridis
+    python vis_pcd.py --point-size 3 --cmap viridis  # open a file dialog
     python vis_pcd.py cloud.pcd --screenshot out.png      # off-screen
 """
 
@@ -166,7 +166,7 @@ def parse_args() -> argparse.Namespace:
         Parsed arguments, including input paths and PyVista display options.
     """
     ap = argparse.ArgumentParser(description="View PCD point clouds with pyvista.")
-    ap.add_argument("files", nargs="+", type=Path, help="one or more .pcd files")
+    ap.add_argument("file", nargs="?", type=Path, help="a .pcd file (opens a file dialog if omitted)")
     ap.add_argument(
         "--point-size",
         type=positive_float,
@@ -203,34 +203,53 @@ def main() -> int:
         plotter.set_background(args.background)
 
         total = 0
-        for path in args.files:
+        if args.file is None:
+            import tkinter as tk
+            from tkinter import filedialog
+
+            root = tk.Tk()
+            root.withdraw()
             try:
-                xyz, intensity = load_pcd(path)
-                if len(xyz) == 0:
-                    print(f"skip {path}: no finite points", file=sys.stderr)
-                    continue
-                mesh, scalars = build_mesh(xyz, intensity)
-            except Exception as exc:
-                print(f"skip {path}: {exc}", file=sys.stderr)
-                continue
+                selected_file = filedialog.askopenfilename(
+                    title="Open PCD/PLY file",
+                    filetypes=[("PCD files", "*.pcd"), ("PLY files", "*.ply"), ("All files", "*")],
+                )
+            finally:
+                root.destroy()
+            if not selected_file:
+                print("no PCD file selected", file=sys.stderr)
+                return 1
+            file_path = Path(selected_file)
+        else:
+            file_path = args.file
 
-            scalar_kwargs = {}
-            if args.scalar_range is not None:
-                scalar_kwargs["clim"] = args.scalar_range
+        try:
+            xyz, intensity = load_pcd(file_path, args.attribute)
+            if len(xyz) == 0:
+                print(f"skip {file_path}: no finite points", file=sys.stderr)
+                return 1
+            mesh, scalars = build_mesh(xyz, intensity)
+        except Exception as exc:
+            print(f"skip {file_path}: {exc}", file=sys.stderr)
+            return 1
 
-            plotter.add_mesh(
-                mesh,
-                scalars=scalars,
-                cmap=args.cmap,
-                point_size=args.point_size,
-                render_points_as_spheres=False,
-                name=str(path),
-                show_scalar_bar=True,
-                scalar_bar_args={"title": scalars},
-                **scalar_kwargs,
-            )
-            total += len(xyz)
-            print(f"{path}: {len(xyz):,} points, colored by {scalars}")
+        scalar_kwargs = {}
+        if args.scalar_range is not None:
+            scalar_kwargs["clim"] = args.scalar_range
+
+        plotter.add_mesh(
+            mesh,
+            scalars=scalars,
+            cmap=args.cmap,
+            point_size=args.point_size,
+            render_points_as_spheres=False,
+            name=str(file_path),
+            show_scalar_bar=True,
+            scalar_bar_args={"title": scalars},
+            **scalar_kwargs,
+        )
+        total += len(xyz)
+        print(f"{file_path}: {len(xyz):,} points, colored by {scalars}")
 
         if total == 0:
             print("nothing to show", file=sys.stderr)
