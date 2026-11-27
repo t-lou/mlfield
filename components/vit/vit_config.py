@@ -115,9 +115,12 @@ class ViTConfig:
     num_heads_override: int | None = None
     mlp_ratio_override: float | None = None
 
+    # Input channels (3 = RGB). Last field, so existing positional construction keeps working.
+    in_chans: int = 3
+
     def __post_init__(self) -> None:
-        if self.patch_size <= 0 or self.base_res <= 0:
-            raise ValueError("patch_size and base_res must be positive")
+        if self.patch_size <= 0 or self.base_res <= 0 or self.in_chans <= 0:
+            raise ValueError("patch_size, base_res and in_chans must be positive")
         if not 0.0 <= self.attn_drop <= 1.0 or not 0.0 <= self.proj_drop <= 1.0:
             raise ValueError("attn_drop and proj_drop must be in [0, 1]")
         if not 0.0 <= self.drop_path_rate < 1.0:
@@ -174,7 +177,7 @@ class ViTConfig:
 
     @property
     def num_params_estimate(self) -> int:
-        """Number of trainable parameters of ``VitEncoder`` (3 input channels).
+        """Number of trainable parameters of ``VitEncoder``.
 
         The sin-cos positional embedding is a fixed buffer and not counted.
         """
@@ -182,7 +185,7 @@ class ViTConfig:
         norm = dim * (2 if self.norm_layer == "LayerNorm" else 1)
 
         # Patch embedding: conv weight + bias
-        patch_emb = 3 * (self.patch_size**2) * dim + dim
+        patch_emb = self.in_chans * (self.patch_size**2) * dim + dim
 
         # Per block: fused qkv (+bias), proj, MLP (fc1 + fc2, with biases), two norms
         qkv = 3 * dim * dim + (3 * dim if self.qkv_bias else 0)

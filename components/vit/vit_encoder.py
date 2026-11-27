@@ -91,7 +91,7 @@ class VitEncoder(nn.Module):
         # Patch embedding
         self.patch_embed = PatchEmbed(
             patch_size=config.patch_size,
-            in_chans=3,
+            in_chans=config.in_chans,
             embed_dim=self.embed_dim,
         )
 
@@ -195,7 +195,7 @@ class VitEncoder(nn.Module):
         """Convert image to patch tokens with positional embeddings.
 
         Args:
-            imgs: Input images (B, 3, H, W)
+            imgs: Input images (B, C, H, W)
 
         Returns:
             Tokenized embeddings with positional information
@@ -283,7 +283,7 @@ class VitEncoder(nn.Module):
         """Full transformer pass with optional token masking.
 
         Args:
-            imgs: Input images (B, 3, H, W)
+            imgs: Input images (B, C, H, W)
             patch_keep_mask: Optional mask for selective token processing
                 (B, num_patches), True/1 = keep. Kept tokens are returned in their original
                 order (CLS first), padded to the longest sample; padded outputs are zero.
@@ -302,11 +302,38 @@ class VitEncoder(nn.Module):
             return x, padding_mask
         return x
 
+    def forward_visible(self, imgs, keep_idx):
+        """Encode only a subset of the patches (MAE style), the same patches for every sample.
+
+        Cheaper than ``forward_full(imgs, patch_keep_mask)``: no host sync, no padding, no
+        attention mask (flash attention applies), and no sort. ``keep_idx`` is typically the
+        first ``len_keep`` columns of a random permutation.
+
+        Args:
+            imgs: Input images (B, C, H, W)
+            keep_idx: Patch indices to keep, (B, K), values in [0, num_patches). The output
+                keeps this order. Duplicates are not checked.
+
+        Returns:
+            Normalized tokens (B, K (+1 with CLS token), embed_dim); CLS first if present.
+        """
+        x = self._tokenize(imgs)
+        if keep_idx.ndim != 2 or keep_idx.shape[0] != x.shape[0]:
+            raise ValueError("keep_idx must have shape (B, K)")
+        offset = 1 if self.add_cls_token else 0
+        idx = keep_idx.long() + offset
+        if self.add_cls_token:
+            idx = torch.cat([idx.new_zeros(idx.shape[0], 1), idx], dim=1)
+        x = torch.gather(x, dim=1, index=idx.unsqueeze(-1).expand(-1, -1, x.shape[2]))
+        for blk in self.blocks:
+            x = blk(x)
+        return self.norm(x)
+
     def forward(self, imgs, patch_keep_mask=None):
         """Forward pass returning CLS token output.
 
         Args:
-            imgs: Input images (B, 3, H, W)
+            imgs: Input images (B, C, H, W)
             patch_keep_mask: Optional mask for selective tokens
 
         Returns:
@@ -322,7 +349,7 @@ class VitEncoder(nn.Module):
         """Forward pass for DETR-style detection (returns spatial feature map).
 
         Args:
-            imgs: Input images (B, 3, H, W)
+            imgs: Input images (B, C, H, W)
 
         Returns:
             Spatial feature map (B, C, H, W)
@@ -344,7 +371,7 @@ class VitEncoder(nn.Module):
         Call in eval mode.
 
         Args:
-            imgs: Input images (B, 3, H, W)
+            imgs: Input images (B, C, H, W)
 
         Returns:
             Attention probabilities (B, num_heads, N, N); with a CLS token, row 0 is CLS-to-all.
