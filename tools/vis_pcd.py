@@ -21,11 +21,12 @@ import pyvista as pv
 from pypcd4 import PointCloud
 
 
-def load_pcd(path: Path) -> tuple[np.ndarray, np.ndarray | None]:
+def load_pcd(path: Path, attribute: str) -> tuple[np.ndarray, np.ndarray | None]:
     """Load finite XYZ coordinates and optional intensity values from a PCD.
 
     Args:
         path: Path to the PCD file to load.
+        attribute: The attribute to use for coloring.
 
     Returns:
         A tuple containing a contiguous ``(N, 3)`` float32 array and either a
@@ -50,25 +51,23 @@ def load_pcd(path: Path) -> tuple[np.ndarray, np.ndarray | None]:
     if not all(field in pc.fields for field in ("x", "y", "z")):
         raise ValueError(f"{path}: missing x/y/z fields (found {pc.fields})")
 
-    has_intensity = "intensity" in pc.fields
-    names = ("x", "y", "z", "intensity") if has_intensity else ("x", "y", "z")
-    try:
-        data = np.asarray(pc.numpy(names))
-    except Exception as exc:
-        raise ValueError(f"{path}: failed to decode point-cloud fields: {exc}") from exc
-    try:
-        data = data.astype(np.float32, copy=False)
-    except (TypeError, ValueError) as exc:
-        raise ValueError(f"{path}: point-cloud fields are not numeric") from exc
-    if data.ndim != 2 or data.shape[1] != len(names):
-        raise ValueError(f"{path}: unexpected point-cloud data shape {data.shape}")
+    names = ("x", "y", "z")
+    has_attribute = attribute in pc.fields
+    if has_attribute:
+        names += (attribute,)
+
+    x = pc["x"].numpy().flatten()
+    y = pc["y"].numpy().flatten()
+    z = pc["z"].numpy().flatten()
 
     # Organized clouds often contain NaN placeholders.
-    finite_xyz = np.isfinite(data[:, :3]).all(axis=1)
-    data = data[finite_xyz]
+    finite_xyz = np.isfinite(np.column_stack([x, y, z])).all(axis=1)
+    x = x[finite_xyz]
+    y = y[finite_xyz]
+    z = z[finite_xyz]
 
-    xyz = np.ascontiguousarray(data[:, :3])
-    intensity = data[:, 3] if has_intensity else None
+    xyz = np.column_stack([x, y, z]).astype(np.float32)
+    intensity = pc[attribute].numpy().flatten() if has_attribute else None
     if intensity is not None:
         intensity = np.ascontiguousarray(intensity)
         intensity[~np.isfinite(intensity)] = np.nan
@@ -174,6 +173,7 @@ def parse_args() -> argparse.Namespace:
         default=2.0,
         help="rendered point size (default: 2)",
     )
+    ap.add_argument("--attribute", default="intensity", help="PCD field to use for coloring (default: intensity)")
     ap.add_argument("--cmap", default="turbo", help="matplotlib colormap name (default: turbo)")
     ap.add_argument("--background", default="black", help="plotter background color (default: black)")
     ap.add_argument("--no-axes", action="store_true", help="hide orientation axes")
