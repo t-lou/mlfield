@@ -24,6 +24,7 @@ Why Teacher Models Help:
 """
 
 import argparse
+import math
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -251,11 +252,13 @@ class YOLOBackbone(nn.Module):
         # DISTILLATION ADAPTER (if using teacher model)
         if self.use_teacher_distillation:
             assert teacher_feature_dim is not None, "teacher_feature_dim is required when use_teacher_distillation=True"
-            # Project teacher features to match YOLO's P4 feature dimension
+            # Project YOLO's P4 features into the teacher's feature space (1x1 convs). The teacher
+            # side stays a fixed target, so the adapter cannot "meet the student halfway" and
+            # collapse both sides to a constant.
             self.teacher_adapter = nn.Sequential(
-                nn.Linear(teacher_feature_dim, channels[3]),
-                nn.ReLU(inplace=True),
-                nn.Linear(channels[3], channels[3]),
+                nn.Conv2d(channels[3], channels[3], kernel_size=1),
+                nn.SiLU(inplace=True),
+                nn.Conv2d(channels[3], teacher_feature_dim, kernel_size=1),
             )
 
     def forward(self, x):
@@ -521,35 +524,23 @@ class YOLOv8(nn.Module):
         p3_pred, p4_pred, p5_pred = self.head(fp3, fp4, fp5)
 
         # Optional teacher distillation
-        distill_loss = torch.tensor(0.0, device=x.device)
+        distill_loss = torch.zeros((), device=x.device)
         if self.teacher_model is not None:
             with torch.no_grad():
-                # Get teacher features at intermediate resolution
-                teacher_features, teacher_feat_dim, teacher_scale = self.teacher_model.extract_features(x)
-                # teacher_features: (B, C_teacher, H_teacher, W_teacher)
+                # Teacher feature map (B, C_teacher, H_teacher, W_teacher), e.g. 14x14 for 224px / patch 16
+                teacher_features, _, _ = self.teacher_model.extract_features(x)
+                # Standardize every teacher token (no affine): the target no longer depends on the
+                # teacher's feature scale or its few outlier channels.
+                teacher_target = F.layer_norm(
+                    teacher_features.permute(0, 2, 3, 1), (teacher_features.shape[1],)
+                ).permute(0, 3, 1, 2)
 
-            # Align teacher features to YOLO P4 dimensions using adapter
-            B, C_teacher, H_teacher, W_teacher = teacher_features.shape
+            # Student side: pool P4 to the teacher grid, then project into the teacher feature space.
+            student_features = F.adaptive_avg_pool2d(p4, teacher_target.shape[-2:])
+            student_features = self.backbone.teacher_adapter(student_features)
 
-            # Reshape for linear layer: (B, H, W, C) for processing
-            teacher_features_flat = teacher_features.permute(0, 2, 3, 1).reshape(-1, C_teacher)
-
-            # Project teacher features to 512-dim (YOLO P4 feature dim)
-            teacher_features_aligned = (
-                self.backbone.teacher_adapter(teacher_features_flat)
-                .reshape(B, H_teacher, W_teacher, 512)
-                .permute(0, 3, 1, 2)
-            )
-
-            # Resize teacher features to match YOLO backbone P4 spatial dimensions
-            yolo_h, yolo_w = p4.shape[2], p4.shape[3]
-            teacher_features_aligned = F.interpolate(
-                teacher_features_aligned, size=(yolo_h, yolo_w), mode="bilinear", align_corners=False
-            )
-
-            # Distillation loss: MSE between aligned features
-            # This encourages YOLO backbone features to align with teacher features
-            distill_loss = F.mse_loss(teacher_features_aligned, p4)
+            # Distillation loss: MSE to the (fixed) standardized teacher features
+            distill_loss = F.mse_loss(student_features.float(), teacher_target)
 
         return (p3_pred, p4_pred, p5_pred), distill_loss
 
@@ -627,45 +618,66 @@ def _reshape_yolo_prediction(prediction, num_classes):
 
 
 def _build_dense_targets(predictions, targets, num_classes, device):
-    """Create dense objectness, box, and class targets for each detection scale."""
+    """Create dense objectness, box, and class targets for each detection scale.
+
+    Vectorized (no per-box Python loop, no GPU syncs) with the same assignment rules as before:
+    boxes are assigned to a scale by their relative area (< 0.02, < 0.08, larger), to the cell that
+    contains their center and to anchor 0; if several boxes fall into one cell the last one defines
+    the box target and all their classes are set.
+    """
+    parts, batch_ids = [], []
+    for batch_index, batch_targets in enumerate(targets):
+        if batch_targets.numel() == 0:
+            continue
+        parts.append(batch_targets.reshape(-1, 5).float())
+        batch_ids.append(torch.full((parts[-1].shape[0],), batch_index, dtype=torch.long))
+    has_targets = bool(parts)
+    if has_targets:
+        all_targets = torch.cat(parts).to(device)
+        all_batch_ids = torch.cat(batch_ids).to(device)
+        num_targets = all_targets.shape[0]
+        order = torch.arange(num_targets, device=device)
+        area = all_targets[:, 2] * all_targets[:, 3]
+        class_ids = all_targets[:, 4].long()
+        class_ok = (class_ids >= 0) & (class_ids < num_classes)
+        class_cols = torch.where(class_ok, class_ids, torch.full_like(class_ids, num_classes))  # num_classes = trash
+
     target_maps = []
     for scale_index, prediction in enumerate(predictions):
-        prediction = _reshape_yolo_prediction(prediction, num_classes)
-        batch_size, num_anchors, height, width, _ = prediction.shape
+        batch_size, channels, height, width = prediction.shape
+        num_anchors = channels // (num_classes + 5)
         objectness_target = torch.zeros((batch_size, num_anchors, height, width), device=device)
         box_target = torch.zeros((batch_size, num_anchors, height, width, 4), device=device)
         class_target = torch.zeros((batch_size, num_anchors, height, width, num_classes), device=device)
         positive_mask = torch.zeros((batch_size, num_anchors, height, width), dtype=torch.bool, device=device)
 
-        for batch_index, batch_targets in enumerate(targets):
-            if batch_targets.numel() == 0:
-                continue
+        if has_targets:
+            if scale_index == 0:
+                in_scale = area < 0.02
+            elif scale_index == 1:
+                in_scale = (area >= 0.02) & (area < 0.08)
+            else:
+                in_scale = area >= 0.08
 
-            for target in batch_targets.to(device):
-                x_center, y_center, box_width, box_height, class_id = target.tolist()
-                box_area = box_width * box_height
-                if scale_index == 0:
-                    area_range = box_area < 0.02
-                elif scale_index == 1:
-                    area_range = 0.02 <= box_area < 0.08
-                else:
-                    area_range = box_area >= 0.08
+            grid_x = (all_targets[:, 0] * width).long().clamp(0, width - 1)
+            grid_y = (all_targets[:, 1] * height).long().clamp(0, height - 1)
+            num_cells = batch_size * height * width
+            # boxes of another scale go to an extra "trash" cell, which is dropped again below
+            cell = torch.where(in_scale, (all_batch_ids * height + grid_y) * width + grid_x, num_cells)
 
-                if not area_range:
-                    continue
+            winner = torch.full((num_cells + 1,), -1, dtype=torch.long, device=device)
+            winner.scatter_reduce_(0, cell, order, reduce="amax", include_self=True)  # last box of a cell
+            has_box = winner >= 0
+            box_cells = torch.where(
+                has_box.unsqueeze(-1), all_targets[winner.clamp(min=0), :4], torch.zeros((), device=device)
+            )
+            class_cells = torch.zeros((num_cells + 1, num_classes + 1), device=device)
+            class_cells[cell, class_cols] = 1.0
 
-                grid_x = min(max(int(x_center * width), 0), width - 1)
-                grid_y = min(max(int(y_center * height), 0), height - 1)
-                anchor_index = 0
-
-                objectness_target[batch_index, anchor_index, grid_y, grid_x] = 1.0
-                box_target[batch_index, anchor_index, grid_y, grid_x] = torch.tensor(
-                    [x_center, y_center, box_width, box_height], device=device
-                )
-                class_index = int(class_id)
-                if 0 <= class_index < num_classes:
-                    class_target[batch_index, anchor_index, grid_y, grid_x, class_index] = 1.0
-                positive_mask[batch_index, anchor_index, grid_y, grid_x] = True
+            objectness_target[:, 0] = has_box[:num_cells].float().view(batch_size, height, width)
+            box_target[:, 0] = box_cells[:num_cells].view(batch_size, height, width, 4)
+            class_target[:, 0] = class_cells[:num_cells, :num_classes].view(batch_size, height, width, num_classes)
+            positive_mask[:, 0] = has_box[:num_cells].view(batch_size, height, width)
 
         target_maps.append((objectness_target, box_target, class_target, positive_mask))
 
@@ -680,39 +692,34 @@ def compute_yolo_loss(predictions, targets, num_classes=80, device="cuda"):
     - objectness BCE over every cell
     - box regression on positive assignments
     - class BCE on positive assignments
+
+    Computed without host syncs: positives are handled with masks instead of boolean indexing.
+    Only anchor 0 is ever assigned (see ``_build_dense_targets``), so box / class terms look at it only.
     """
     predicted_maps = [_reshape_yolo_prediction(prediction, num_classes) for prediction in predictions]
     target_maps = _build_dense_targets(predictions, targets, num_classes, device)
 
-    objectness_loss = torch.tensor(0.0, device=device)
-    box_loss = torch.tensor(0.0, device=device)
-    class_loss = torch.tensor(0.0, device=device)
-    positive_count = 0
+    objectness_loss = torch.zeros((), device=device)
+    box_loss = torch.zeros((), device=device)
+    class_loss = torch.zeros((), device=device)
+    positive_count = torch.zeros((), device=device)
 
     for prediction, (objectness_target, box_target, class_target, positive_mask) in zip(predicted_maps, target_maps):
-        predicted_objectness = prediction[..., 4]
-        predicted_boxes = torch.sigmoid(prediction[..., :4])
-        predicted_classes = prediction[..., 5:]
-
         objectness_loss = objectness_loss + F.binary_cross_entropy_with_logits(
-            predicted_objectness, objectness_target, reduction="mean"
+            prediction[..., 4], objectness_target, reduction="mean"
         )
 
-        if positive_mask.any():
-            positive_predictions = predicted_boxes[positive_mask]
-            positive_boxes = box_target[positive_mask]
-            positive_class_predictions = predicted_classes[positive_mask]
-            positive_class_targets = class_target[positive_mask]
+        weight = positive_mask[:, 0].to(prediction.dtype)  # (B, H, W)
+        box_error = F.smooth_l1_loss(torch.sigmoid(prediction[:, 0, ..., :4]), box_target[:, 0], reduction="none")
+        box_loss = box_loss + (box_error.sum(-1) * weight).sum()
+        class_error = F.binary_cross_entropy_with_logits(
+            prediction[:, 0, ..., 5:], class_target[:, 0], reduction="none"
+        )
+        class_loss = class_loss + (class_error.sum(-1) * weight).sum()
+        positive_count = positive_count + weight.sum()
 
-            box_loss = box_loss + F.smooth_l1_loss(positive_predictions, positive_boxes, reduction="sum")
-            class_loss = class_loss + F.binary_cross_entropy_with_logits(
-                positive_class_predictions, positive_class_targets, reduction="sum"
-            )
-            positive_count += int(positive_mask.sum().item())
-
-    if positive_count == 0:
-        return objectness_loss
-
+    # without positives box_loss and class_loss are exactly 0, so only the objectness loss remains
+    positive_count = positive_count.clamp(min=1.0)
     return objectness_loss + 5.0 * box_loss / positive_count + class_loss / positive_count
 
 
@@ -759,20 +766,20 @@ def _box_iou(boxes_a, boxes_b):
 def _evaluate_validation_proxy(model, data_loader, device, distill_weight):
     """Return a lightweight validation proxy based on loss and assigned box matches."""
     model.eval()
-    total_loss = 0.0
-    total_detection_loss = 0.0
-    total_distill_loss = 0.0
-    total_matches = 0
-    total_targets = 0
+    total_loss = torch.zeros((), device=device)
+    total_detection_loss = torch.zeros((), device=device)
+    total_distill_loss = torch.zeros((), device=device)
+    total_matches = torch.zeros((), device=device)
+    total_targets = torch.zeros((), device=device)
 
     with torch.no_grad():
         for images, targets, _ in data_loader:
             images = images.to(device)
             predictions, distill_loss = model(images)
             detection_loss = compute_yolo_loss(predictions, targets, num_classes=model.num_classes, device=device)
-            total_loss += float((detection_loss + distill_weight * distill_loss).item())
-            total_detection_loss += float(detection_loss.item())
-            total_distill_loss += float(distill_loss.item())
+            total_loss += (detection_loss + distill_weight * distill_loss).detach()
+            total_detection_loss += detection_loss.detach()
+            total_distill_loss += distill_loss.detach()
 
             target_maps = _build_dense_targets(predictions, targets, model.num_classes, device)
             for prediction, (_, box_target, class_target, positive_mask) in zip(predictions, target_maps):
@@ -782,37 +789,42 @@ def _evaluate_validation_proxy(model, data_loader, device, distill_weight):
                 predicted_classes = prediction[..., 5:][positive_mask].argmax(dim=-1)
                 target_classes = class_target[positive_mask].argmax(dim=-1)
 
-                total_targets += int(positive_mask.sum().item())
+                total_targets += positive_mask.sum()
                 if predicted_boxes.numel() == 0:
                     continue
 
                 iou = _box_iou(_xywh_to_xyxy(predicted_boxes), _xywh_to_xyxy(target_boxes))
-                total_matches += int(((iou > 0.5) & (predicted_classes == target_classes)).sum().item())
+                total_matches += ((iou > 0.5) & (predicted_classes == target_classes)).sum()
 
     model.train()
-    match_rate = total_matches / max(total_targets, 1)
-    average_loss = total_loss / max(len(data_loader), 1)
-    average_detection_loss = total_detection_loss / max(len(data_loader), 1)
-    average_distill_loss = total_distill_loss / max(len(data_loader), 1)
-    return average_loss, match_rate, average_detection_loss, average_distill_loss
+    num_batches = max(len(data_loader), 1)
+    match_rate = float(total_matches / total_targets.clamp(min=1.0))
+    return (
+        float(total_loss / num_batches),
+        match_rate,
+        float(total_detection_loss / num_batches),
+        float(total_distill_loss / num_batches),
+    )
 
 
-def _load_teacher_model(teacher_model_name, teacher_checkpoint_path, teacher_variant, device):
+def _load_teacher_model(teacher_model_name, teacher_checkpoint_path, teacher_variant, device, **teacher_kwargs):
     if teacher_model_name.lower() == "none":
         return None
 
     logger.info(f"Creating {teacher_model_name} teacher model...")
+    # Errors (missing / incompatible checkpoint) are raised on purpose: continuing would silently train
+    # without a teacher, or worse against a randomly initialized one.
     teacher_model = create_teacher_model(
         teacher_name=teacher_model_name,
         checkpoint_path=teacher_checkpoint_path,
         variant=teacher_variant,
+        **teacher_kwargs,
     )
     if teacher_model is None:
-        logger.warning(f"Failed to load {teacher_model_name} teacher, training without distillation")
-        return None
+        raise RuntimeError(f"Could not create the {teacher_model_name} teacher")
 
     teacher_model = teacher_model.to(device)
-    logger.info(f"✓ {teacher_model.model_name} teacher loaded")
+    logger.info(f"✓ {teacher_model.model_name} teacher loaded (feature_dim={teacher_model.feature_dim})")
     return teacher_model
 
 
@@ -869,7 +881,7 @@ def train(
     variant: str = "s",
     teacher_model_name: str = "none",
     teacher_checkpoint_path: str | None = None,
-    teacher_variant: str = "base",
+    teacher_variant: str = "auto",
     epochs: int = 100,
     start_epoch: int = 0,
     batch_size: int = 32,
@@ -879,6 +891,8 @@ def train(
     max_steps: int = -1,
     num_workers: int | None = None,
     seed: int = 42,
+    teacher_input_size: int | None = None,
+    teacher_input_norm: str = "imagenet",
 ):
     """Train YOLO with flexible architecture and optional knowledge distillation.
 
@@ -892,7 +906,7 @@ def train(
         variant: YOLO variant to train ('s', 'm', 'l', 'xl')
         teacher_model_name: Teacher model to use ('none', 'mae', 'dino', 'ijepa')
         teacher_checkpoint_path: Path to teacher checkpoint (if None, uses default)
-        teacher_variant: Variant of teacher model to use (e.g., 'imagenet', 'small', 'base')
+        teacher_variant: 'auto' (taken from the checkpoint) or e.g. 'small', 'base'; checked only
         epochs: Number of training epochs
         start_epoch: Starting epoch for training (useful for resuming)
         batch_size: Batch size (32-64 for 30GB GPU, 4-8 for 4GB testing)
@@ -902,6 +916,12 @@ def train(
         max_steps: Maximum number of training steps (default: -1, meaning no limit)
         num_workers: Number of DataLoader workers
         seed: Random seed for model init and data shuffling
+        teacher_input_size: Resolution the teacher sees (default: the resolution it was trained at)
+        teacher_input_norm: 'imagenet' if the YOLO images are in [0, 1] (the teacher normalizes them),
+            'none' if they are already ImageNet-normalized
+
+    The learning rate follows a cosine schedule over ``start_epoch + epochs`` epochs with a linear
+    warmup of ``warmup_epochs`` (the config default is 5) at the start of the training.
     """
 
     # Map variant string to YOLOVariant enum
@@ -927,7 +947,14 @@ def train(
 
     Path(save_dir).mkdir(parents=True, exist_ok=True)
 
-    teacher_model = _load_teacher_model(teacher_model_name, teacher_checkpoint_path, teacher_variant, device)
+    teacher_model = _load_teacher_model(
+        teacher_model_name,
+        teacher_checkpoint_path,
+        teacher_variant,
+        device,
+        input_size=teacher_input_size,
+        input_norm=teacher_input_norm,
+    )
     train_loader, val_loader = _create_detection_loaders(data_root, config, num_workers, seed)
 
     model = YOLOv8(
@@ -952,22 +979,33 @@ def train(
 
     _restore_training_state(model, optimizer, save_dir, start_epoch, device)
 
-    # last_epoch=-1 means "start of schedule"; on resume we advance it to start_epoch - 1
-    # so the cosine schedule continues from where it left off instead of restarting.
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer, T_max=config.epochs, last_epoch=(start_epoch - 1 if start_epoch > 0 else -1)
-    )
+    # Closed-form cosine schedule (what CosineAnnealingLR computes), evaluated per step and independent of
+    # any scheduler state, so a resumed run continues exactly where it stopped. It spans start_epoch + epochs
+    # epochs; the learning rate therefore never rises again after the horizon.
+    total_epochs = start_epoch + config.epochs
+    steps_per_epoch = max(1, min(len(train_loader), max_steps) if max_steps > 0 else len(train_loader))
+    warmup_steps = int(config.warmup_epochs * steps_per_epoch)
+
+    def learning_rate_at(epoch: int, step_in_epoch: int) -> float:
+        lr = 0.5 * config.learning_rate * (1.0 + math.cos(math.pi * epoch / max(total_epochs, 1)))
+        global_step = epoch * steps_per_epoch + step_in_epoch
+        if global_step < warmup_steps:
+            lr *= (global_step + 1) / warmup_steps
+        return lr
 
     for epoch_rel in range(config.epochs):
         epoch = start_epoch + epoch_rel
 
         model.train()
-        running_loss = 0.0
-        running_detection_loss = 0.0
-        running_distill_loss = 0.0
+        running_loss = torch.zeros((), device=device)
+        running_detection_loss = torch.zeros((), device=device)
+        running_distill_loss = torch.zeros((), device=device)
+        num_steps = 0
 
         for i_step, (images, targets, _) in enumerate(train_loader, start=1):
             images = images.to(device)
+            for group in optimizer.param_groups:
+                group["lr"] = learning_rate_at(epoch, i_step - 1)
             optimizer.zero_grad(set_to_none=True)
 
             predictions, distill_loss = model(images)
@@ -976,24 +1014,25 @@ def train(
 
             loss.backward()
             optimizer.step()
-            running_loss += float(loss.item())
-            running_detection_loss += float(detection_loss.item())
-            running_distill_loss += float(distill_loss.item())
+            # accumulate on the device, no host sync per step
+            running_loss += loss.detach()
+            running_detection_loss += detection_loss.detach()
+            running_distill_loss += distill_loss.detach()
+            num_steps += 1
 
             if max_steps > 0 and i_step >= max_steps:
                 logger.info(f"Reached max_steps={max_steps} for epoch {epoch + 1}, stopping early.")
                 break
 
-        scheduler.step()
-        train_loss = running_loss / max(len(train_loader), 1)
-        train_detection_loss = running_detection_loss / max(len(train_loader), 1)
-        train_distill_loss = running_distill_loss / max(len(train_loader), 1)
+        train_loss = float(running_loss) / max(num_steps, 1)
+        train_detection_loss = float(running_detection_loss) / max(num_steps, 1)
+        train_distill_loss = float(running_distill_loss) / max(num_steps, 1)
         val_loss, val_match_rate, val_detection_loss, val_distill_loss = _evaluate_validation_proxy(
             model, val_loader, device, distill_weight
         )
 
         logger.info(
-            f"Epoch {epoch + 1}/{config.epochs} | "
+            f"Epoch {epoch + 1}/{total_epochs} | "
             f"train_loss={train_loss:.4f} (det={train_detection_loss:.4f}, dist={train_distill_loss:.4f}) | "
             f"val_loss={val_loss:.4f} (det={val_detection_loss:.4f}, dist={val_distill_loss:.4f}) | "
             f"val_match_rate_proxy={val_match_rate:.4f}"
@@ -1032,16 +1071,6 @@ def main():
         help="Teacher model for knowledge distillation (default: none for baseline training)",
     )
     parser.add_argument(
-        "--data-root", type=str, default="./data/kaggle/coco/coco2017", help="Root directory for COCO dataset"
-    )
-    parser.add_argument(
-        "--teacher",
-        type=str,
-        default="none",
-        choices=["none", "mae", "dino", "ijepa"],
-        help="Teacher model for knowledge distillation (default: none for baseline training)",
-    )
-    parser.add_argument(
         "--teacher-checkpoint",
         type=str,
         default=None,
@@ -1050,8 +1079,22 @@ def main():
     parser.add_argument(
         "--teacher-variant",
         type=str,
-        default="base",
-        help="Variant of teacher model (e.g., 'imagenet', 'small', 'base')",
+        default="auto",
+        help="Variant of the teacher ('auto' = read from the checkpoint; otherwise only checked against it)",
+    )
+    parser.add_argument(
+        "--teacher-input-size",
+        type=int,
+        default=None,
+        help="Resolution the teacher sees (default: the resolution it was trained at)",
+    )
+    parser.add_argument(
+        "--teacher-input-norm",
+        type=str,
+        default="imagenet",
+        choices=["imagenet", "none"],
+        help="'imagenet': YOLO images are in [0, 1] and are normalized for the teacher; "
+        "'none': they are already ImageNet-normalized",
     )
     parser.add_argument("--epochs", type=int, default=100, help="Number of training epochs")
     parser.add_argument("--start-epoch", type=int, default=0, help="Starting epoch for training (useful for resuming)")
@@ -1090,6 +1133,8 @@ def main():
         distill_weight=args.distill_weight,
         max_steps=args.max_steps,
         num_workers=args.num_workers,
+        teacher_input_size=args.teacher_input_size,
+        teacher_input_norm=args.teacher_input_norm,
     )
 
 
